@@ -1,0 +1,22 @@
+# The Daily Grind — multiplayer 3D coffeeshop on Launch Pad
+# Deploy: lpd deploy (from this directory)
+project = "coffeeshop"
+
+[[service]]
+name = "web"
+dockerfile = "./Dockerfile"
+cpu = 128    # vCPU shares (1024 = 1 vCPU)
+memory = 64 # MB — Node + ws need more headroom than a static nginx
+# Multiplayer state lives in-process, so keep a single replica (clients on
+# different replicas wouldn't see each other without a shared backplane).
+replicas = 1
+domain = "coffeeshop.games.webdevcody.com"
+port = 80
+
+  [service.healthCheck]
+  path = "/health"
+
+  [service.rollout]
+  maxSurge = 1
+  drainTimeout = "10s"
+  stopGrace = "15s"

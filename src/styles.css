@@ -1,0 +1,575 @@
+:root {
+  --bg: #2a1a10;
+  --cream: #f6efe0;
+  --accent: #e0966b;
+  --accent-dark: #b86b3f;
+  --ink: #2c2118;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--ink);
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#ui button,
+#ui input,
+#ui .card {
+  pointer-events: auto;
+}
+
+/* ---------- Join overlay ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 30%, rgba(60, 38, 22, 0.55), rgba(20, 12, 7, 0.85));
+  backdrop-filter: blur(3px);
+  transition: opacity 0.5s ease, visibility 0s linear 0.5s;
+}
+.overlay.hidden {
+  opacity: 0;
+  /* visibility:hidden takes the card + button out of hit-testing entirely;
+     pointer-events:none alone isn't enough because descendants opt back in
+     with pointer-events:auto (see #ui rule above) and stay clickable. */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.card {
+  width: min(92vw, 380px);
+  background: linear-gradient(180deg, #fffaf2, #f1e4d0);
+  border: 1px solid #e6d3b6;
+  border-radius: 20px;
+  padding: 28px 26px 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+.logo {
+  font-size: 46px;
+  line-height: 1;
+}
+.card h1 {
+  margin: 6px 0 4px;
+  font-size: 26px;
+  color: #5a3a22;
+  letter-spacing: 0.5px;
+}
+.card .sub {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  color: #8a6e54;
+}
+.field-label {
+  display: block;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: #9a7a5c;
+  margin: 12px 2px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.text-input,
+.chat-input {
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 12px;
+  border: 1.5px solid #dcc6a6;
+  background: #fffdf8;
+  font-size: 15px;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.text-input:focus,
+.chat-input:focus {
+  border-color: var(--accent);
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+}
+.swatch:hover {
+  transform: scale(1.12);
+}
+.swatch.active {
+  border-color: #3a2a1a;
+  transform: scale(1.15);
+}
+.primary-btn {
+  width: 100%;
+  margin-top: 18px;
+  padding: 13px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(184, 107, 63, 0.4);
+  transition: filter 0.15s, transform 0.05s;
+}
+.primary-btn:hover {
+  filter: brightness(1.07);
+}
+.primary-btn:active {
+  transform: translateY(1px);
+}
+.hint-row {
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: #a98e72;
+}
+
+/* ---------- In-game UI ---------- */
+.game-ui.hidden {
+  display: none;
+}
+.topbar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+.pill {
+  pointer-events: auto;
+  background: rgba(34, 22, 14, 0.72);
+  color: var(--cream);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 999px;
+  padding: 8px 15px;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}
+.pill.hidden {
+  display: none;
+}
+.voice-btn,
+.mic-btn,
+.deafen-btn {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.voice-btn:hover,
+.mic-btn:hover,
+.deafen-btn:hover {
+  background: rgba(54, 36, 22, 0.85);
+}
+.voice-btn.active {
+  background: rgba(42, 157, 143, 0.85);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+/* Mic-mute and deafen turn red when active, matching the per-person mute button. */
+.mic-btn.muted,
+.deafen-btn.muted {
+  background: rgba(239, 71, 111, 0.85);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.chat-log {
+  position: fixed;
+  left: 16px;
+  bottom: 74px;
+  width: min(70vw, 360px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+.chat-line {
+  background: rgba(28, 18, 11, 0.6);
+  color: #f3e9da;
+  padding: 5px 11px;
+  border-radius: 10px;
+  font-size: 13px;
+  width: fit-content;
+  max-width: 100%;
+  word-break: break-word;
+  transition: opacity 1.6s ease;
+  backdrop-filter: blur(4px);
+}
+.chat-line.fade {
+  opacity: 0;
+}
+.chat-line .who {
+  font-weight: 700;
+}
+
+/* Contextual prompt that appears when you're standing next to a seat. */
+.sit-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 70px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: rgba(34, 22, 14, 0.72);
+  color: var(--cream);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+.sit-prompt.hidden {
+  display: none;
+}
+
+.chat-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  width: min(94vw, 520px);
+}
+.chat-input {
+  flex: 1;
+  background: rgba(255, 253, 248, 0.95);
+}
+.send-btn {
+  padding: 0 18px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+.send-btn:active {
+  transform: translateY(1px);
+}
+
+/* ---------- CSS2D labels & chat bubbles ---------- */
+.name-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  padding: 1px 7px;
+  background: rgba(28, 18, 11, 0.45);
+  border-radius: 8px;
+  white-space: nowrap;
+  user-select: none;
+}
+.chat-bubble {
+  font-size: 13px;
+  color: #2c2118;
+  background: #fffdf6;
+  padding: 6px 11px;
+  border-radius: 12px;
+  max-width: 200px;
+  white-space: normal;
+  word-break: break-word;
+  text-align: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  position: relative;
+  transform: scale(0.6);
+  opacity: 0;
+  transition: transform 0.18s cubic-bezier(0.2, 1.4, 0.5, 1), opacity 0.18s;
+}
+.chat-bubble.show {
+  transform: scale(1);
+  opacity: 1;
+}
+.chat-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 7px solid #fffdf6;
+}
+
+/* ---------- Speaking indicator ---------- */
+/* Little animated equalizer that floats above the head while a player talks. */
+.speaking-indicator {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 13px;
+  padding: 3px 6px;
+  background: rgba(42, 157, 143, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+.speaking-indicator span {
+  width: 3px;
+  height: 100%;
+  background: #fff;
+  border-radius: 2px;
+  transform-origin: bottom center;
+  animation: speak-bar 0.7s ease-in-out infinite;
+}
+.speaking-indicator span:nth-child(1) {
+  animation-delay: 0s;
+}
+.speaking-indicator span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.speaking-indicator span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes speak-bar {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* ---------- "Can't hear you" indicator ---------- */
+/* Red mute badge that floats over a remote player's head when they've deafened
+   or muted you, so you know they can't hear you even if you speak. */
+.cant-hear-indicator {
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  background: rgba(239, 71, 111, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  cursor: default;
+}
+
+/* ---------- People panel (per-person mute) ---------- */
+.people-btn {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.people-btn:hover {
+  background: rgba(54, 36, 22, 0.85);
+}
+.people-btn.active {
+  background: rgba(54, 36, 22, 0.95);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.people-panel {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92vw, 300px);
+  max-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+.people-panel.hidden {
+  display: none;
+}
+.people-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 2px 2px 8px;
+}
+.people-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.people-empty {
+  font-size: 13px;
+  color: #b89c80;
+  padding: 6px 2px;
+}
+.people-foot {
+  font-size: 11px;
+  color: #a98e72;
+  margin: 10px 2px 0;
+}
+.person-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 4px 4px 6px;
+}
+.person-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #888;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.person-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mute-btn {
+  flex: none;
+  cursor: pointer;
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  background: rgba(255, 253, 248, 0.1);
+  color: var(--cream);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mute-btn:hover {
+  background: rgba(255, 253, 248, 0.2);
+}
+.mute-btn.muted {
+  background: rgba(239, 71, 111, 0.85);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+/* ---------- Toast (transient center-top message) ---------- */
+.toast {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  pointer-events: none;
+  background: rgba(34, 22, 14, 0.92);
+  color: var(--cream);
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  border-radius: 12px;
+  padding: 10px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 30;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---------- Arcade game overlay (iframe host) ---------- */
+.arcade {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: #0a1622; /* matches battleship's theme while it boots */
+  pointer-events: auto; /* re-enable hit-testing inside #ui (which is none) */
+}
+.arcade.hidden {
+  display: none;
+}
+.arcade-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(20, 12, 7, 0.9);
+  color: var(--cream);
+  border-bottom: 1px solid rgba(255, 234, 200, 0.14);
+}
+.arcade-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+.arcade-status {
+  flex: 1;
+  font-size: 12.5px;
+  color: #b9a489;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.arcade-leave {
+  flex: none;
+  cursor: pointer;
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  background: rgba(239, 71, 111, 0.85);
+  color: #fff;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  transition: filter 0.15s, transform 0.05s;
+}
+.arcade-leave:hover {
+  filter: brightness(1.08);
+}
+.arcade-leave:active {
+  transform: translateY(1px);
+}
+.arcade-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.arcade-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}

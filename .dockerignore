@@ -1,0 +1,6 @@
+node_modules
+dist
+.git
+scripts
+.DS_Store
+*.log
