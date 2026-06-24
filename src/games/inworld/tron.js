@@ -62,7 +62,10 @@ export function createGame(ctx) {
   group.name = "tron";
 
   let role = ctx.role;
-  const isHost = role === "host";
+  // Live host check — must read the CURRENT role, never a construction-time const,
+  // so an in-place promotion (setRole guest -> host when the host leaves) actually
+  // starts the sim. update()/pushState() gate on isHost() below.
+  const isHost = () => role === "host";
 
   // Per-viewer seat facing. board.js (FLAT policy — no orientPolicy declared)
   // rotates THIS group by orientFor(seatRy) so the arena turns to face whoever is
@@ -114,7 +117,7 @@ export function createGame(ctx) {
     // the cycle's canonical left consistently), so "left" => turnLeft is correct
     // for both seats. We buffer (host) or stream the intent (guest).
     e.preventDefault?.();
-    if (isHost) hostTurn(0, t);
+    if (isHost()) hostTurn(0, t);
     else { try { ctx.net.sendInput({ turn: t }); } catch { /* */ } }
   };
   window.addEventListener("keydown", onKeyDown);
@@ -291,8 +294,12 @@ export function createGame(ctx) {
   ];
   const pipOffMat = keep(standard(THREE, "#22384a", { emissive: "#0a1a26", emissiveIntensity: 0.2 }));
   const pips = [[], []];
+  // Place pips just OUTSIDE the play area on each near/far edge so they never
+  // share a cell (XZ + height) with cycle trails, heads, or the home strip — those
+  // can run across rows 0 / ROWS-1 and z-fight a pip parked on the spawn row.
+  const PIP_MARGIN = chh * 1.2;
   for (let side = 0; side < 2; side++) {
-    const z = side === 0 ? gz(0) : gz(ROWS - 1);
+    const z = side === 0 ? -AH / 2 - PIP_MARGIN : AH / 2 + PIP_MARGIN;
     for (let k = 0; k < WIN_SCORE; k++) {
       const p = meshOf(THREE, pipGeo, pipOffMat, false);
       const x = (k - (WIN_SCORE - 1) / 2) * cw * 1.4;
@@ -509,7 +516,7 @@ export function createGame(ctx) {
   function pushState() {
     const s = buildState();
     try { ctx.net.sendState(s, s); } catch { /* */ }
-    if (isHost) renderGrid(); // host renders the exact snapshot it sends
+    if (isHost()) renderGrid(); // host renders the exact snapshot it sends
   }
 
   // ---- guest steering inbound (host integrates) ----
@@ -519,7 +526,7 @@ export function createGame(ctx) {
   }
 
   function update(dt) {
-    if (isHost) hostTick(dt);
+    if (isHost()) hostTick(dt);
     // Idle pulse on the local halo so "which one am I" reads at a glance even
     // while standing still during the countdown.
     if (M.mine) {

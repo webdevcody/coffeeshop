@@ -229,7 +229,7 @@ export function buildOutside(scene) {
 
   const road = new THREE.Mesh(new THREE.PlaneGeometry(w, ROAD_FAR - ROAD_NEAR + 2), asphalt);
   road.rotation.x = -Math.PI / 2;
-  road.position.set(cx, 0.0, ROAD_MID);
+  road.position.set(cx, 0.005, ROAD_MID);
   road.receiveShadow = true;
   group.add(road);
 

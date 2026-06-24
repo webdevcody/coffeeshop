@@ -301,13 +301,19 @@ export function createGame(ctx) {
   }
 
   // ---- hover ghost handling ------------------------------------------------
+  const GHOST_EMISSIVE_BASE = 0.6;
   function clearGhost() {
     ghostH.visible = false;
     ghostV.visible = false;
+    // Reset the pulsed emissive so a hidden ghost never keeps the last pulse
+    // value when it is shown again.
+    M.ghost.emissiveIntensity = GHOST_EMISSIVE_BASE;
   }
   function updateGhost() {
     clearGhost();
-    if (!hoverCell || !isMyTurn()) return;
+    // Spectators (no local colour) must never get a ghost preview. isMyTurn()
+    // already returns false for myColor == null; this is belt-and-suspenders.
+    if (!hoverCell || myColor == null || !isMyTurn()) return;
     const { o, r, c } = hoverCell;
     if (!edgeFree(st, o, r, c)) return;
     const pos = edgePos[o][`${r},${c}`];
@@ -397,10 +403,18 @@ export function createGame(ctx) {
 
   // Relayed move from the other side. The host applies the move locally too (for a
   // guest move it relays) and re-pushes its authoritative snapshot.
-  function applyMove(move) {
+  function applyMove(move, byRole) {
     if (phase !== "play") throw new GameDesync("dots: not in play");
     if (!move || move.type !== "move") return false;
     if (move.o !== "h" && move.o !== "v") return false;
+    // The relayed move must come from the side whose turn it is. The framework
+    // forwards the mover's role; if it disagrees with `turn` the relay was
+    // reordered/duplicated, so trigger a resync rather than silently applying it
+    // against the wrong mover and corrupting the box-chain turn.
+    if (byRole === "host" || byRole === "guest") {
+      const moverColor = byRole === "host" ? "red" : "blue";
+      if (moverColor !== turn) throw new GameDesync("dots: mover does not match turn");
+    }
     if (!edgeFree(st, move.o, move.r, move.c)) throw new GameDesync("dots: edge already taken");
     performMove(move.o, move.r, move.c, turn);
     if (role === "host") pushSnapshot();

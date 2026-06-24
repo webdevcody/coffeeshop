@@ -129,10 +129,24 @@ export function createGame(ctx) {
   };
   const kd = (e) => onKey(e, true);
   const ku = (e) => onKey(e, false);
-  if (typeof window !== "undefined") {
+  // Only a guest ever sends steering, so only a guest needs the global key
+  // listeners. Spectators / ambient mirrors (mounted as role "spectator") would
+  // otherwise each install a useless pair of window listeners that accumulate.
+  let keysAttached = false;
+  function attachKeys() {
+    if (keysAttached || !isGuest || typeof window === "undefined") return;
     window.addEventListener("keydown", kd);
     window.addEventListener("keyup", ku);
+    keysAttached = true;
   }
+  function detachKeys() {
+    if (!keysAttached || typeof window === "undefined") return;
+    window.removeEventListener("keydown", kd);
+    window.removeEventListener("keyup", ku);
+    keys.clear();
+    keysAttached = false;
+  }
+  attachKeys();
   // Read local-view dir (-1 left .. +1 right in the player's own screen), convert
   // to canonical lateral dir.
   function localDirCanonical() {
@@ -340,6 +354,10 @@ export function createGame(ctx) {
         ball.vy = outYSign * speed * Math.cos(ang);
         ball.vx = speed * Math.sin(ang);
         ball.y = py + outYSign * (BALL_R + 0.01);
+        // Re-clamp lateral bounds after the paddle reflect rewrites ball.x/ball.vx
+        // so a near-wall hit can never leave the ball penetrating the side rail.
+        if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); }
+        else if (ball.x > W - BALL_R) { ball.x = W - BALL_R; ball.vx = -Math.abs(ball.vx); }
         return true;
       }
       return false;
@@ -361,7 +379,9 @@ export function createGame(ctx) {
     } else {
       // loser serves toward the winner-of-point's opponent: serve toward whoever
       // just conceded so play resumes from centre. Serve away from last scorer.
-      serve(ball.y < H / 2 ? 1 : -1);
+      // ball.y<-2 means the HOST end was passed (host conceded) -> serve toward
+      // the host end (dir -1); ball.y>H+2 means the guest conceded -> serve +1.
+      serve(ball.y < H / 2 ? -1 : 1);
     }
     paintScore();
   }
@@ -534,6 +554,9 @@ export function createGame(ctx) {
     if (homeStrip) homeStrip.visible = !!myColor;
     if (myHalo) myHalo.visible = !!myColor;
 
+    // attach/detach key listeners to match the new role (only guests steer)
+    if (isGuest) attachKeys(); else detachKeys();
+
     // a freshly-seated client should drive its own paddle from a sane base
     if (isGuest && Number.isFinite(pB)) myPredX = pB;
 
@@ -543,10 +566,7 @@ export function createGame(ctx) {
   function setSeatRy() { /* self-oriented: seat ry is irrelevant to our render */ }
 
   function dispose() {
-    if (typeof window !== "undefined") {
-      window.removeEventListener("keydown", kd);
-      window.removeEventListener("keyup", ku);
-    }
+    detachKeys();
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
   }

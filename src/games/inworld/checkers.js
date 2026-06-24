@@ -542,6 +542,7 @@ export function createGame(ctx) {
   // Snap a captured disc straight to its rail slot (snapshot rebuild path).
   function parkOnRail(rec) {
     setGlow(rec, false);
+    setKing(rec, false, true); // a parked disc is always demoted to a plain man (drop crown + stacked cap)
     rec.onBoard = false;
     const dest = railDest(rec.color);
     rec.mesh.scale.set(1, 1, 1);
@@ -663,6 +664,42 @@ export function createGame(ctx) {
     return false;
   }
 
+  // Snap every in-flight cosmetic animation straight to its final state. Used when
+  // a relayed move arrives while a previous hop is still gliding (applyMove): the
+  // logical board is already current, so we fast-forward the meshes rather than let
+  // two discs glide concurrently (which can also target a disc mid-hop).
+  function finishAnimations() {
+    // Fades: drop captured discs onto their rail (mirrors the k>=1 branch).
+    for (const f of fades) parkOnRail(f.rec);
+    fades.length = 0;
+
+    // Hops: snap each hopper to its final landing, then run promote/onDone.
+    for (const a of hops) {
+      const last = a.segs[a.segs.length - 1];
+      a.rec.mesh.position.set(last.toX, REST_Y, last.toZ);
+      a.rec.mesh.scale.set(1, 1, 1);
+      // Fire any captures not yet peeled off (segment never reached its trigger).
+      for (const seg of a.segs) {
+        if (seg.capRec && !seg.captureFired) {
+          seg.captureFired = true;
+          parkOnRail(seg.capRec);
+        }
+      }
+      if (a.promotes) setKing(a.rec, true, true);
+      if (a.onDone) a.onDone();
+    }
+    hops.length = 0;
+
+    // Crowns: settle any springing-in cap/ring instantly.
+    for (const cr of crowns) {
+      cr.rec.cap.scale.setScalar(1);
+      cr.rec.crown.scale.setScalar(1);
+      cr.rec.cap.position.y = DISC_T * 0.9;
+    }
+    crowns.length = 0;
+    busy = false;
+  }
+
   // Fade a captured disc out (model already removed it from the id grid).
   function fadeCapture(rec) {
     if (!rec) return;
@@ -706,11 +743,18 @@ export function createGame(ctx) {
     const final = steps[steps.length - 1];
     const promotes = !!rec && !rec.king && final.r === KING_ROW[rec.color];
 
-    if (rec) {
-      board[from.r][from.c] = 0;
-      board[final.r][final.c] = id;
-      if (promotes) rec.king = true; // logical flag now; crown mesh springs in on land
+    // Drift guard: if the moving disc's id is missing (id grid out of sync with a
+    // snapshot), bail out WITHOUT touching the board — otherwise the capture loop
+    // below would delete captured piece ids from the authoritative grid while the
+    // mover was never actually moved, corrupting turn/game-over computation.
+    if (!rec) {
+      busy = false;
+      return;
     }
+
+    board[from.r][from.c] = 0;
+    board[final.r][final.c] = id;
+    if (promotes) rec.king = true; // logical flag now; crown mesh springs in on land
 
     const pts = [{ r: from.r, c: from.c }, ...steps];
     const capRecs = [];
@@ -730,7 +774,6 @@ export function createGame(ctx) {
 
     busy = true;
     animateMove(rec, from, steps, capRecs, promotes, () => { busy = false; });
-    if (!rec) busy = false; // nothing to animate (drift) — don't get stuck busy
   }
 
   // -------------------------------------------------------------------------
@@ -895,11 +938,41 @@ export function createGame(ctx) {
   // recompute captures via matchLegalMove. On mismatch THROW GameDesync so the
   // framework requests an authoritative snapshot.
   // ===========================================================================
+  // Has this exact move already been applied to the current board? True when the
+  // from-square is now empty and the final landing square holds a disc of the side
+  // that just moved (other(turn), since the turn already advanced). Used to absorb
+  // the host's double-send (move delta + post-move snapshot) arriving out of order.
+  function isAlreadyApplied(move) {
+    if (!move || !move.from || !Array.isArray(move.steps) || move.steps.length === 0) return false;
+    const { r: fr, c: fc } = move.from;
+    const final = move.steps[move.steps.length - 1];
+    if (!final || !inBounds(fr, fc) || !inBounds(final.r, final.c)) return false;
+    if (idAt(fr, fc) !== 0) return false;            // mover hasn't left the from-square
+    const landed = pieceAt(final.r, final.c);
+    return !!landed && landed.color === other(turn); // mover sits on its destination
+  }
+
   function applyMove(move) {
-    if (phase !== "play") throw new GameDesync("checkers: move while not in play");
     if (!move || move.type !== "move") return false;
+    if (phase !== "play") {
+      // The game may have already ended via an authoritative snapshot delivered
+      // before this delta. If the move is consistent with the already-applied
+      // position, treat it as a benign no-op rather than forcing a resync.
+      if (isAlreadyApplied(move)) return true;
+      throw new GameDesync("checkers: move while not in play");
+    }
+    // If a previous hop is still animating, fast-forward it so the new move doesn't
+    // glide concurrently (the logical board is already current either way).
+    if (busy) finishAnimations();
     const legal = matchLegalMove(logicalBoard(), turn, move);
-    if (!legal) throw new GameDesync("checkers: no matching legal move");
+    if (!legal) {
+      // Host self-echo / reordered snapshot: the host sends BOTH a move delta and a
+      // post-move snapshot. If the snapshot landed first the move is already applied,
+      // so there is no legal match for the current turn. Tolerate that as a no-op
+      // (when the board already reflects this exact move) instead of GameDesync.
+      if (isAlreadyApplied(move)) return true;
+      throw new GameDesync("checkers: no matching legal move");
+    }
     clearSelection();
     clearHighlights();
     performMove(legal.from, legal.steps, legal.captured);

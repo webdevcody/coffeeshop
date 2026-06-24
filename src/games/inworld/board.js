@@ -212,10 +212,20 @@ export class InWorldBoard {
     const a = this.active;
     if (!a || !a.table) return { active: false };
     if (!this._isLocalSeatedHere(a)) return { active: false };
-    const p = a.table.position; // table group world position (table is parented to world)
+    // Derive the framing centre from the table's WORLD transform, not its local
+    // position + a hardcoded surface Y. Using a.table.position assumes the table
+    // sits directly in world space at a fixed height — the same leak _tabletopLocalY
+    // was rewritten to avoid. table.getWorldPosition() resolves XZ (and base Y)
+    // through any ancestor transform; add the tabletop's local surface offset so the
+    // centre tracks the real surface even under a tilted/raised room group.
+    const world = a.table.getWorldPosition(new THREE.Vector3());
     return {
       active: true,
-      center: { x: p.x, y: TABLE_SURFACE_Y, z: p.z },
+      center: {
+        x: world.x,
+        y: world.y + this._tabletopLocalY(a.table),
+        z: world.z,
+      },
       seatRy: a.seatRy,
       tableId: a.tableId,
     };
@@ -369,8 +379,19 @@ export class InWorldBoard {
         a._specSkipSnapUntil = this._now() + InWorldBoard._SPEC_SNAP_WINDOW_MS;
       }
     } catch (err) {
-      if (err instanceof GameDesync) this._requestResync();
-      else throw err;
+      // ANY applyMove failure is recoverable: a malformed/garbage relayed move
+      // (TypeError, out-of-range index, etc.) must NOT escape this handler — it is
+      // dispatched synchronously from the raw WebSocket 'message' pump (Network._emit)
+      // with no surrounding try/catch, so rethrowing would abort the whole message
+      // dispatch. Log non-desync errors and request an authoritative re-push instead.
+      if (!(err instanceof GameDesync)) {
+        try {
+          console.warn("[InWorldBoard] applyMove threw; requesting resync", err);
+        } catch {
+          /* ignore */
+        }
+      }
+      this._requestResync();
     }
   }
 

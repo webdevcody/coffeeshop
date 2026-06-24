@@ -430,6 +430,13 @@ export function createGame(ctx) {
   let selectedFrom = null;         // {r,c}
   let selMoves = [];               // legal moves from the selected square
 
+  // Promotion picker: when the local player chooses a pawn-promotion destination
+  // we pause before committing and offer the four piece choices (q/r/b/n) so
+  // under-promotion is reachable from the UI. While active, picker holds the
+  // destination + the four candidate moves keyed by their flags.promo.
+  let promoPick = null;            // null | { to:{r,c}, moves:{q,r,b,n} }
+  const promoChoiceMeshes = [];    // selectable token meshes for the active picker
+
   let busy = false;                // true while a move animates
   let disposed = false;
 
@@ -957,7 +964,7 @@ export function createGame(ctx) {
     if (selRingMesh) { group.remove(selRingMesh); selRingMesh = null; }
   }
 
-  function clearSelection() { selectedFrom = null; selMoves = []; }
+  function clearSelection() { selectedFrom = null; selMoves = []; closePromoPicker(); }
 
   // ===========================================================================
   // Animation loop — gliding mover + idle bob/spin for the target tokens.
@@ -967,7 +974,7 @@ export function createGame(ctx) {
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
   const easeInOut = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
 
-  function loopActive() { return glides.length > 0 || targets.length > 0; }
+  function loopActive() { return glides.length > 0 || targets.length > 0 || promoChoiceMeshes.length > 0; }
   function startLoopIfNeeded() { if (loopActive()) startLoop(); }
   function startLoop() {
     if (rafId != null || disposed) return;
@@ -1003,6 +1010,10 @@ export function createGame(ctx) {
         t.position.y = t.userData.baseY + bob;
         t.rotation.z = idleT * 1.4;
       }
+    }
+    if (promoChoiceMeshes.length > 0) {
+      idleT += dt;
+      for (const t of promoChoiceMeshes) t.rotation.y = idleT * 1.2;
     }
   }
 
@@ -1094,6 +1105,20 @@ export function createGame(ctx) {
     if (!gate) return;
     if (phase !== "play" || state.turn !== myColor) return;
     if (busy) return;
+    // While the promotion picker is open, route clicks to it first: a click on a
+    // choice token commits that promotion; any other click cancels the picker.
+    if (promoPick) {
+      const chosen = pickPromoChoiceFromHit(hit);
+      if (chosen && promoPick.moves[chosen]) {
+        const move = promoPick.moves[chosen];
+        closePromoPicker();
+        commitMove(move);
+        return;
+      }
+      closePromoPicker();
+      // Fall through so the same click can (re)select another piece.
+    }
+
     const cell = hit && hit.cell;
     if (!cell || !Number.isInteger(cell.r) || !Number.isInteger(cell.c)) return;
     const { r, c } = cell;
@@ -1101,7 +1126,11 @@ export function createGame(ctx) {
 
     if (selectedFrom) {
       const move = selMoves.find((m) => m.to.r === r && m.to.c === c);
-      if (move) { commitMove(move); return; }
+      if (move) {
+        if (move.flags.promoOptions) { openPromoPicker(move); return; }
+        commitMove(move);
+        return;
+      }
       // Clicked off the legal targets — fall through to (re)select.
     }
 
@@ -1116,20 +1145,96 @@ export function createGame(ctx) {
     }
   }
 
-  // Collapse four promotion moves to a single auto-queen per destination.
+  // Collapse the four promotion moves per destination into a SINGLE selectable
+  // target (the queen, kept as the representative) so each promotion square shows
+  // one marker. The representative is tagged with the full set of promotion
+  // options so onPointer can open the under-promotion picker on click instead of
+  // silently auto-queening. Non-promotion moves pass through unchanged.
   function dedupePromotions(moves) {
     const seen = new Set();
     const out = [];
     for (const m of moves) {
+      if (!m.flags.promo) { out.push(m); continue; }
       const key = m.to.r * 8 + m.to.c;
-      if (m.flags.promo) {
-        if (seen.has(key)) continue;
-        if (m.flags.promo !== "q") continue;
-        seen.add(key);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Gather all four promotion variants targeting this destination.
+      const options = {};
+      for (const o of moves) {
+        if (o.flags.promo && o.to.r === m.to.r && o.to.c === m.to.c) {
+          options[o.flags.promo] = o;
+        }
       }
-      out.push(m);
+      // Representative = queen (default); carry the full option set for the UI.
+      const rep = options.q || m;
+      out.push({ ...rep, flags: { ...rep.flags, promoOptions: options } });
     }
     return out;
+  }
+
+  // ---- Promotion picker UI -------------------------------------------------
+  // Float the four promotion choices (queen, rook, bishop, knight) above the
+  // destination square as small selectable pieces in the local colour; clicking
+  // one commits that promotion. Auto-queen is no longer forced — under-promotion
+  // is reachable here.
+  const PROMO_ORDER = ["q", "r", "b", "n"];
+
+  function openPromoPicker(move) {
+    closePromoPicker();
+    const options = move.flags.promoOptions || {};
+    promoPick = { to: { r: move.to.r, c: move.to.c }, moves: {} };
+    // Keep the selection ring + (now redundant) targets out of the way.
+    clearHighlights();
+    const baseX = cellX(move.to.c);
+    const baseZ = cellZ(move.to.r);
+    const lift = TILE_TOP + STEP * 1.15;
+    const spread = STEP * 0.92;
+    for (let i = 0; i < PROMO_ORDER.length; i++) {
+      const promo = PROMO_ORDER[i];
+      const m = options[promo];
+      if (!m) continue;
+      promoPick.moves[promo] = m;
+      const mat = (myColor === "white" ? M.white : M.black).clone();
+      const token = makeProceduralPiece(promo, mat);
+      token.scale.multiplyScalar(0.62);
+      const dx = (i - (PROMO_ORDER.length - 1) / 2) * spread;
+      token.position.set(baseX + dx, lift, baseZ);
+      token.userData.pieceMat = mat;
+      token.userData.promoChoice = promo;
+      // Tag every submesh so a raycast hit on any part resolves the choice.
+      token.traverse((o) => { if (o.isMesh) o.userData.promoChoice = promo; });
+      token.renderOrder = 5;
+      group.add(token);
+      promoChoiceMeshes.push(token);
+    }
+    startLoop();
+  }
+
+  function closePromoPicker() {
+    if (!promoPick) {
+      for (const t of promoChoiceMeshes) group.remove(t);
+      promoChoiceMeshes.length = 0;
+      return;
+    }
+    promoPick = null;
+    for (const t of promoChoiceMeshes) {
+      group.remove(t);
+      t.userData.pieceMat?.dispose?.();
+      t.userData.baseGeo?.dispose?.();
+      t.userData.headGeo?.dispose?.();
+      if (t.userData.crossGeo) for (const cg of t.userData.crossGeo) cg.dispose?.();
+    }
+    promoChoiceMeshes.length = 0;
+  }
+
+  // Resolve a raycast hit to a promotion choice ('q'|'r'|'b'|'n') or null.
+  function pickPromoChoiceFromHit(hit) {
+    let o = hit && hit.object;
+    while (o) {
+      if (o.userData && o.userData.promoChoice) return o.userData.promoChoice;
+      o = o.parent;
+    }
+    return null;
   }
 
   // Commit a LOCAL move: mutate + animate, relay (from,to,promo), then (host) push.
@@ -1272,6 +1377,7 @@ export function createGame(ctx) {
     disposed = true;
     if (rafId != null) { caf(rafId); rafId = null; }
     glides.length = 0;
+    closePromoPicker();
     clearHighlights();
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {

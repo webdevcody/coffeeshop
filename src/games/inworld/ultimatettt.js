@@ -308,6 +308,9 @@ export function createGame(ctx) {
   }
 
   // Highlight the marks on the deciding meta-line (the three won sub-boards).
+  // Rebuild the winning bigMark meshes fresh and assign the win material rather
+  // than mutating the pooled big-mark meshes' shared material in place — that way
+  // M.x/M.o are never permanently overwritten and a redundant call is harmless.
   function highlightMetaWin() {
     if (phase !== "over" || (winner !== "X" && winner !== "O")) return;
     const big = bigWinner.map((x) => (x === "draw" ? null : x));
@@ -317,6 +320,8 @@ export function createGame(ctx) {
     if (!line) return;
     const winMat = winner === "X" ? M.xWin : M.oWin;
     for (const B of line) {
+      if (bigWinner[B] !== "X" && bigWinner[B] !== "O") continue;
+      setBigMark(B, bigWinner[B]);
       const g = bigMarks[B];
       if (!g) continue;
       g.traverse((o) => { if (o.isMesh) o.material = winMat; });
@@ -456,10 +461,23 @@ export function createGame(ctx) {
         return v === "X" || v === "O" || v === "draw" ? v : null;
       });
       turn = state.turn === "O" ? "O" : "X";
-      activeBoard = Number.isInteger(state.activeBoard) ? state.activeBoard : null;
+      // activeBoard must be a real, still-undecided sub-board (0..8) or null.
+      activeBoard =
+        Number.isInteger(state.activeBoard) &&
+        state.activeBoard >= 0 &&
+        state.activeBoard < 9 &&
+        !bigWinner[state.activeBoard]
+          ? state.activeBoard
+          : null;
       phase = state.phase === "over" ? "over" : "play";
       winner = state.winner === "X" || state.winner === "O" ? state.winner : null;
-      lastMove = state.lastMove && Number.isInteger(state.lastMove.B) ? state.lastMove : null;
+      // lastMove is a cosmetic cue; validate both B and i before trusting it.
+      lastMove =
+        state.lastMove &&
+        Number.isInteger(state.lastMove.B) &&
+        Number.isInteger(state.lastMove.i)
+          ? state.lastMove
+          : null;
     }
     paint();
   }

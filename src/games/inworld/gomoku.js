@@ -92,6 +92,7 @@ export function createGame(ctx) {
   let winner = null; // "black" | "white" | null (draw / in-play)
   let winLine = null;
   let lastDrop = null;
+  let disposed = false; // set in dispose(); gates update/onPointer/setHover
 
   // ---- Materials ------------------------------------------------------------
   const owned = [];
@@ -198,7 +199,9 @@ export function createGame(ctx) {
   // only forwards the column to setHover.
   const ghost = meshOf(THREE, stoneGeo, M.ghostBlack, false);
   ghost.visible = false;
-  ghost.position.y = TOP + 0.006;
+  // Lifted above real stones (TOP + 0.006) so the translucent preview never
+  // shares a depth plane with a just-placed stone (avoids z-fighting/flicker).
+  ghost.position.y = TOP + 0.012;
   group.add(ghost);
   let hoverCell = null; // last {r,c} resolved by hitToCell, or null on a miss
   let ghostPulse = 0;
@@ -233,7 +236,7 @@ export function createGame(ctx) {
       ghost.visible = false;
       return;
     }
-    ghost.position.set(ix(c), TOP + 0.006, ix(r));
+    ghost.position.set(ix(c), TOP + 0.012, ix(r));
     ghost.visible = true;
   }
 
@@ -366,6 +369,7 @@ export function createGame(ctx) {
 
   // ---- Pointer (local click) ------------------------------------------------
   function onPointer(hit) {
+    if (disposed) return;
     if (typeof ctx.isLocalTurnAllowed === "function" && !ctx.isLocalTurnAllowed())
       return;
     if (phase !== "play" || turn !== myColor || myColor == null) return;
@@ -490,6 +494,7 @@ export function createGame(ctx) {
   }
 
   function setHover(x) {
+    if (disposed) return;
     // x === -1 (miss / off-turn) clears the preview. Otherwise use the precise
     // {r,c} that hitToCell just recorded for this hover raycast.
     if (x === -1 || x == null || hoverCell == null) {
@@ -501,7 +506,7 @@ export function createGame(ctx) {
 
   // ---- Per-frame: gentle ghost pulse so the affordance reads as "live" -------
   function update(dt) {
-    if (!ghost.visible) return;
+    if (disposed || !ghost.visible) return;
     ghostPulse += dt || 0.016;
     const base = myColor === "white" ? 0.5 : 0.45;
     ghost.material.opacity = base + 0.12 * (0.5 + 0.5 * Math.sin(ghostPulse * 4));
@@ -522,7 +527,18 @@ export function createGame(ctx) {
   }
 
   function dispose() {
+    if (disposed) return;
+    disposed = true;
     hideGhost();
+    // Remove the live per-cell stone meshes from the group before teardown.
+    for (let r = 0; r < SIZE; r++)
+      for (let c = 0; c < SIZE; c++) {
+        const s = stones[r][c];
+        if (s) {
+          group.remove(s);
+          stones[r][c] = null;
+        }
+      }
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
   }

@@ -507,37 +507,17 @@ export function createGame(ctx) {
   }
 
   // -------------------------------------------------------------------------
-  // Guest placard — a closed book with a small standing "waiting…" sign.
-  // -------------------------------------------------------------------------
+  // Guest placard — formerly a closed "waiting…" book. The current design has
+  // EVERYONE (host, guests, spectators) see the open flip-book oriented to their
+  // own seat (only the host gets the flip arrows + Play plate), so the closed
+  // placard is never displayed. We deliberately build NOTHING here: previously
+  // this allocated a cover/page-block/sign/post plus a CanvasTexture that
+  // applyRoleVisibility() always hid (placardRoot.visible = false), wasting GPU
+  // resources for a mesh no one ever sees. placardRoot is kept as an empty,
+  // hidden group so the surrounding wiring (group.add / rotation / visibility)
+  // stays intact without leaking the unused geometry/material/texture.
   function buildPlacard() {
-    const closed = new THREE.Mesh(
-      track(_geos, new THREE.BoxGeometry(0.34, 0.05, 0.24)),
-      M.cover
-    );
-    closed.position.y = 0.025;
-    closed.castShadow = true;
-    closed.receiveShadow = true;
-    placardRoot.add(closed);
-    // Page block edge stripe.
-    const pages = new THREE.Mesh(
-      track(_geos, new THREE.BoxGeometry(0.32, 0.03, 0.225)),
-      M.pageBlock
-    );
-    pages.position.y = 0.03;
-    placardRoot.add(pages);
-
-    // Standing sign.
-    const signTex = track(_texs, labelTexture(THREE, "Waiting…", "#3f2a1a", "#f4efe6"));
-    const signMat = track(_mats, new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.7, side: THREE.DoubleSide }));
-    const sign = new THREE.Mesh(track(_geos, new THREE.PlaneGeometry(0.18, 0.09)), signMat);
-    sign.position.set(0, 0.12, 0);
-    placardRoot.add(sign);
-    const post = new THREE.Mesh(
-      track(_geos, new THREE.CylinderGeometry(0.006, 0.006, 0.07, 8)),
-      M.spine
-    );
-    post.position.set(0, 0.075, 0.01);
-    placardRoot.add(post);
+    /* Intentionally empty: everyone sees the open book (see applyRoleVisibility). */
   }
 
   function applyRoleVisibility() {
@@ -918,7 +898,20 @@ export function createGame(ctx) {
   function applyState(state) {
     if (role === "host" || !state || typeof state.index !== "number") return;
     const n = ((Math.round(state.index) % total) + total) % total;
-    if (n === index && !turning) return;
+    // Equal-index, no-flip snapshots are normally no-ops — BUT a late/duplicate
+    // catch-up snapshot must still be able to RECOVER a guest whose first async
+    // preview build was discarded (currentPreview never set, or the diorama
+    // holder ended up empty). Only short-circuit when there is already a live
+    // diorama on the page; otherwise fall through and re-render the spread so the
+    // re-pushed {index} repaints the page art and rebuilds the model.
+    if (
+      n === index &&
+      !turning &&
+      currentPreview &&
+      dioramaHolder &&
+      dioramaHolder.children.length
+    )
+      return;
     index = n;
     if (turning) {
       turning = null;

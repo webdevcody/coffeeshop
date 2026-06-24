@@ -37,7 +37,9 @@ export function makeCantHearIndicator() {
   div.title = "Can't hear you";
   const obj = new CSS2DObject(div);
   obj.position.set(0, 0.64, 0); // above the name label
-  obj.center.set(0.5, 1);
+  // Bottom-anchor so the badge grows upward, away from the name label below it,
+  // instead of hanging down and overlapping it.
+  obj.center.set(0.5, 0);
   obj.visible = false;
   return obj;
 }
@@ -51,7 +53,9 @@ export function makeSpeakingIndicator() {
   for (let i = 0; i < 3; i++) div.appendChild(document.createElement("span"));
   const obj = new CSS2DObject(div);
   obj.position.set(0, 0.86, 0); // above the head, over the name + mute badge
-  obj.center.set(0.5, 1);
+  // Bottom-anchor so the indicator grows upward, away from the name + mute badge
+  // below it, instead of hanging down and overlapping them.
+  obj.center.set(0.5, 0);
   obj.visible = false;
   return obj;
 }

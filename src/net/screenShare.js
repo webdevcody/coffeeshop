@@ -188,7 +188,10 @@ export class ScreenShare {
     };
     pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) this._dropIn(from);
+      // 'disconnected' is transient and usually self-recovers (brief blip / ICE
+      // restart), so only tear down on terminal states — matching the outgoing
+      // path and voice.js.
+      if (["failed", "closed"].includes(pc.connectionState)) this._dropIn(from);
     };
     try {
       await pc.setRemoteDescription(sdp);

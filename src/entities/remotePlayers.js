@@ -9,6 +9,7 @@ import {
   makeChatBubble,
   makeSpeakingIndicator,
   makeCantHearIndicator,
+  setLabelText,
 } from "../ui/labels.js";
 import { NET } from "../config.js";
 
@@ -20,7 +21,26 @@ export class RemotePlayers {
   }
 
   add(p) {
-    if (this.players.has(p.id)) return this.players.get(p.id);
+    // Reconnect / re-join: the client re-sends `join` on every reconnect and the
+    // server answers with a `welcome` carrying the FULL roster. If this id is
+    // already known, update the existing entry in place with the fresh snapshot
+    // instead of bailing out (which would leave a stale avatar with outdated
+    // appearance / position / state).
+    const existing = this.players.get(p.id);
+    if (existing) {
+      const e = existing;
+      e.name = p.name;
+      e.target.x = p.x;
+      e.target.z = p.z;
+      e.target.ry = p.ry;
+      e.character.group.position.set(p.x, 0, p.z);
+      e.character.group.rotation.y = p.ry;
+      e.character.setAppearance({ color: p.color, skin: p.skin, hair: p.hair });
+      e.character.setSeated(!!p.sitting, p.seatY || 0);
+      if (e.label) setLabelText(e.label, p.name);
+      e.cantHear.visible = !!p.deafened;
+      return e;
+    }
     const character = new Character({ color: p.color, skin: p.skin, hair: p.hair }, p.id);
     character.group.position.set(p.x, 0, p.z);
     character.group.rotation.y = p.ry;

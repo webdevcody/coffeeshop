@@ -135,8 +135,8 @@ export class HUD {
     const form = ui.querySelector("#chat-bar");
 
     this.peopleBtn.addEventListener("click", () => {
-      const open = this.peoplePanel.classList.toggle("hidden");
-      this.peopleBtn.classList.toggle("active", !open);
+      const visible = !this.peoplePanel.classList.toggle("hidden");
+      this.peopleBtn.classList.toggle("active", visible);
     });
 
     // Customize panel: one swatch row per editable part. Picking a swatch fires
@@ -147,8 +147,8 @@ export class HUD {
       color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color", "Clothing"),
     };
     this.lookBtn.addEventListener("click", () => {
-      const open = this.customizePanel.classList.toggle("hidden");
-      this.lookBtn.classList.toggle("active", !open);
+      const visible = !this.customizePanel.classList.toggle("hidden");
+      this.lookBtn.classList.toggle("active", visible);
     });
 
     form.addEventListener("submit", (e) => {

@@ -44,6 +44,11 @@ function sow(board, pit, side) {
   const store = side === "host" ? HOST_STORE : GUEST_STORE;
   const oppStore = side === "host" ? GUEST_STORE : HOST_STORE;
   if (!pits.includes(pit) || board[pit] === 0) return null;
+  // Snapshot the PRE-sow pit counts so capture can test "was this landing pit
+  // empty before this move?" reliably. Using b[i]===1 as a proxy is wrong in the
+  // lap-around case (13+ seeds wrap past the origin and drop a seed back into a
+  // pit that was empty), so we track emptiness from the original board instead.
+  const wasEmpty = board.map((c) => c === 0);
   const b = board.slice();
   let seeds = b[pit];
   b[pit] = 0;
@@ -55,9 +60,10 @@ function sow(board, pit, side) {
     seeds--;
   }
   let captured = 0;
-  // Capture: last seed landed in one of MY own pits that was empty before this
-  // seed (now holds exactly 1), and the opposite pit has seeds.
-  if (pits.includes(i) && b[i] === 1 && b[opposite(i)] > 0) {
+  // Capture: last seed landed in one of MY own pits that was EMPTY before this
+  // move (never the origin pit, which a full lap re-fills), and the opposite pit
+  // has seeds.
+  if (i !== pit && pits.includes(i) && wasEmpty[i] && b[opposite(i)] > 0) {
     captured = b[opposite(i)] + 1;
     b[store] += captured;
     b[i] = 0;
@@ -304,7 +310,7 @@ export function createGame(ctx) {
       const isStore = i === HOST_STORE || i === GUEST_STORE;
       const spread = isStore ? pitR * 1.0 : pitR * 0.6;
       for (let k = 0; k < n; k++) {
-        const s = meshOf(THREE, seedGeo, M.seed);
+        const s = meshOf(THREE, seedGeo, M.seed, false); // tiny seeds don't cast shadows
         const ang = (k / Math.max(1, n)) * Math.PI * 2 + k * 0.7;
         const rad = spread * (0.3 + 0.7 * ((k % 5) / 5));
         s.position.set(

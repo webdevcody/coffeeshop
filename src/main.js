@@ -173,7 +173,6 @@ network.on("game-assign", (m) => {
     return;
   }
   currentRole = m.role;
-  const label = tableLabel(m.table);
   controls.setLocked(true);
 
   // No game chosen yet: EVERYONE at the table sees the in-world FLIP-BOOK MENU,
@@ -308,11 +307,6 @@ function nearBar() {
   return dz > 0 && dz < bar.range && Math.abs(local.pos.x - bar.x) < bar.halfW;
 }
 
-function tableLabel(table) {
-  const n = parseInt(String(table).split("-")[1] || "0", 10) + 1;
-  return Number.isFinite(n) ? `Table ${n}` : "Table";
-}
-
 // Called whenever the local player stands up (button, keyboard, or walking off).
 function onLocalStood() {
   if (arcade.open) arcade.hide();
@@ -395,15 +389,22 @@ let previewAngle = 0;
 // flip-book menu (the menu reuses the same hook — see api/notesForFixers), so
 // the camera frames the menu too with zero extra wiring here.
 let _seatedCamOn = false;
+let _seatedBaseYaw = NaN;
 function syncSeatedCamera() {
   const view = inWorld.getSeatedView ? inWorld.getSeatedView() : { active: false };
   const active = !!(view && view.active);
-  if (active !== _seatedCamOn) {
+  // The camera orbits BEHIND the player: the offset baseline is seatRy+PI, so
+  // facing the board centre puts the player's near edge at the screen bottom.
+  // A null seatRy (shouldn't happen for a seated player) falls back to facing.
+  const baseYaw = active
+    ? (Number.isFinite(view.seatRy) ? view.seatRy : (local?.facing ?? 0)) + Math.PI
+    : NaN;
+  // Re-issue setSeated not only on the enter/leave transition but also whenever
+  // the seated baseline yaw changes mid-seat (a seat/role refresh can change
+  // seatRy without leaving the seat), so the orbit clamp baseline stays current.
+  if (active !== _seatedCamOn || (active && baseYaw !== _seatedBaseYaw)) {
     _seatedCamOn = active;
-    // The camera orbits BEHIND the player: the offset baseline is seatRy+PI, so
-    // facing the board centre puts the player's near edge at the screen bottom.
-    // A null seatRy (shouldn't happen for a seated player) falls back to facing.
-    const baseYaw = (Number.isFinite(view.seatRy) ? view.seatRy : (local?.facing ?? 0)) + Math.PI;
+    _seatedBaseYaw = baseYaw;
     controls.setSeated?.(active, baseYaw);
   }
   return active ? view : null;

@@ -83,12 +83,15 @@ function legalMoves(s, color) {
 
 function clone(s) { return JSON.parse(JSON.stringify(s)); }
 
-// Apply a token move; returns a new state. Handles yard exit, advance, capture.
+// Apply a token move; returns { ns, captured }. Handles yard exit, advance,
+// capture. `captured` is true if this move sent >=1 opponent token home (used
+// to grant the standard Ludo bonus roll).
 function applyTokenMove(s, color, idx) {
   const ns = clone(s);
+  let captured = false;
   let step = ns.tokens[color][idx];
   step = step === 0 ? 1 : step + ns.die;
-  if (step > 57) return ns; // illegal overshoot guard (shouldn't happen)
+  if (step > 57) return { ns, captured }; // illegal overshoot guard (shouldn't happen)
   ns.tokens[color][idx] = step;
   // Capture: landing on a non-safe shared-track square sends opponents home.
   if (step >= 1 && step <= 51) {
@@ -98,12 +101,12 @@ function applyTokenMove(s, color, idx) {
         if (oc === color) continue;
         for (let j = 0; j < 4; j++) {
           const os = ns.tokens[oc][j];
-          if (os >= 1 && os <= 51 && absSquare(oc, os) === sq) ns.tokens[oc][j] = 0;
+          if (os >= 1 && os <= 51 && absSquare(oc, os) === sq) { ns.tokens[oc][j] = 0; captured = true; }
         }
       }
     }
   }
-  return ns;
+  return { ns, captured };
 }
 
 const allHome = (s, color) => s.tokens[color].every((t) => t === 57);
@@ -217,14 +220,15 @@ export function createGame(ctx) {
     let mat = M.pathLight;
     if (SAFE.has(k)) mat = safeMat;
     // colour each colour's entry square in its own colour
-    for (const col of order) if (absSquare(col, 1) === k) mat = pathMat[col];
+    for (const col of COLORS) if (absSquare(col, 1) === k) mat = pathMat[col];
     addTile(c, r, mat);
   }
-  // Home-column tiles (tinted per colour). Built for every build-time colour,
-  // but tracked per colour so render() can hide the ones not in the wire's
-  // live s.order (ambient/spectator mounts always build all 4 colours).
+  // Home-column tiles (tinted per colour). Built for EVERY colour (not just the
+  // local build-time `order`) so a snapshot whose s.order contains a colour this
+  // client did not size for still has meshes; render() hides the ones not in the
+  // wire's live s.order via inPlay().
   const homeTiles = {};
-  for (const col of order) {
+  for (const col of COLORS) {
     homeTiles[col] = HOME[col].map(([c, r]) => addTile(c, r, pathMat[col]));
   }
   // Centre triangle plate.
@@ -237,7 +241,7 @@ export function createGame(ctx) {
   // ---- home-quadrant plates -----------------------------------------------
   const quadGeo = keep(new THREE.BoxGeometry(cell * 6, 0.003, cell * 6));
   const quadMeshes = {};
-  for (const c of order) {
+  for (const c of COLORS) {
     const [qc, qr] = QUAD[c];
     const q = meshOf(THREE, quadGeo, quadMat[c], false);
     q.position.set(gx(qc), TOP + 0.001, gz(qr));
@@ -249,7 +253,7 @@ export function createGame(ctx) {
   const tokenGeo = keep(new THREE.ConeGeometry(cell * 0.3, cell * 0.95, 14));
   const baseGeo = keep(new THREE.CylinderGeometry(cell * 0.34, cell * 0.34, cell * 0.12, 14));
   const tokenMeshes = {}; // colour -> [groupMesh,...]
-  for (const c of order) {
+  for (const c of COLORS) {
     tokenMeshes[c] = [];
     for (let i = 0; i < 4; i++) {
       const tg = new THREE.Group();
@@ -271,7 +275,7 @@ export function createGame(ctx) {
   // ---- legal-move glow rings ----------------------------------------------
   const ringGeo = keep(new THREE.TorusGeometry(cell * 0.42, cell * 0.07, 8, 22));
   const ringMeshes = {}; // colour -> [ring,...]
-  for (const c of order) {
+  for (const c of COLORS) {
     ringMeshes[c] = [];
     for (let i = 0; i < 4; i++) {
       const ring = meshOf(THREE, ringGeo, glowMat, false);
@@ -400,7 +404,10 @@ export function createGame(ctx) {
     const active = curColor(s);
     const activeSeat = curSeat(s);
 
-    for (const c of order) {
+    // Iterate ALL colours (meshes exist for every colour); inPlay() hides those
+    // not present in the live wire s.order, so a snapshot with more colours than
+    // this client's local seatCount still renders every active colour.
+    for (const c of COLORS) {
       const shown = inPlay(c);
       // Hide all geometry of a colour that is not part of the live match.
       if (quadMeshes[c]) quadMeshes[c].visible = shown;
@@ -442,7 +449,9 @@ export function createGame(ctx) {
       const col = PALETTE.ludo[active] || "#fafafa";
       M.die.color.set(col);
       showDieValue(s.die);
-      dieGroup.rotation.y = pulse * 0.4;
+      // Hold the die still while a value is shown so the single lit (+Y) face
+      // reads cleanly; a continuous Y-spin makes 2/3/6 pip patterns ambiguous.
+      dieGroup.rotation.y = 0;
     }
     void activeSeat;
     refreshLabel();
@@ -452,14 +461,14 @@ export function createGame(ctx) {
     pulse += (dt || 0.016);
     // cheap continuous refresh of the pulsing cues without rebuilding geometry
     const active = curColor(s);
-    for (const c of order) {
+    for (const c of COLORS) {
       const isActive = c === active && s.phase === "play";
       const mine = c === myColor;
       quadMat[c].emissiveIntensity = isActive ? 0.22 + 0.18 * (0.5 + 0.5 * Math.sin(pulse * 4)) : (mine ? 0.12 : 0.0);
     }
-    if (s.die != null) dieGroup.rotation.y = pulse * 0.4;
+    if (s.die != null) dieGroup.rotation.y = 0;
     if (s.phase === "play" && s.awaiting) {
-      for (const c of order) {
+      for (const c of COLORS) {
         if (c !== myColor) continue;
         const moves = legalMoves(s, c);
         for (let i = 0; i < 4; i++) {
@@ -502,7 +511,8 @@ export function createGame(ctx) {
     const color = curColor(s);
     if (!Number.isInteger(s.die) || !legalMoves(s, color).includes(idx)) return;
     const was6 = s.die === 6;
-    s = applyTokenMove(s, color, idx);
+    const res = applyTokenMove(s, color, idx);
+    s = res.ns;
     if (allHome(s, color)) {
       s.phase = "over";
       s.winner = color;
@@ -512,7 +522,8 @@ export function createGame(ctx) {
       try { ctx.onGameOver({ winner: color, reason: "home" }); } catch { /* */ }
       return;
     }
-    if (was6) { s.die = null; s.awaiting = false; } // bonus roll for the same player
+    // Bonus roll for the same player on a 6 OR on a capture (standard Ludo).
+    if (was6 || res.captured) { s.die = null; s.awaiting = false; }
     else nextTurn(s);
     pushState();
   }

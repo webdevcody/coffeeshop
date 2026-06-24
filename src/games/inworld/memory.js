@@ -218,12 +218,14 @@ export function createGame(ctx) {
 
   mineSide.bar.position.set(0, TOP + 0.004, -homeEdge);
   mineSide.lamp.position.set(BOARD_SIZE * 0.4, TOP + 0.012, -homeEdge);
-  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.004, -homeEdge);
+  // Chips sit higher than the placard so the two transparent planes never share
+  // a depth plane where their flat XZ footprints overlap (avoids z-fighting).
+  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.006, -homeEdge);
   group.add(mineSide.bar, mineSide.lamp, mineSide.chip.mesh);
 
   oppSide.bar.position.set(0, TOP + 0.004, homeEdge);
   oppSide.lamp.position.set(BOARD_SIZE * 0.4, TOP + 0.012, homeEdge);
-  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.004, homeEdge);
+  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.006, homeEdge);
   oppSide.chip.mesh.rotation.z = Math.PI; // reads upright from the far seat
   group.add(oppSide.bar, oppSide.lamp, oppSide.chip.mesh);
 
@@ -237,7 +239,7 @@ export function createGame(ctx) {
   const placardGeo = keep(new THREE.PlaneGeometry(BOARD_SIZE * 0.62, (BOARD_SIZE * 0.62 * 72) / 320));
   const placard = meshOf(THREE, placardGeo, placardMat, false);
   placard.rotation.x = -Math.PI / 2;
-  placard.position.set(0, TOP + 0.004, -BOARD_HALF - 0.05);
+  placard.position.set(0, TOP + 0.002, -BOARD_HALF - 0.05);
   group.add(placard);
 
   // Assign the two side hues onto the mine/opp materials from the LOCAL role, so

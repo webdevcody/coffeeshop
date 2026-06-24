@@ -93,7 +93,14 @@ export function winningCells(board, r, c, color) {
         cc += dc * sign;
       }
     }
-    if (line.length >= 4) return line;
+    if (line.length >= 4) {
+      // Order the run spatially along its [dr,dc] axis so a halo that
+      // interpolates winLine[i]→winLine[i+1] by index sweeps monotonically
+      // end-to-end instead of zig-zagging (the line above is built as
+      // [placed, ...forward, ...backward], which is NOT in spatial order).
+      line.sort((a, b) => (a[0] - b[0]) * dr + (a[1] - b[1]) * dc);
+      return line;
+    }
   }
   return null;
 }
@@ -163,6 +170,10 @@ export function createGame(ctx) {
   let winLine = null; // array of [r,c] or null
   let winner = null; // "red" | "yellow" | null (null + over ⇒ draw)
   let lastDrop = null; // {r,c} of the most recent landing
+  // In-flight lock: true while an animated drop is falling and the turn has not
+  // yet flipped (resolveAfter runs only once the disc settles). Gates onPointer
+  // and canPlayLocally so a rapid second click cannot drop a second disc.
+  let busy = false;
 
   // ============================================================================
   // SHARED MATERIALS + GEOMETRY (created once; freed in dispose()).
@@ -541,6 +552,7 @@ export function createGame(ctx) {
   }
 
   function spawnFalling(r, c, color) {
+    busy = true; // lock input until this disc settles and resolveAfter runs
     const d = mesh(discGeo, color === "red" ? matRed : matYellow);
     d.position.set(cellX(c), MOUTH_Y, DISC_Z);
     discRoot.add(d);
@@ -563,6 +575,7 @@ export function createGame(ctx) {
 
   // Win/draw resolution + turn flip. WIN is checked before DRAW.
   function resolveAfter(r, c, color) {
+    busy = false; // the disc has settled; the turn is about to flip / game ends
     const line = winningCells(board, r, c, color);
     if (line) {
       winLine = line;
@@ -675,7 +688,7 @@ export function createGame(ctx) {
 
   // True iff the local player may currently drop in their own colour.
   function canPlayLocally() {
-    return phase === "play" && myColor != null && turn === myColor && isAllowed();
+    return !busy && phase === "play" && myColor != null && turn === myColor && isAllowed();
   }
 
   // ============================================================================
@@ -745,8 +758,15 @@ export function createGame(ctx) {
       if (board[r] && board[r][c] === winner) winLine = winningCells(board, r, c, winner);
     }
     if (phase === "over" && winner && !winLine && Array.isArray(state.win)) {
-      const wl = state.win.filter((p) => Array.isArray(p) && p.length === 2).map(([r, c]) => [r, c]);
-      winLine = wl.length ? wl : null;
+      // Validate wire-supplied cells against the reconstructed board rather than
+      // trusting them: keep only in-grid cells that actually hold `winner`, and
+      // require a run of at least 4. A garbled/forged/stale `win` array drops to
+      // null instead of highlighting arbitrary cells.
+      const wl = state.win
+        .filter((p) => Array.isArray(p) && p.length === 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]))
+        .map(([r, c]) => [r, c])
+        .filter(([r, c]) => board[r] && board[r][c] === winner);
+      winLine = wl.length >= 4 ? wl : null;
     }
     lastDrop = state.lastDrop && Number.isInteger(state.lastDrop.r) ? { r: state.lastDrop.r, c: state.lastDrop.c } : null;
 
@@ -809,6 +829,13 @@ export function createGame(ctx) {
     const local = rack.worldToLocal(hit.point.clone());
     const u = (local.x - GRID_LEFT) / GRID_W;
     if (u < 0 || u >= 1) return null;
+    // Bound the local Y to the playable grid rows so a hit on non-cell geometry
+    // that shares the grid's X span (base slab, brass rail, turn arrow, ready
+    // lamps) does NOT resolve to a column and trigger a drop. The grid rows span
+    // roughly from the bottom hole to the top hole (plus half a cell of bezel).
+    const yBot = cellY(ROWS - 1) - CELL * 0.7;
+    const yTop = cellY(0) + CELL * 0.7;
+    if (local.y < yBot || local.y > yTop) return null;
     const c = Math.min(COLS - 1, Math.max(0, Math.floor(u * COLS)));
     const r = dropRow(board, c);
     return { r: r < 0 ? 0 : r, c };

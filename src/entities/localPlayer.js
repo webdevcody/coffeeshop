@@ -21,6 +21,10 @@ export class LocalPlayer {
     this.seats = seats;
     // The silly item you bought from the coffee bar (one at a time).
     this.heldItem = null; // { obj, def }
+    // Items dropped on the floor. Capped so repeated buy/drop can't leak GPU
+    // memory: once we exceed the cap the oldest drop is removed and disposed.
+    this.drops = [];
+    this.maxDrops = 12;
     // Walkable ground rectangles. Stand outside all of them and you fall.
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
@@ -87,7 +91,12 @@ export class LocalPlayer {
   }
 
   showChat(text) {
-    if (this.bubble) this.character.head.remove(this.bubble);
+    if (this.bubble) {
+      this.character.head.remove(this.bubble);
+      this.bubble.element?.remove();
+      this.bubble = null;
+      this.bubbleTimer = 0;
+    }
     this.bubble = makeChatBubble(text);
     this.character.head.add(this.bubble);
     this.bubbleTimer = Math.min(7, 2.5 + text.length * 0.05);
@@ -114,6 +123,14 @@ export class LocalPlayer {
     drop.position.set(fx, 0.1, fz);
     drop.rotation.y = Math.random() * Math.PI * 2;
     this.scene.add(drop);
+    this.drops.push(drop);
+    // Cap accumulated drops: remove + dispose the oldest ones beyond the limit
+    // so the scene doesn't leak geometry/material for the whole session.
+    while (this.drops.length > this.maxDrops) {
+      const old = this.drops.shift();
+      this.scene.remove(old);
+      old.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    }
   }
 
   _removeHeld() {
@@ -240,7 +257,8 @@ export class LocalPlayer {
     this.facing = Math.PI;
   }
 
-  // Nearest unoccupied-by-us seat within reach, or null.
+  // Nearest seat within reach, or null. Note: occupancy isn't tracked on the
+  // client, so this may return a seat a remote player is already using.
   _nearestSeat() {
     let best = null;
     let bestD = SEAT.range * SEAT.range;

@@ -39,7 +39,11 @@ const MIME = {
 
 function safeJoin(base, target) {
   const resolved = path.normalize(path.join(base, target));
-  if (!resolved.startsWith(base)) return null; // path traversal guard
+  // Prefix check must include the separator, otherwise a sibling directory whose
+  // name merely *begins* with the base name (e.g. `/dist` vs `/distfoo`) would
+  // slip past `startsWith(base)`. Allow the bare base itself (e.g. index path).
+  const root = base + path.sep;
+  if (resolved !== base && !resolved.startsWith(root)) return null; // path traversal guard
   return resolved;
 }
 
@@ -282,15 +286,22 @@ function assignSeat(id, msg) {
     tables.set(tableId, t);
   }
 
+  // Seats are a FIXED-INDEX array: a mid-game guest leave nulls its slot rather
+  // than splicing, so every remaining player's seat index (used for turn gating)
+  // stays stable. Count/fill against real occupants, not array length.
+  const occupied = t.seats.filter(Boolean).length;
   let role;
-  if (t.seats.length === 0) {
+  if (occupied === 0) {
     // First to sit hosts; the game is chosen next via "choose-game".
-    t.seats.push(id);
+    t.seats[0] = id;
     t.gameId = null;
     t.roomId = null;
     role = "host";
-  } else if (t.seats.length < t.capacity && !t.seats.includes(id)) {
-    t.seats.push(id);
+  } else if (occupied < t.capacity && !t.seats.includes(id)) {
+    // Fill the first vacated (null) slot if any, else append, keeping indices stable.
+    const hole = t.seats.indexOf(null);
+    if (hole >= 0) t.seats[hole] = id;
+    else t.seats.push(id);
     role = "guest";
   } else if (!t.seats.includes(id) && t.spectators.size < SPECTATOR_LIMIT) {
     // All player seats are taken — anyone else who sits watches the match. They
@@ -353,10 +364,12 @@ function chooseSeatGame(id, msg) {
   // The chosen game may want more than two players. Promote early spectators —
   // who only became spectators because the capacity wasn't known yet — into the
   // now-open player seats, in the order they sat down.
-  while (t.seats.length < t.capacity && t.spectators.size > 0) {
+  while (t.seats.filter(Boolean).length < t.capacity && t.spectators.size > 0) {
     const pid = t.spectators.values().next().value;
     t.spectators.delete(pid);
-    t.seats.push(pid);
+    const hole = t.seats.indexOf(null);
+    if (hole >= 0) t.seats[hole] = pid;
+    else t.seats.push(pid);
     const pc = clients.get(pid);
     if (pc) pc.player.gameRole = "guest";
   }
@@ -370,7 +383,7 @@ function chooseSeatGame(id, msg) {
       });
     }
   };
-  t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest", i));
+  t.seats.forEach((pid, i) => { if (pid) announce(pid, i === 0 ? "host" : "guest", i); });
   for (const sid of t.spectators) announce(sid, "spectator", null); // onlookers who sat before the pick
 
   // PASSERSBY: emit an immediate ambient frame for the newly-chosen game so
@@ -411,13 +424,15 @@ function releaseSeat(id) {
   // tells it that player left. Only when the host leaves (or it's a two-player
   // game) does the whole match end.
   if (seatIdx > 0 && t.capacity > 2) {
-    t.seats.splice(seatIdx, 1);
+    // Null the slot instead of splicing so the remaining players' seat indices
+    // (which modules use to gate turns via the relay's bySeat) stay stable.
+    t.seats[seatIdx] = null;
     return;
   }
 
   // The host (or either player in a 1v1) left → end the match for everyone else
   // and free the table so the next group starts on a clean room.
-  const notify = [...t.seats.filter((pid) => pid !== id), ...t.spectators];
+  const notify = [...t.seats.filter((pid) => pid && pid !== id), ...t.spectators];
   for (const pid of notify) {
     const pc = clients.get(pid);
     if (pc) {
@@ -622,7 +637,7 @@ wss.on("connection", (ws) => {
         const bySeat = st.t.seats.indexOf(id);
         const out = { type: "game-move", table: st.tid, byRole: st.role, byId: id, bySeat, move: msg.move };
         for (const pid of st.t.seats) {
-          if (pid === id) continue;
+          if (!pid || pid === id) continue;
           const pc = clients.get(pid);
           if (pc) send(pc.ws, out);
         }
@@ -642,7 +657,7 @@ wss.on("connection", (ws) => {
         st.t.full = msg.full ?? null;
         st.t.pub = msg.pub ?? msg.full ?? null;
         for (const pid of st.t.seats) {
-          if (pid === id) continue;
+          if (!pid || pid === id) continue;
           const pc = clients.get(pid);
           if (pc) send(pc.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
         }
@@ -678,9 +693,19 @@ wss.on("connection", (ws) => {
         if (!st || (st.role !== "host" && st.role !== "guest")) break;
         st.t.full = null;
         st.t.pub = null;
-        const out = { type: "game-reset", table: st.tid };
+        // A host-sent `toMenu` reset means the match truly ended and the host is
+        // returning to the flip-book menu (not a "play again" on the same game).
+        // Unlock the table's game choice so chooseSeatGame's `if (t.gameId) return;`
+        // guard no longer permanently pins the table to its first game, and the
+        // ambient mirror transitions back to the menu state.
+        const toMenu = !!msg.toMenu && st.t.seats[0] === id;
+        if (toMenu) {
+          st.t.gameId = null;
+          st.t.roomId = null;
+        }
+        const out = { type: "game-reset", table: st.tid, toMenu };
         for (const pid of st.t.seats) {
-          if (pid === id) continue;
+          if (!pid || pid === id) continue;
           const pc = clients.get(pid);
           if (pc) send(pc.ws, out);
         }

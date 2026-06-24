@@ -254,7 +254,10 @@ export function createGame(ctx) {
 
   function setDisc(r, c, color, animate) {
     const d = ensureDisc(r, c, color);
-    if (animate) {
+    // Only animate when an animation loop is actually available; otherwise
+    // (headless / non-rAF env) swap the material immediately and leave busy
+    // false so input is never permanently gated by a loop that can't run.
+    if (animate && typeof requestAnimationFrame !== "undefined") {
       flips.push({ mesh: d, t: 0, dur: 0.3, to: color, swapped: false });
       busy = true;
       startLoop();
@@ -463,6 +466,19 @@ export function createGame(ctx) {
       phase = state.phase === "over" ? "over" : "play";
       winner = state.winner === "black" || state.winner === "white" ? state.winner : null;
     }
+    // Reconcile a pass/game-over position the snapshot may not have advanced:
+    // if the side to move has no legal move, auto-pass to the opponent, or end
+    // the game when neither side can move. Keeps turn/phase consistent so the
+    // local player isn't left stuck on an unplayable turn.
+    if (phase === "play") {
+      if (!hasMove(board, turn)) {
+        if (!hasMove(board, other(turn))) {
+          endGame();
+        } else {
+          turn = other(turn);
+        }
+      }
+    }
     paint();
   }
 
@@ -490,6 +506,17 @@ export function createGame(ctx) {
     rafId = 0;
     flips.length = 0;
     clearGhosts();
+    // Detach + null any live disc meshes so a reparented/reused group can't
+    // reference disposed (shared) materials or stale meshes.
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const d = discs[r][c];
+        if (d) {
+          group.remove(d);
+          discs[r][c] = null;
+        }
+      }
+    }
     if (group.parent) group.parent.remove(group);
     base.dispose();
     for (const o of owned) o.dispose?.();
