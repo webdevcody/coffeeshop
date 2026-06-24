@@ -128,6 +128,13 @@ export function mountAmbientBoard(opts) {
 }
 
 export class InWorldBoard {
+  // How long after a spectator applies a relayed move the framework will swallow a
+  // single redundant authoritative snapshot (the host's post-move `pub` echo) so an
+  // in-flight move animation isn't snapped away. Comfortably covers the relay round
+  // of sendMove→sendState landing back-to-back, while staying short enough that a
+  // genuine later snapshot (recovery / next move) is never suppressed.
+  static _SPEC_SNAP_WINDOW_MS = 1500;
+
   // deps: { scene, camera, getCanvas, controls, network, tables, getLocal, getGameMeta }
   //   tables   : Map(tableId -> THREE.Group) from buildCoffeeshop
   //   getLocal : () => the LocalPlayer (for seated/seat checks)
@@ -291,6 +298,19 @@ export class InWorldBoard {
   _onMove(m) {
     const a = this.active;
     if (!this._sameTable(m) || !a) return;
+    // BUG 2 (mid-join spectator stale base): a freshly-mounted spectator is on the
+    // live game-move relay (PUBLIC_RELAY) the instant it watches, but its catch-up
+    // pub snapshot is async and may land AFTER the next relayed move. Applying that
+    // move against the module's constructor-initial board (not the true mid-game
+    // position) paints a transient wrong render — and modules that derive the mover
+    // from local `turn` (reversi/checkers/gomoku) can do so without throwing, so the
+    // self-healing resync path never fires. Gate: a spectator only starts consuming
+    // relayed deltas once it has applied its first authoritative snapshot (_hydrated,
+    // set in _onState). Until then, drop the move — the pending snapshot already
+    // carries the full position, and the host pushes a fresh snapshot after every
+    // move, so nothing is lost. Seated host/guest are unaffected (their catch-up
+    // `full` arrives on the seat assign before relayed moves and they start hydrated).
+    if (a.role === "spectator" && !a._hydrated) return;
     // Per-seat identity of the mover. 2-player modules can keep reading the 2nd
     // arg as `byRole`; multi-seat modules (ludo) read the 3rd arg `by` to learn
     // WHICH seat moved (by.seatIndex) and enforce whose turn it is. by.seatIndex
@@ -322,10 +342,42 @@ export class InWorldBoard {
     try {
       const ok = a.instance.applyMove?.(m.move, m.byRole, by);
       if (ok === false) this._requestResync();
+      else if (a.role === "spectator" && a.instance.spectatorAnimates !== false) {
+        // BUG 1 (spectator animations snapped away): the host commits a move with
+        // net.sendMove THEN net.sendState, so for a full-info game a spectator
+        // reliably receives the host's post-move `pub` snapshot a few ms after the
+        // relayed move. applyState tears down in-flight animation (clears hops/
+        // flips/falling discs) and hard-snaps to the authoritative layout, so the
+        // glide/flip/fall the move just started is aborted and the watcher sees a
+        // teleport. Since applyMove already converged the spectator to the same
+        // logical position the snapshot describes, suppress exactly ONE following
+        // snapshot (the redundant post-move push) so the animation can complete.
+        // We only swallow the immediate echo: a stale/recovery snapshot arriving
+        // later than _SPEC_SNAP_WINDOW_MS, or a second snapshot, still applies and
+        // re-converges. Tracked with a deadline so a dropped echo can't suppress an
+        // unrelated later snapshot indefinitely.
+        //
+        // The skip is OPT-OUT: it is correct ONLY for full-info turn-based modules
+        // whose spectator applyMove actually applies + animates the relayed move
+        // (uttt, mancala, connect4, …). Snapshot-driven modules (ludo, pong, tron)
+        // render spectators PURELY from authoritative snapshots — their spectator
+        // applyMove is a no-op — so for them the post-move snapshot is NOT a
+        // redundant echo of an animation in flight; it carries the only state the
+        // spectator will ever see. Swallowing it strands the spectator one move
+        // behind (e.g. a guest's ludo roll/token advance vanishes for ~1.5s).
+        // Those modules export `spectatorAnimates: false` to skip arming the window.
+        a._specSkipSnapUntil = this._now() + InWorldBoard._SPEC_SNAP_WINDOW_MS;
+      }
     } catch (err) {
       if (err instanceof GameDesync) this._requestResync();
       else throw err;
     }
+  }
+
+  _now() {
+    return typeof performance !== "undefined" && performance.now
+      ? performance.now()
+      : Date.now();
   }
 
   _onState(m) {
@@ -344,8 +396,21 @@ export class InWorldBoard {
     if (a.role === "host") return;
     const state = m.full != null ? m.full : m.pub;
     if (state == null) return;
+    // BUG 1: a spectator that just consumed the relayed move for this snapshot
+    // suppresses exactly the redundant post-move echo so its in-flight animation
+    // is not snapped away (see _onMove). The window is one-shot and time-bounded:
+    // clear it whether or not it was still in force, so only the immediate echo is
+    // ever swallowed and the very next snapshot always applies.
+    if (a.role === "spectator" && a._specSkipSnapUntil != null) {
+      const skip = this._now() <= a._specSkipSnapUntil;
+      a._specSkipSnapUntil = null;
+      if (skip) return;
+    }
     try {
       a.instance.applyState?.(state);
+      // BUG 2: the spectator now has a true authoritative base — relayed deltas may
+      // be applied from here on (gated in _onMove until this first hydration).
+      a._hydrated = true;
     } catch {
       /* a bad snapshot must not crash the loop */
     }
@@ -438,6 +503,16 @@ export class InWorldBoard {
       hidden,
       anchorY,
       ctxExtra: opts.ctxExtra || null,
+      // Spectator sync bookkeeping (board.js only — see _onMove/_onState).
+      //   _hydrated          : true once the first authoritative applyState has run,
+      //                         so relayed deltas have a true base to apply against.
+      //                         A host/guest start hydrated (host is authoritative;
+      //                         a guest's catch-up `full` precedes relayed moves).
+      //   _specSkipSnapUntil  : deadline (ms) during which one redundant post-move
+      //                         pub snapshot is swallowed so a spectator animation
+      //                         isn't snapped away. null = none pending.
+      _hydrated: role !== "spectator",
+      _specSkipSnapUntil: null,
     };
 
     const ctx = this._makeCtx(a);

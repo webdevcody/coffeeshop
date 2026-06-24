@@ -765,6 +765,15 @@ export function createGame(ctx) {
     const movedColor = byRole ? colorForRole(byRole) : turn;
     if (movedColor && movedColor !== turn) throw new GameDesync("connect4: out-of-turn relayed move");
     commit(col, turn, /*animate*/ true);
+    // The host applied the GUEST's relayed drop locally; re-broadcast the full
+    // authoritative public snapshot so server.js re-caches t.pub and fires
+    // broadcastAmbient() (which it does ONLY on game-state, never on the
+    // game-move relay). Without this the passersby ambient mirror, late-join
+    // spectators and any _requestResync replay stay one ply stale on yellow's
+    // moves (and miss a guest winning move entirely) until red drops next.
+    // pushState() self-gates with `if (role !== "host") return;`, so guest/
+    // spectator mounts that run applyMove are unaffected. Mirrors onPointer().
+    pushState();
     return true;
   }
 

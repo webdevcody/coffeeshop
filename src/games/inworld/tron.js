@@ -75,8 +75,11 @@ export function createGame(ctx) {
   // NEVER recomputed inside applyState() — host = cycle 0 (cyan, near edge, moves
   // first/COLOR_A), guest = cycle 1 (orange, far edge, COLOR_B), spectator = null
   // (read-only). A relayed snapshot can never flip the local player's colour/side.
-  const mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
-  const myColorIdx = mySeat;
+  // NOTE: these are derived from role but MUST be re-derivable on an in-place role
+  // change (setRole), so they are `let`, not `const`. A spectator demoted-from /
+  // promoted-to a seat re-binds its identity cues via applyIdentity() in setRole().
+  let mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
+  let myColorIdx = mySeat;
 
   // ---- authoritative / mirrored game state ----
   let grid = makeArena();
@@ -120,8 +123,14 @@ export function createGame(ctx) {
   const owned = [];
   const keep = (x) => (owned.push(x), x);
   const COLORS = [PALETTE.tron0, PALETTE.tron1];
-  const myColor = myColorIdx != null ? COLORS[myColorIdx] : null;
+  let myColor = myColorIdx != null ? COLORS[myColorIdx] : null;
 
+  // IDENTITY CUE materials (myHead/mine) depend on which seat is local, so they are
+  // (re)built lazily in buildIdentityMaterials() and swapped on an in-place role
+  // change. The two per-seat colours (t0/t1/head0/head1) are seat-fixed and built
+  // once. Identity materials are tracked in `ownedIdentity` so a rebuild can dispose
+  // the prior pair without leaking.
+  const ownedIdentity = [];
   const M = {
     floor: keep(standard(THREE, "#081c2e", { roughness: 0.7 })),
     // Two CLEARLY DISTINCT trail materials: cyan (tron0) vs orange (tron1).
@@ -131,10 +140,24 @@ export function createGame(ctx) {
     head1: keep(standard(THREE, "#ffe0c0", { emissive: COLORS[1], emissiveIntensity: 0.9 })),
     // IDENTITY CUE: the LOCAL cycle's head out-glows the opponent's; halo + home
     // strip in the local colour. Spectators get none (myColor == null).
-    myHead: myColor ? keep(standard(THREE, "#ffffff", { emissive: myColor, emissiveIntensity: 1.8 })) : null,
-    mine: myColor ? keep(standard(THREE, myColor, { emissive: myColor, emissiveIntensity: 0.9, transparent: true, opacity: 0.5, depthWrite: false })) : null,
+    myHead: null,
+    mine: null,
     grid: keep(standard(THREE, "#0f2a40", { roughness: 0.85 })),
   };
+  function buildIdentityMaterials() {
+    // Dispose any prior identity pair (from a previous role) before rebuilding.
+    for (const o of ownedIdentity) o.dispose?.();
+    ownedIdentity.length = 0;
+    if (myColor) {
+      M.myHead = standard(THREE, "#ffffff", { emissive: myColor, emissiveIntensity: 1.8 });
+      M.mine = standard(THREE, myColor, { emissive: myColor, emissiveIntensity: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
+      ownedIdentity.push(M.myHead, M.mine);
+    } else {
+      M.myHead = null;
+      M.mine = null;
+    }
+  }
+  buildIdentityMaterials();
 
   const AW = BOARD_SIZE * 0.94, AH = AW * (ROWS / COLS);
   const cw = AW / COLS, chh = AH / ROWS;
@@ -153,26 +176,40 @@ export function createGame(ctx) {
   const trailMeshes = new Map();
 
   // IDENTITY CUE: the LOCAL cycle's head uses the brighter myHead material.
+  // applyHeadMaterials() reassigns these on an in-place role change so the bright
+  // local-head cue tracks the current seat (and clears for a demoted spectator).
   const headMeshes = [
-    meshOf(THREE, headGeo, myColorIdx === 0 && M.myHead ? M.myHead : M.head0),
-    meshOf(THREE, headGeo, myColorIdx === 1 && M.myHead ? M.myHead : M.head1),
+    meshOf(THREE, headGeo, M.head0),
+    meshOf(THREE, headGeo, M.head1),
   ];
   for (const h of headMeshes) { h.position.y = TOP + 0.014; group.add(h); }
+  function applyHeadMaterials() {
+    headMeshes[0].material = myColorIdx === 0 && M.myHead ? M.myHead : M.head0;
+    headMeshes[1].material = myColorIdx === 1 && M.myHead ? M.myHead : M.head1;
+  }
+  applyHeadMaterials();
 
   // IDENTITY CUE: a soft halo that tracks the local cycle, plus a glowing home
   // strip across the local player's own SPAWN edge (near edge after rotation).
+  // Geometry is built once and kept; the meshes are (re)created/removed by
+  // buildIdentityMeshes() so an in-place role change rebinds them to the new seat.
+  const haloGeo = keep(new THREE.BoxGeometry(cw * 2.6, 0.002, chh * 2.6));
+  const stripGeo = keep(new THREE.BoxGeometry(AW * 0.96, 0.002, chh * 1.8));
   let myHalo = null, myHomeStrip = null;
-  if (M.mine && myColorIdx != null) {
-    const haloGeo = keep(new THREE.BoxGeometry(cw * 2.6, 0.002, chh * 2.6));
-    myHalo = meshOf(THREE, haloGeo, M.mine, false);
-    myHalo.position.y = TOP + 0.006;
-    group.add(myHalo);
-    const spawn = SPAWN[myColorIdx];
-    const stripGeo = keep(new THREE.BoxGeometry(AW * 0.96, 0.002, chh * 1.8));
-    myHomeStrip = meshOf(THREE, stripGeo, M.mine, false);
-    myHomeStrip.position.set(0, TOP + 0.004, gz(spawn.y));
-    group.add(myHomeStrip);
+  function buildIdentityMeshes() {
+    if (myHalo) { group.remove(myHalo); myHalo = null; }
+    if (myHomeStrip) { group.remove(myHomeStrip); myHomeStrip = null; }
+    if (M.mine && myColorIdx != null) {
+      myHalo = meshOf(THREE, haloGeo, M.mine, false);
+      myHalo.position.y = TOP + 0.006;
+      group.add(myHalo);
+      const spawn = SPAWN[myColorIdx];
+      myHomeStrip = meshOf(THREE, stripGeo, M.mine, false);
+      myHomeStrip.position.set(0, TOP + 0.004, gz(spawn.y));
+      group.add(myHomeStrip);
+    }
   }
+  buildIdentityMeshes();
 
   // ---- in-world status banner (countdown / round / winner) ----
   // A canvas-textured sprite rendered above the arena centre. Driven entirely by
@@ -537,7 +574,21 @@ export function createGame(ctx) {
   }
 
   function onPointer() { /* real-time: keyboard only */ }
-  function setRole(r) { role = r || "spectator"; }
+  function setRole(r) {
+    role = r || "spectator";
+    // IDENTITY is role-derived and must follow an in-place role change so a watcher
+    // never keeps a stale "this is YOU" cue (demoted host) and a promoted seat gains
+    // its own-cycle cue. Recompute seat/colour, rebuild the identity materials +
+    // halo/home-strip meshes, and reassign the head materials. Wire-derived game
+    // state (cycles/grid/scores) is untouched; the next applyState repaints it.
+    mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
+    myColorIdx = mySeat;
+    myColor = myColorIdx != null ? COLORS[myColorIdx] : null;
+    buildIdentityMaterials();
+    applyHeadMaterials();
+    buildIdentityMeshes();
+    renderGrid();
+  }
   // board.js re-rotates the group by orientFor(seatRy) on an in-place seat move
   // and calls this; the arena + cues are authored canonically so the rotation is
   // all that's needed. Track seatRy and reference orientFor so the contract is
@@ -548,12 +599,16 @@ export function createGame(ctx) {
     clearTrails();
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
+    for (const o of ownedIdentity) o.dispose?.();
   }
 
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
   renderGrid();
-  return { group, applyState, applyMove: () => true, onPointer, onInput, update, publicState, setRole, setSeatRy, dispose };
+  // spectatorAnimates:false — real-time, snapshot-driven: applyMove is a no-op and
+  // spectators render only from streamed state, so board.js must NOT swallow
+  // post-move snapshots (see InWorldBoard._onMove, BUG 1).
+  return { group, spectatorAnimates: false, applyState, applyMove: () => true, onPointer, onInput, update, publicState, setRole, setSeatRy, dispose };
 }
 
 export default createGame;

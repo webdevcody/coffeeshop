@@ -1,6 +1,7 @@
 // Battleship — in-world 3D table game module (createGame contract).
 //
-// CANDIDATE VARIATION #7 — "self-oriented dual ocean, billboard HUD."
+// CANDIDATE VARIATION #0 — "labelled control pillars, hover crosshair reticle,
+// canvas fleet-panel placards."
 //
 // A COMPLETE, self-contained ES module implementing createGame(ctx) → GameInstance
 // per ./createGame.js. The framework (board.js → InWorldBoard) owns the café table,
@@ -8,45 +9,38 @@
 // module owns the rules, the 3D geometry (meshes parented to the table group) and
 // per-cell hit-testing.
 //
-// WHAT THIS VARIATION FIXES vs the broken module:
+// WHAT THIS VARIATION DOES DIFFERENTLY (distinct UX/impl from sibling candidates,
+// while satisfying the identical contract):
 //
-//   (1) SIDES WERE SWAPPED. The canonical near edge of a board (the one the
-//       framework rotates toward the local seat) is row 0 / −Z (see createGame.js
-//       and the other modules, e.g. checkers). The broken module authored YOUR
-//       OCEAN at +Z (FAR) and ENEMY WATERS at −Z (NEAR) — so your fleet landed on
-//       the far grid and you were aiming at your own ocean. Here YOUR OCEAN is at
-//       the near −Z edge and ENEMY WATERS at the far +Z edge, so you place ships in
-//       front of you and fire across the table.
+//   (A) The original DOM iframe's controls read as labelled buttons ("Rotate",
+//       "Randomize", "Clear", "Ready ▸"). Here each in-world control is a raised
+//       PILLAR whose top face carries a canvas-textured LABEL, so the player sees
+//       the same words on the table — not a blank coloured box. Ready is greyed
+//       (disabled tint + "Ready ▸" → kept dim) until all 5 ships are placed, exactly
+//       as the original gates its READY control.
 //
-//   (2) BOTH SEATS MUST SEE THEIR OWN OCEAN NEAREST. Host and guest sit on OPPOSITE
-//       chairs. We declare orientPolicy:"self" (board.js then does NOT rotate the
-//       group) and rotate the group OURSELVES by orientFor(seatRy) ALONE. Because
-//       each client renders with its OWN seatRy, orientFor() brings THAT seat's own
-//       near edge (local −Z ocean, authored once) to the front for everyone:
-//       host orientFor(0)=0 keeps −Z near; guest orientFor(~PI)=PI maps local −Z to
-//       world +Z, nearest the guest. No extra per-role PI is added — that would
-//       double-count the opposite seat and flip the guest into the host's frame.
-//       So host sees host-blue ocean near, guest sees guest-amber ocean near,
-//       opponent across — and applyState NEVER recomputes role/colour from the wire
-//       (no side-flip).
+//   (B) Instead of bobbing target rings on every un-fired enemy cell, this variation
+//       uses a single HOVER CROSSHAIR RETICLE that follows the pointer over enemy
+//       waters via the framework's setHover() routing — closer to the original's
+//       "aimed cell" affordance ("Pick a target on enemy waters"). The reticle turns
+//       red/locked over already-fired cells. A faint live tint still marks the whole
+//       enemy grid as "active" on your turn.
 //
-//   (3) A REAL, ALWAYS-ON HUD. A floating billboard placard above the board states
-//       the phase ("Place your fleet" / "YOUR TURN — fire!" / "Waiting for opponent"
-//       / win-lose), the ships-remaining count, and the rotate/ready hint during
-//       placement. In-world status chips track each enemy ship sunk. If the host
-//       provides an optional ctx.onHud(text) callback we also push the same line to
-//       it (DOM HUD friendly), but we never DEPEND on a DOM HUD.
+//   (C) The fleet-status panels are CANVAS PLACARDS (one per side) drawn to mimic the
+//       original's .fleet-panel / .ship-row / .pips look: each of the 5 ships listed
+//       by name with live/sunk pips, the row struck through + dimmed when SUNK. The
+//       spectator sees both panels; a seated player sees the enemy panel (ships they
+//       must sink) prominently and their own losses.
 //
-//   (4) FIRING WORKS END TO END. Clicking an un-fired ENEMY-WATERS cell on your turn
-//       lobs a torpedo, the DEFENDER resolves it against their own private grid and
-//       replies with only {result}, turns alternate strictly (a hit does NOT grant a
-//       second shot), and the match ends when a whole fleet is sunk.
+// Everything else follows the spec's exact flow + the createGame contract:
+// orientPolicy:"self" self-orientation (each seat's own −Z ocean nearest), hidden-
+// info safety (only shots/results on the wire, layout revealed cosmetically post-
+// game), public-only snapshots for spectators, strict single-shot alternation,
+// host-only start, turn derived purely from public shot counts on resync.
 //
-// HIDDEN-INFO SAFETY: a player's fleet positions NEVER cross the wire while the game
-// is live. A {fire,x,y} is resolved by the DEFENDER against their OWN private grid;
-// the reply is only {result,x,y,outcome,sunk?}. publicState() exposes ONLY the two
-// shot streams + readiness + sunk lists — never any ship placement. The only time a
-// layout is serialized is the cosmetic post-game {reveal}, after the game is decided.
+// CANONICAL CONVENTION (createGame.js): row 0 / y 0 is the −Z edge = NEAREST the
+// local seat after orientation. YOUR OCEAN sits at −Z (near); ENEMY WATERS at +Z
+// (far). You place ships in front of you and fire across the table.
 //
 // WIRE FORMAT (only shot coordinates + outcomes ever leave the device):
 //   { type:"place",  ready:true }                                  // I placed all ships
@@ -59,15 +53,13 @@
 //   { phase, turn, first, winner, ready:{host,guest},
 //     shots:{ host:[{x,y,outcome,sunk?}...], guest:[...] },
 //     sunk:{ host:[shipId...], guest:[shipId...] } }
-//   shots.host = shots host fired at the GUEST's ocean (and vice-versa). No
-//   occupancy, no hull, no placement anywhere — by design.
+//   No occupancy, no hull, no placement anywhere — by design.
 
 import { GameDesync, orientFor } from "./createGame.js";
 
 // ===========================================================================
 // PURE RULES — transport-free, self-contained.
-// 10×10 grid, classic 5-ship fleet (17 cells), allowTouching = true, three
-// outcomes (miss/hit/sunk), strict single-shot alternation.
+// 10×10 grid, classic 5-ship fleet (17 cells), allowTouching = true.
 // ===========================================================================
 export const GRID = 10;
 export const FLEET = [
@@ -185,10 +177,7 @@ export function validLayout(layout) {
 
 // ===========================================================================
 // GEOMETRY CONSTANTS (metres, in the board group's local XZ plane).
-//
-// CANONICAL CONVENTION (createGame.js): row 0 / y 0 is the −Z edge = NEAREST the
-// local seat after orientation. So YOUR OCEAN sits at −Z (near) and ENEMY WATERS
-// at +Z (far). col → local X, row(=y) → local Z within a grid.
+// YOUR OCEAN at −Z (near); ENEMY WATERS at +Z (far). col → X, row(=y) → Z.
 // ===========================================================================
 const PLAY = 0.66;
 const CELL = PLAY / GRID;
@@ -196,7 +185,6 @@ const HALF = PLAY / 2;
 
 const GRID_GAP = CELL * 1.1;
 const GRID_SPAN = CELL * GRID;
-// YOUR OCEAN at the near −Z edge; ENEMY WATERS at the far +Z edge.
 const OCEAN_CZ = -(GRID_SPAN + GRID_GAP) / 2;
 const ENEMY_CZ = (GRID_SPAN + GRID_GAP) / 2;
 
@@ -225,9 +213,9 @@ export function createGame(ctx) {
   const hudHook = typeof ctx.onHud === "function" ? ctx.onHud : null;
 
   // ── Phase / turn state ──────────────────────────────────────────────────
-  let phase = "placement";   // "placement" | "playing" | "over"
+  let phase = "placement"; // "placement" | "playing" | "over"
   let myTurn = false;
-  let first = null;          // "host" | "guest"
+  let first = null; // "host" | "guest"
   let winner = null;
   const ready = { host: false, guest: false };
 
@@ -247,13 +235,13 @@ export function createGame(ctx) {
   // ── Placement-phase interaction state ───────────────────────────────────
   let placeIndex = 0;
   let ghostOrient = "horizontal";
-  let hoverCell = null;
+  let hoverCell = null; // last placement cell (ocean) under pointer
+  let aimCol = -1; // hover col over enemy waters (from setHover routing)
+  let aimRow = -1; // hover row over enemy waters (resolved on hover raycast)
 
   // ===========================================================================
-  // Shared materials + geometries (created once; freed in dispose()).
-  //
-  // The two SIDES read in clearly distinct colours: HOST = steel blue, GUEST =
-  // amber. The local player's own hulls + ocean trim use their side colour.
+  // Materials + geometries (created once; freed in dispose()).
+  // HOST = steel blue, GUEST = amber. Local hulls + ocean trim use side colour.
   // ===========================================================================
   const SIDE_COLOR = { host: "#3f7fd6", guest: "#e0962f" };
   const myHullColor = mySide ? SIDE_COLOR[mySide] : "#5a636b";
@@ -274,15 +262,16 @@ export function createGame(ctx) {
     shell: new THREE.MeshStandardMaterial({ color: "#f0d28a", roughness: 0.4, metalness: 0.3, emissive: "#3a2a00", emissiveIntensity: 0.3 }),
     ghostOk: new THREE.MeshStandardMaterial({ color: "#4fd18a", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.55, depthWrite: false }),
     ghostBad: new THREE.MeshStandardMaterial({ color: "#e2503c", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.5, depthWrite: false }),
-    target: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.85, depthWrite: false }),
-    aim: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.5, depthWrite: false }),
+    enemyLive: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.16, depthWrite: false }),
+    target: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.8, depthWrite: false }),
+    reticleOk: new THREE.MeshBasicMaterial({ color: "#7fffb0", transparent: true, opacity: 0.95, depthWrite: false }),
+    reticleBad: new THREE.MeshBasicMaterial({ color: "#ff6a5a", transparent: true, opacity: 0.95, depthWrite: false }),
     splash: new THREE.MeshBasicMaterial({ color: "#eef6ff", transparent: true, opacity: 0.9, depthWrite: false }),
     ember: new THREE.MeshBasicMaterial({ color: "#ff6a3c", transparent: true, opacity: 0.95, depthWrite: false }),
-    btnIdle: new THREE.MeshStandardMaterial({ color: "#27506f", roughness: 0.5, metalness: 0.2, emissive: "#0a1c2a", emissiveIntensity: 0.4 }),
-    btnGo: new THREE.MeshStandardMaterial({ color: "#2f8a5a", roughness: 0.45, metalness: 0.2, emissive: "#0c3320", emissiveIntensity: 0.6 }),
+    pillarIdle: new THREE.MeshStandardMaterial({ color: "#27506f", roughness: 0.5, metalness: 0.2, emissive: "#0a1c2a", emissiveIntensity: 0.4 }),
+    pillarGo: new THREE.MeshStandardMaterial({ color: "#2f8a5a", roughness: 0.45, metalness: 0.2, emissive: "#0c3320", emissiveIntensity: 0.6 }),
+    pillarDim: new THREE.MeshStandardMaterial({ color: "#39444c", roughness: 0.7, metalness: 0.1, emissive: "#0a0e12", emissiveIntensity: 0.2 }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
-    statusLive: new THREE.MeshStandardMaterial({ color: "#3a4750", roughness: 0.6, metalness: 0.3 }),
-    statusDead: new THREE.MeshStandardMaterial({ color: "#8a1c0c", roughness: 0.5, metalness: 0.2, emissive: "#3a0a02", emissiveIntensity: 0.5 }),
   };
 
   const G = {
@@ -292,8 +281,7 @@ export function createGame(ctx) {
     emberPeg: new THREE.SphereGeometry(CELL * 0.2, 12, 10),
     shell: new THREE.SphereGeometry(CELL * 0.12, 10, 8),
     ring: new THREE.TorusGeometry(CELL * 0.34, CELL * 0.05, 8, 22),
-    btn: new THREE.BoxGeometry(CELL * 1.25, CELL * 0.45, CELL * 0.7),
-    statusChip: new THREE.BoxGeometry(CELL * 0.7, CELL * 0.22, CELL * 0.22),
+    pillar: new THREE.BoxGeometry(CELL * 1.4, CELL * 0.5, CELL * 0.95),
   };
 
   function cellX(x) { return -HALF + (x + 0.5) * CELL; }
@@ -307,35 +295,34 @@ export function createGame(ctx) {
   const oceanShotMarks = new Map(); // enemy shots landing on MY ocean
   const enemyShotMarks = new Map(); // MY shots on enemy waters
   let ghostMesh = null;
-  const placeButtons = [];
-  const targetRings = [];
-  let aimPlate = null;
-  const statusChips = { host: [], guest: [] };
+  const placeButtons = []; // { mesh, btn, label, tex, cv }
+  let enemyLivePlate = null;
+  let reticle = null;
+  let laneMesh = null;
+  const targetRings = []; // bobbing rings on un-fired enemy cells (my turn)
 
-  // HUD billboard (canvas-textured plane, hovering above the board, faces camera).
+  // Fleet-status placards (canvas-textured planes). Spectator: both. Seated: one
+  // for the enemy fleet (what I must sink) and one for my own losses.
+  const panels = []; // { mesh, cv, tex, firer }
+
+  // HUD billboard (canvas-textured plane above the board, faces camera).
   let hudMesh = null;
 
-  // Self-orientation: rotate the WHOLE group so the local player's own ocean
-  // (authored at −Z) lands nearest them. board.js does NOT rotate us
-  // (orientPolicy:"self"). Each client renders with its OWN seatRy, and
-  // orientFor(seatRy) ALONE brings that seat's near edge (local −Z, our ocean)
-  // to the front — INCLUDING the opposite guest chair, where orientFor(~PI)===PI
-  // already maps local −Z to world +Z (nearest the guest). There is NO extra
-  // per-role PI: adding one would double-count the opposite seat and flip the
-  // guest back into the host's frame (placing/firing on the wrong grids).
+  // Each client renders with its OWN seatRy; orientFor(seatRy) ALONE brings that
+  // seat's near edge (local −Z ocean) to the front. No extra per-role PI.
   function applyFacing() {
     group.rotation.y = orientFor(seatRy);
   }
 
   buildStaticBoard();
   buildColliders();
-  buildStatusChips();
+  buildPanels();
   buildHud();
   applyFacing();
 
   // ===========================================================================
   // Static geometry: base panel + two 10×10 water grids + coloured frame bands +
-  // floating placement buttons.
+  // labelled control pillars.
   // ===========================================================================
   function buildStaticBoard() {
     const baseW = PLAY + CELL * 0.5;
@@ -358,8 +345,8 @@ export function createGame(ctx) {
       }
     }
 
-    // Coloured frame band around each grid: YOUR-side colour around your ocean,
-    // an enemy red band around enemy waters — an at-a-glance "this is mine".
+    // Coloured frame band around each grid: your-side colour around your ocean,
+    // enemy red around enemy waters — an at-a-glance "this is mine / theirs".
     for (const which of ["ocean", "enemy"]) {
       const cz = which === "ocean" ? OCEAN_CZ : ENEMY_CZ;
       const mat = which === "ocean" ? M.frameOcean : M.frameEnemy;
@@ -385,37 +372,79 @@ export function createGame(ctx) {
     buildPlaceButtons();
   }
 
-  // Floating placement controls ON the board, hovering just in front of (slightly
-  // −Z of) YOUR ocean's near edge. Laid out as a row ACROSS X, centred on 0, so
-  // every button stays inside |X| <= HALF and within the tabletop radius / seated
-  // camera framing. Anchored to the local −Z ocean, so Fix A renders them in front
-  // of WHICHEVER seat owns that ocean (host near host, guest near guest).
+  // Labelled control pillars hovering just in front of (slightly −Z of) YOUR
+  // ocean's near edge. Each pillar's top face is a canvas-textured label so the
+  // player reads the original's words. Anchored to the local −Z ocean: Fix-A
+  // self-orientation renders them in front of whichever seat owns that ocean.
   function buildPlaceButtons() {
     const defs = [
-      { btn: "rotate", mat: M.btnIdle },
-      { btn: "random", mat: M.btnIdle },
-      { btn: "clear", mat: M.btnIdle },
-      { btn: "ready", mat: M.btnGo },
+      { btn: "rotate", label: "Rotate", mat: M.pillarIdle },
+      { btn: "random", label: "Randomize", mat: M.pillarIdle },
+      { btn: "clear", label: "Clear", mat: M.pillarIdle },
+      { btn: "ready", label: "Ready ▸", mat: M.pillarGo },
     ];
-    // Row sits just in front of the ocean grid's near edge, still on the base.
-    const rowZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.5;
-    const bx0 = -HALF * 0.66;
-    const bxStep = (HALF * 1.32) / 3;
+    const rowZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.55;
+    const bx0 = -HALF * 0.72;
+    const bxStep = (HALF * 1.44) / 3;
     defs.forEach((d, i) => {
-      const m = new THREE.Mesh(G.btn, d.mat.clone());
-      // Raised above the water so they read as floating controls and don't z-fight.
-      m.position.set(bx0 + i * bxStep, SURF_Y + CELL * 0.35, rowZ);
+      const m = new THREE.Mesh(G.pillar, d.mat.clone());
+      m.position.set(bx0 + i * bxStep, SURF_Y + CELL * 0.4, rowZ);
       m.castShadow = true;
       m.userData.btn = d.btn;
       group.add(m);
-      placeButtons.push(m);
+
+      // Canvas label on the top face.
+      const lbl = makeLabelMesh(d.label, CELL * 1.34, CELL * 0.9);
+      lbl.rotation.x = -Math.PI / 2;
+      lbl.position.set(0, CELL * 0.26, 0);
+      m.add(lbl);
+
+      placeButtons.push({ mesh: m, btn: d.btn, label: d.label, lblTex: lbl.userData.tex, lblCv: lbl.userData.cv, idleMat: d.mat });
     });
-    refreshButtonsVisibility();
+    refreshButtons();
   }
 
-  function refreshButtonsVisibility() {
+  // A small canvas-textured plane carrying a single line of text.
+  function makeLabelMesh(text, w, h) {
+    const canCreate = typeof document !== "undefined" && document.createElement;
+    const cv = canCreate ? document.createElement("canvas") : null;
+    if (cv) { cv.width = 256; cv.height = 128; }
+    const tex = cv ? new THREE.CanvasTexture(cv) : null;
+    if (tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = tex
+      ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+      : new THREE.MeshBasicMaterial({ color: "#dfe9f2", transparent: true, opacity: 0.9 });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    mesh.userData.cv = cv;
+    mesh.userData.tex = tex;
+    mesh.renderOrder = 8;
+    drawLabel(cv, tex, text, "#eaf3fb");
+    return mesh;
+  }
+
+  function drawLabel(cv, tex, text, color) {
+    if (!cv || !tex) return;
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = color;
+    g.font = "bold 48px sans-serif";
+    g.fillText(text, cv.width / 2, cv.height / 2);
+    tex.needsUpdate = true;
+  }
+
+  // Visibility + Ready-disabled tint, matching the original's gated READY control.
+  function refreshButtons() {
     const show = phase === "placement" && !!mySide && !ready[mySide];
-    for (const b of placeButtons) b.visible = show;
+    for (const b of placeButtons) {
+      b.mesh.visible = show;
+      if (b.btn === "ready") {
+        const enabled = isComplete(myPlacements);
+        b.mesh.material = enabled ? M.pillarGo : M.pillarDim;
+        drawLabel(b.lblCv, b.lblTex, enabled ? "Ready ▸" : "Ready ▸", enabled ? "#eafff1" : "#8b97a0");
+      }
+    }
   }
 
   // Per-cell invisible colliders over BOTH grids, tagged {r,c,which}.
@@ -432,34 +461,110 @@ export function createGame(ctx) {
     }
   }
 
-  // Fleet-status chips beside the enemy-waters grid.
-  function buildStatusChips() {
-    const makeRow = (firer, baseX, baseZ) => {
-      FLEET.forEach((spec, i) => {
-        const chip = new THREE.Mesh(G.statusChip, M.statusLive.clone());
-        chip.position.set(baseX, SURF_Y + CELL * 0.18, baseZ + i * CELL * 0.34);
-        chip.castShadow = true;
-        chip.userData.firer = firer;
-        chip.userData.shipId = spec.id;
-        group.add(chip);
-        statusChips[firer].push(chip);
-      });
+  // ===========================================================================
+  // Fleet-status placards — canvas planes mimicking the original .fleet-panel:
+  // ship rows by name + live/sunk pips; the row is struck-through + dimmed when
+  // the ship is sunk. firer = the side that SANK those ships.
+  // ===========================================================================
+  function buildPanels() {
+    const W = GRID_SPAN * 0.66;
+    const H = GRID_SPAN * 0.62;
+    const make = (firer, x) => {
+      const canCreate = typeof document !== "undefined" && document.createElement;
+      const cv = canCreate ? document.createElement("canvas") : null;
+      if (cv) { cv.width = 320; cv.height = 300; }
+      const tex = cv ? new THREE.CanvasTexture(cv) : null;
+      if (tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = tex
+        ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+        : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.85, depthWrite: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(W, H), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(x, SURF_Y + 0.002, ENEMY_CZ + GRID_SPAN / 2 + H * 0.62);
+      mesh.renderOrder = 6;
+      mesh.userData.cv = cv;
+      mesh.userData.tex = tex;
+      group.add(mesh);
+      panels.push({ mesh, cv, tex, firer });
     };
-    // Keep chips inboard (within |X| <= HALF) so they read on the board, not
-    // floating off the tabletop edge.
-    const z0 = ENEMY_CZ - GRID_SPAN / 2 + CELL * 0.4;
     if (mySide) {
-      makeRow(mySide, HALF - CELL * 0.9, z0);
+      // Enemy fleet I must sink (firer = me), plus my losses (firer = opponent).
+      make(mySide, -W * 0.62);
+      make(oppSide, W * 0.62);
     } else {
-      makeRow("host", HALF - CELL * 0.9, z0);
-      makeRow("guest", -HALF + CELL * 0.9, z0);
+      make("host", -W * 0.62);
+      make("guest", W * 0.62);
+    }
+    refreshPanels();
+  }
+
+  // firer's pips = ships firer has sunk on the opponent. Title names whose fleet.
+  function refreshPanels() {
+    for (const p of panels) {
+      const cv = p.cv, tex = p.tex;
+      if (!cv || !tex) continue;
+      const g = cv.getContext("2d");
+      g.clearRect(0, 0, cv.width, cv.height);
+      g.fillStyle = "rgba(8,18,30,0.86)";
+      roundRect(g, 6, 6, cv.width - 12, cv.height - 12, 18);
+      g.fill();
+      // The fleet that firer is sinking belongs to the OTHER side.
+      const ownerSide = p.firer === "host" ? "guest" : "host";
+      const isMine = mySide && ownerSide === mySide;
+      const accent = p.firer === "host" ? SIDE_COLOR.host : SIDE_COLOR.guest;
+      g.lineWidth = 4;
+      g.strokeStyle = accent;
+      g.stroke();
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillStyle = accent;
+      g.font = "bold 26px sans-serif";
+      const title = mySide ? (isMine ? "Your Fleet" : "Enemy Fleet") : (ownerSide === "host" ? "Host Fleet" : "Guest Fleet");
+      g.fillText(title, 22, 34);
+      const sunkCount = sunkBy[p.firer].size;
+      g.fillStyle = "#9fb2c0";
+      g.font = "16px sans-serif";
+      g.textAlign = "right";
+      g.fillText(`${sunkCount}/${FLEET.length} sunk`, cv.width - 22, 34);
+
+      let yy = 76;
+      const rowH = (cv.height - 96) / FLEET.length;
+      for (const spec of FLEET) {
+        const dead = sunkBy[p.firer].has(spec.id);
+        g.textAlign = "left";
+        g.textBaseline = "middle";
+        g.font = "bold 20px sans-serif";
+        g.fillStyle = dead ? "#7d4a4a" : "#dfe9f2";
+        g.fillText(spec.name, 22, yy);
+        if (dead) {
+          g.strokeStyle = "#b1463c";
+          g.lineWidth = 2;
+          const w = g.measureText(spec.name).width;
+          g.beginPath();
+          g.moveTo(22, yy);
+          g.lineTo(22 + w, yy);
+          g.stroke();
+        }
+        // pips
+        const pipR = 6;
+        const pipGap = 18;
+        const px0 = cv.width - 22 - spec.length * pipGap;
+        for (let i = 0; i < spec.length; i++) {
+          g.beginPath();
+          g.arc(px0 + i * pipGap + pipGap / 2, yy, pipR, 0, Math.PI * 2);
+          g.fillStyle = dead ? "#8a1c0c" : accent;
+          g.fill();
+        }
+        yy += rowH;
+      }
+      tex.needsUpdate = true;
     }
   }
 
   // ===========================================================================
-  // HUD billboard — a canvas-textured plane hovering over the board centre that
-  // always faces the camera and states the current guidance. ALWAYS rendered;
-  // independent of any DOM HUD. We also forward the line to ctx.onHud if present.
+  // HUD billboard — a canvas plane hovering over the board centre that always
+  // faces the camera and states the current guidance, using the original's
+  // phrasing mapped into the in-world HUD. Also forwarded to ctx.onHud if present.
   // ===========================================================================
   function buildHud() {
     const canCreate = typeof document !== "undefined" && document.createElement;
@@ -476,18 +581,16 @@ export function createGame(ctx) {
     mesh.renderOrder = 30;
     mesh.userData.cv = cv;
     mesh.userData.tex = tex;
-    mesh.userData.billboard = true;
     group.add(mesh);
     hudMesh = mesh;
     refreshHud();
   }
 
-  // Compose the human-readable guidance for the current phase/turn.
+  // Guidance text for the current phase/turn — mapped from the original strings.
   function hudLines() {
     if (!mySide) {
-      // Spectator
-      if (phase === "over") return { title: "Game over", sub: winner ? `${cap(winner)} wins` : "", color: "#9fd3ff" };
-      if (phase === "placement") return { title: "Battleship", sub: "Players placing fleets…", color: "#9fd3ff" };
+      if (phase === "over") return { title: "Battle over", sub: winner ? `${cap(winner)} fleet victorious` : "", color: "#9fd3ff" };
+      if (phase === "placement") return { title: "Battleship · Naval Warfare", sub: "Players deploying fleets…", color: "#9fd3ff" };
       const firer = currentFirer();
       return { title: "Battleship (spectating)", sub: firer ? `${cap(firer)} to fire` : "", color: "#9fd3ff" };
     }
@@ -496,31 +599,36 @@ export function createGame(ctx) {
       const won = winner === mySide;
       return {
         title: won ? "VICTORY — enemy fleet sunk!" : "DEFEAT — your fleet is sunk",
-        sub: `You played ${sideName}`,
+        sub: won ? "Enemy fleet sent to the depths." : "Your fleet was lost at sea.",
         color: won ? "#7fffb0" : "#ff9a8a",
       };
     }
     if (phase === "placement") {
       if (ready[mySide]) {
-        return { title: "Fleet ready", sub: "Waiting for opponent…", color: "#dfe9f2" };
+        const oppReady = ready[oppSide];
+        return { title: "Fleet ready", sub: oppReady ? "Both fleets deployed…" : "Waiting for opponent to deploy their fleet…", color: "#dfe9f2" };
       }
       const remaining = FLEET.length - myPlacements.length;
+      if (remaining === 0) {
+        return { title: "All ships placed — ready when you are!", sub: "Tap Ready ▸ to deploy.", color: "#bfe0ff" };
+      }
       const spec = currentSpec();
       const sub = spec
-        ? `Place ${spec.name} (len ${spec.length}). Click your ocean. Rotate: ${ghostOrient}.`
-        : "All ships placed. Click READY.";
+        ? `Place ${spec.name} (${spec.length}). Click your waters · Rotate: ${ghostOrient}.`
+        : "All ships placed. Click Ready ▸.";
       return {
-        title: `Place your fleet (${sideName}) — ${remaining} ship${remaining === 1 ? "" : "s"} left`,
+        title: `Place your fleet — ${remaining} ship${remaining === 1 ? "" : "s"} left`,
         sub,
         color: "#bfe0ff",
       };
     }
     // playing
     const mine = sunkBy[mySide].size, theirs = sunkBy[oppSide].size;
+    const counts = `Enemy sunk ${mine}/${FLEET.length} · yours lost ${theirs}/${FLEET.length}`;
     if (myTurnNow()) {
-      return { title: "YOUR TURN — fire!", sub: `Click an enemy cell. Enemy ships sunk: ${mine}/${FLEET.length} · yours lost: ${theirs}/${FLEET.length}`, color: "#7fd1ff" };
+      return { title: "YOUR TURN — fire!", sub: `Pick a target on enemy waters. ${counts}`, color: "#7fd1ff" };
     }
-    return { title: "Waiting for opponent…", sub: `Enemy ships sunk: ${mine}/${FLEET.length} · yours lost: ${theirs}/${FLEET.length}`, color: "#dfe9f2" };
+    return { title: "Incoming fire — brace!", sub: `Waiting for opponent… ${counts}`, color: "#dfe9f2" };
   }
 
   function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
@@ -534,7 +642,6 @@ export function createGame(ctx) {
     if (!cv || !tex) return;
     const g = cv.getContext("2d");
     g.clearRect(0, 0, cv.width, cv.height);
-    // rounded panel
     g.fillStyle = "rgba(8,18,30,0.86)";
     roundRect(g, 6, 6, cv.width - 12, cv.height - 12, 22);
     g.fill();
@@ -545,11 +652,11 @@ export function createGame(ctx) {
     g.textBaseline = "middle";
     g.fillStyle = color;
     g.font = "bold 46px sans-serif";
-    g.fillText(clip(title, 26), cv.width / 2, 68);
+    g.fillText(clip(title, 28), cv.width / 2, 68);
     if (sub) {
       g.fillStyle = "#dfe9f2";
-      g.font = "26px sans-serif";
-      g.fillText(clip(sub, 52), cv.width / 2, 128);
+      g.font = "24px sans-serif";
+      g.fillText(clip(sub, 56), cv.width / 2, 128);
     }
     tex.needsUpdate = true;
   }
@@ -566,7 +673,8 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Animation loop (internal rAF; idles to zero cost when nothing moves).
+  // Animation loop (internal rAF; idles to zero when nothing moves except the
+  // HUD billboard, which we keep tracking the camera).
   // ===========================================================================
   const shells = [];
   const blooms = [];
@@ -578,9 +686,6 @@ export function createGame(ctx) {
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
   const easeOut = (x) => 1 - (1 - x) * (1 - x);
 
-  function loopActive() {
-    return shells.length > 0 || blooms.length > 0 || targetRings.length > 0 || !!hudMesh;
-  }
   function startLoop() {
     if (rafId != null) return;
     lastT = nowMs();
@@ -588,7 +693,7 @@ export function createGame(ctx) {
       const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
       lastT = t;
       stepAnim(dt);
-      rafId = loopActive() ? raf(tick) : null;
+      rafId = raf(tick); // HUD billboard always needs tracking; cheap when idle
     };
     rafId = raf(tick);
   }
@@ -621,21 +726,23 @@ export function createGame(ctx) {
         blooms.splice(i, 1);
       }
     }
-    if (targetRings.length > 0) {
+    if (targetRings.length > 0 || (reticle && reticle.visible)) {
       idleT += dt;
       const bob = Math.sin(idleT * 3.2) * CELL * 0.06;
       for (const t of targetRings) {
         t.position.y = t.userData.baseY + bob;
-        t.rotation.z = idleT * 2.0;
-        t.material.opacity = 0.6 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4));
+        t.rotation.z = idleT * 1.6;
+        t.material.opacity = 0.55 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4));
+      }
+      if (reticle && reticle.visible) {
+        reticle.rotation.z = idleT * 1.6;
+        const s = 1 + Math.sin(idleT * 5) * 0.08;
+        reticle.scale.setScalar(s);
       }
     }
-    // Billboard the HUD toward the camera each frame (cheap; keeps text legible
-    // from any seat). We only counter-rotate around Y by the group's own rotation
-    // so the text stays upright and readable.
-    if (hudMesh) {
-      hudMesh.rotation.y = -group.rotation.y;
-    }
+    // Billboard the HUD toward the camera (counter the group's own Y rotation so
+    // the text stays upright + readable from any seat).
+    if (hudMesh) hudMesh.rotation.y = -group.rotation.y;
   }
 
   function launchShell(targetX, targetY, which, fromZEdge, onLand) {
@@ -696,8 +803,7 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Hull rendering — MY ships only, on MY (near) ocean. Visible only to the local
-  // seated player; never serialized.
+  // Hull rendering — MY ships only, on MY (near) ocean. Local-only; never wired.
   // ===========================================================================
   function buildHull(ship) {
     const spec = SHIP_BY_ID.get(ship.id);
@@ -784,6 +890,7 @@ export function createGame(ctx) {
     placeIndex = myPlacements.length;
     rebuildHulls();
     refreshGhost();
+    refreshButtons();
     refreshHud();
     return true;
   }
@@ -795,6 +902,7 @@ export function createGame(ctx) {
     placeIndex = FLEET.length;
     rebuildHulls();
     refreshGhost();
+    refreshButtons();
     refreshHud();
   }
 
@@ -815,6 +923,7 @@ export function createGame(ctx) {
     placeIndex = myPlacements.length;
     rebuildHulls();
     refreshGhost();
+    refreshButtons();
     refreshHud();
   }
 
@@ -823,6 +932,7 @@ export function createGame(ctx) {
     placeIndex = 0;
     rebuildHulls();
     refreshGhost();
+    refreshButtons();
     refreshHud();
   }
 
@@ -832,7 +942,7 @@ export function createGame(ctx) {
     myOcean.occ = occupancyOf(myPlacements);
     ready[mySide] = true;
     clearGhost();
-    refreshButtonsVisibility();
+    refreshButtons();
     refreshHud();
     try { ctx.net.sendMove({ type: "place", ready: true }); } catch { /* transport optional */ }
     maybeStart();
@@ -847,7 +957,7 @@ export function createGame(ctx) {
     phase = "playing";
     myTurn = first === "host";
     try { ctx.net.sendMove({ type: "start", first }); } catch { /* transport optional */ }
-    refreshAim();
+    refreshEnemyLive();
     refreshHud();
     pushSnapshot();
   }
@@ -868,9 +978,10 @@ export function createGame(ctx) {
     if (!canFireAt(x, y)) return;
     pendingFire = { x, y };
     myTurn = false;
-    clearAim();
+    clearReticle();
+    refreshEnemyLive();
     refreshHud();
-    const fromZ = ENEMY_CZ - GRID_SPAN / 2 - CELL * 0.8; // launch from the near edge of enemy waters (the side facing me)
+    const fromZ = ENEMY_CZ - GRID_SPAN / 2 - CELL * 0.8; // launch from the near edge of enemy waters
     launchShell(x, y, "enemy", fromZ, null);
     try { ctx.net.sendMove({ type: "fire", x, y }); } catch { /* transport optional */ }
   }
@@ -881,11 +992,9 @@ export function createGame(ctx) {
     shots[mySide].push({ x, y, outcome, sunk: sunkId });
     placeMarker(x, y, outcome, "enemy", enemyShotMarks);
     spawnBloom(cellX(x), cellZ(y, "enemy"), outcome);
-    if (outcome === "sunk" && sunkId) {
-      sunkBy[mySide].add(sunkId);
-      markStatusChip(mySide, sunkId);
-    }
+    if (outcome === "sunk" && sunkId) sunkBy[mySide].add(sunkId);
     pendingFire = null;
+    refreshPanels();
     if (sunkBy[mySide].size === FLEET.length) {
       endGame(mySide, "fleet-sunk");
       sendReveal();
@@ -893,7 +1002,7 @@ export function createGame(ctx) {
     }
     if (role === "host") pushSnapshot();
     refreshHud();
-    // The turn passes to the opponent; it returns to me only after their incoming
+    // Turn passes to the opponent; it returns to me only after their incoming
     // {fire} lands (receiveIncomingFire sets myTurn=true).
   }
 
@@ -906,6 +1015,7 @@ export function createGame(ctx) {
     placeMarker(x, y, res.outcome, "ocean", oceanShotMarks);
     spawnBloom(cellX(x), cellZ(y, "ocean"), res.outcome);
     if (res.outcome === "sunk" && res.sunk) sunkBy[oppSide].add(res.sunk);
+    refreshPanels();
 
     const reply = { type: "result", x, y, outcome: res.outcome };
     if (res.outcome === "sunk") reply.sunk = res.sunk;
@@ -917,32 +1027,49 @@ export function createGame(ctx) {
       return;
     }
     myTurn = true;
-    refreshAim();
+    refreshEnemyLive();
     if (role === "host") pushSnapshot();
     refreshHud();
   }
 
   // ===========================================================================
-  // Aim affordances — bobbing target rings on every un-fired enemy cell + a soft
-  // aim plate, ONLY on my turn in the playing phase.
+  // Aim affordances. On my turn:
+  //   (1) PRIMARY: a bobbing TARGET RING sits on every un-fired enemy cell — an
+  //       always-visible, framework-independent "these cells are pickable" cue.
+  //       Already-fired cells have a peg + no ring, so the board reads its own
+  //       firing history.
+  //   (2) AIM RETICLE: a crosshair the player slides over enemy waters. board.js
+  //       forwards the hovered COLUMN to setHover(); we light that whole column
+  //       as a targeting lane and snap a crosshair onto the most-recently aimed
+  //       cell (full {r,c} when available, else the column's nearest un-fired
+  //       cell). This degrades gracefully to a column lane when only a column is
+  //       known, so the aim cue works regardless of how the framework hovers.
   // ===========================================================================
   function myTurnNow() {
     return phase === "playing" && !!mySide && myTurn && !pendingFire && ctx.isLocalTurnAllowed();
   }
 
-  function refreshAim() {
-    clearAim();
-    if (!myTurnNow()) return;
-    aimPlate = new THREE.Mesh(new THREE.BoxGeometry(GRID_SPAN + CELL * 0.2, 0.001, GRID_SPAN + CELL * 0.2), M.aim);
-    aimPlate.position.set(0, SURF_Y + 0.0015, ENEMY_CZ);
-    aimPlate.renderOrder = 1;
-    group.add(aimPlate);
+  function refreshEnemyLive() {
+    // Clear old rings + lane.
+    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    targetRings.length = 0;
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
+    if (!myTurnNow()) { clearReticle(); return; }
+
+    // Faint live tint over the whole enemy grid (this grid is now active).
+    enemyLivePlate = new THREE.Mesh(new THREE.BoxGeometry(GRID_SPAN + CELL * 0.2, 0.001, GRID_SPAN + CELL * 0.2), M.enemyLive);
+    enemyLivePlate.position.set(0, SURF_Y + 0.0015, ENEMY_CZ);
+    enemyLivePlate.renderOrder = 1;
+    group.add(enemyLivePlate);
+
+    // A bobbing target ring on every un-fired enemy cell.
     for (let y = 0; y < GRID; y++) {
       for (let x = 0; x < GRID; x++) {
         if (tracking[mySide].has(x + "," + y)) continue;
         const ring = new THREE.Mesh(G.ring, M.target.clone());
         ring.rotation.x = Math.PI / 2;
-        const baseY = SURF_Y + CELL * 0.14;
+        const baseY = SURF_Y + CELL * 0.13;
         ring.position.set(cellX(x), baseY, cellZ(y, "enemy"));
         ring.userData.baseY = baseY;
         ring.renderOrder = 3;
@@ -950,37 +1077,70 @@ export function createGame(ctx) {
         targetRings.push(ring);
       }
     }
+    updateReticle();
     startLoop();
   }
 
-  function clearAim() {
-    for (const t of targetRings) {
-      group.remove(t);
-      t.material.dispose?.();
-    }
-    targetRings.length = 0;
-    if (aimPlate) { group.remove(aimPlate); aimPlate.geometry.dispose?.(); aimPlate = null; }
+  function ensureReticle() {
+    if (reticle) return reticle;
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(G.ring.clone(), M.reticleOk.clone());
+    ring.rotation.x = Math.PI / 2;
+    g.add(ring);
+    // crosshair lines
+    const barGeo = new THREE.BoxGeometry(CELL * 0.74, 0.0015, CELL * 0.06);
+    const barGeo2 = new THREE.BoxGeometry(CELL * 0.06, 0.0015, CELL * 0.74);
+    const h = new THREE.Mesh(barGeo, M.reticleOk.clone());
+    const v = new THREE.Mesh(barGeo2, M.reticleOk.clone());
+    g.add(h); g.add(v);
+    g.userData.parts = [ring, h, v];
+    g.renderOrder = 5;
+    g.visible = false;
+    group.add(g);
+    reticle = g;
+    return g;
   }
 
-  // ===========================================================================
-  // Fleet-status chips
-  // ===========================================================================
-  function markStatusChip(firer, shipId) {
-    const chip = statusChips[firer]?.find((c) => c.userData.shipId === shipId);
-    if (chip) chip.material = M.statusDead;
+  // Snap the crosshair onto the aimed cell. If only a column is known (aimRow<0),
+  // pick that column's nearest un-fired cell and also light the column as a lane.
+  function updateReticle() {
+    // refresh the column lane.
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (!myTurnNow() || aimCol < 0 || aimCol >= GRID) { clearReticle(); return; }
+
+    let row = aimRow;
+    if (row < 0 || row >= GRID) row = nearestUnfiredRow(aimCol);
+
+    // Column lane highlight (full enemy column under the pointer).
+    laneMesh = new THREE.Mesh(new THREE.BoxGeometry(CELL * 0.94, 0.0016, GRID_SPAN), M.enemyLive.clone());
+    laneMesh.material.opacity = 0.28;
+    laneMesh.position.set(cellX(aimCol), SURF_Y + 0.002, ENEMY_CZ);
+    laneMesh.renderOrder = 2;
+    group.add(laneMesh);
+
+    if (row < 0 || row >= GRID) { clearReticle(); return; }
+    const r = ensureReticle();
+    const fired = tracking[mySide].has(aimCol + "," + row);
+    const mat = fired ? M.reticleBad : M.reticleOk;
+    for (const p of r.userData.parts) p.material = mat;
+    r.position.set(cellX(aimCol), SURF_Y + CELL * 0.16, cellZ(row, "enemy"));
+    r.visible = true;
+    startLoop();
   }
 
-  function refreshStatusChips() {
-    for (const firer of ["host", "guest"]) {
-      for (const chip of statusChips[firer]) {
-        chip.material = sunkBy[firer].has(chip.userData.shipId) ? M.statusDead : M.statusLive;
-      }
-    }
+  function nearestUnfiredRow(col) {
+    for (let y = 0; y < GRID; y++) if (!tracking[mySide].has(col + "," + y)) return y;
+    return -1;
+  }
+
+  function clearReticle() {
+    if (reticle) reticle.visible = false;
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
   }
 
   // ===========================================================================
   // onPointer — the framework dispatches { cell, point, object }.
-  //   placement: click YOUR (near) ocean to place/rotate; click a button.
+  //   placement: click YOUR (near) ocean to place/rotate; click a labelled pillar.
   //   playing  : click ENEMY (far) waters to fire (your turn, un-fired cell).
   // ===========================================================================
   function onPointer(hit) {
@@ -1022,6 +1182,46 @@ export function createGame(ctx) {
     }
   }
 
+  // ── Hover routing — board.js forwards the hovered COLUMN via setHover(cell.c)
+  // (a number), or a full {r,c,which} cell if a richer host provides it, or -1 on
+  // a miss. We handle BOTH: a number drives the column lane + crosshair (snapped
+  // to that column's nearest un-fired cell); a full cell additionally pins the
+  // exact row + discriminates the enemy grid. During placement a full ocean cell
+  // updates the ghost preview. Always defensive — never assumes the object form.
+  function setHover(arg) {
+    if (arg == null || arg === -1) {
+      aimCol = aimRow = -1;
+      clearReticle();
+      return;
+    }
+    const cell = (typeof arg === "object" && arg) ? arg : null;
+    const which = cell ? cell.which : null;
+    const col = cell ? (Number.isInteger(cell.c) ? cell.c : -1) : (Number.isInteger(arg) ? arg : -1);
+    const row = cell && Number.isInteger(cell.r) ? cell.r : -1;
+
+    // Placement: a full ocean cell drives the ghost preview.
+    if (phase === "placement") {
+      if (mySide && !ready[mySide] && which === "ocean" && col >= 0 && row >= 0) {
+        if (!hoverCell || hoverCell.x !== col || hoverCell.y !== row) {
+          hoverCell = { x: col, y: row };
+          refreshGhost();
+          refreshHud();
+        }
+      }
+      return;
+    }
+
+    // Playing: drive the aim lane + crosshair on enemy waters. A bare column
+    // (no `which`) is treated as an enemy-grid hover (the only live grid on my
+    // turn); a full ocean cell is ignored.
+    if (phase === "playing" && mySide) {
+      if (which === "ocean") { aimCol = aimRow = -1; clearReticle(); return; }
+      aimCol = col;
+      aimRow = row;
+      updateReticle();
+    }
+  }
+
   function buttonFromHit(hit) {
     let o = hit && hit.object;
     while (o && o !== group) {
@@ -1041,7 +1241,7 @@ export function createGame(ctx) {
       case "place": {
         const them = byRole === "host" ? "host" : byRole === "guest" ? "guest" : oppSide;
         if (them) ready[them] = true;
-        refreshButtonsVisibility();
+        refreshButtons();
         refreshHud();
         maybeStart();
         pushSnapshot();
@@ -1054,8 +1254,8 @@ export function createGame(ctx) {
         ready.host = true;
         ready.guest = true;
         if (mySide) myTurn = first === mySide;
-        refreshButtonsVisibility();
-        refreshAim();
+        refreshButtons();
+        refreshEnemyLive();
         refreshHud();
         pushSnapshot();
         return true;
@@ -1093,7 +1293,10 @@ export function createGame(ctx) {
   function applyState(state) {
     shells.length = 0;
     blooms.length = 0;
-    clearAim();
+    clearReticle();
+    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    targetRings.length = 0;
+    if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     clearMarkers();
 
     if (!state) {
@@ -1113,12 +1316,13 @@ export function createGame(ctx) {
       myPlacements = [];
       placeIndex = 0;
       hoverCell = null;
+      aimCol = aimRow = -1;
       myOcean = freshOceanState();
       rebuildHulls();
-      refreshStatusChips();
-      refreshButtonsVisibility();
+      refreshPanels();
+      refreshButtons();
       refreshGhost();
-      refreshAim();
+      refreshEnemyLive();
       refreshHud();
       return;
     }
@@ -1174,10 +1378,10 @@ export function createGame(ctx) {
     }
 
     rebuildHulls();
-    refreshStatusChips();
-    refreshButtonsVisibility();
+    refreshPanels();
+    refreshButtons();
     refreshGhost();
-    refreshAim();
+    refreshEnemyLive();
     refreshHud();
   }
 
@@ -1223,8 +1427,10 @@ export function createGame(ctx) {
     winner = winnerSide;
     myTurn = false;
     pendingFire = null;
-    clearAim();
-    refreshButtonsVisibility();
+    clearReticle();
+    if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
+    refreshButtons();
+    refreshPanels();
     refreshHud();
     try { ctx.onGameOver({ winner: winnerSide, reason: reason || "fleet-sunk" }); } catch { /* ignore */ }
     if (role === "host") pushSnapshot();
@@ -1238,8 +1444,7 @@ export function createGame(ctx) {
 
   // ===========================================================================
   // Role / seat changes — switch in place. applyState NEVER recomputes role; only
-  // the framework's explicit setRole does, and a promoted player re-enters
-  // placement locally (empty ocean).
+  // setRole does, and a promoted player re-enters placement locally (empty ocean).
   // ===========================================================================
   function setRole(newRole, newSeatIndex) {
     const prev = mySide;
@@ -1253,22 +1458,23 @@ export function createGame(ctx) {
         myPlacements = [];
         placeIndex = 0;
         hoverCell = null;
+        aimCol = aimRow = -1;
         myOcean = freshOceanState();
       }
     }
     applyFacing();
     rebuildHulls();
-    refreshButtonsVisibility();
-    refreshStatusChips();
+    refreshButtons();
+    refreshPanels();
     refreshGhost();
-    refreshAim();
+    refreshEnemyLive();
     refreshHud();
   }
 
   function setSeatRy(ry) {
     seatRy = ry;
     applyFacing();
-    refreshAim();
+    refreshEnemyLive();
     refreshGhost();
     refreshHud();
   }
@@ -1281,13 +1487,36 @@ export function createGame(ctx) {
     for (const b of blooms) { b.mesh.material?.dispose?.(); b.mesh.geometry?.dispose?.(); }
     shells.length = 0;
     blooms.length = 0;
-    clearAim();
+    if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    targetRings.length = 0;
+    if (reticle) {
+      reticle.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); if (c.material) c.material.dispose?.(); });
+      group.remove(reticle);
+      reticle = null;
+    }
     clearGhost();
     clearMarkers();
     for (const h of hullMeshes) {
       h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
     }
     hullMeshes.length = 0;
+    for (const b of placeButtons) {
+      b.mesh.traverse((c) => {
+        if (c.geometry) c.geometry.dispose?.();
+        if (c.material && c.material !== M.pillarGo && c.material !== M.pillarDim && c.material !== M.pillarIdle) c.material.dispose?.();
+        if (c.userData && c.userData.tex) c.userData.tex.dispose?.();
+      });
+    }
+    placeButtons.length = 0;
+    for (const p of panels) {
+      group.remove(p.mesh);
+      p.mesh.geometry?.dispose?.();
+      p.tex?.dispose?.();
+      p.mesh.material?.dispose?.();
+    }
+    panels.length = 0;
     if (hudMesh) {
       group.remove(hudMesh);
       hudMesh.geometry?.dispose?.();
@@ -1302,10 +1531,10 @@ export function createGame(ctx) {
 
   // Initial paint.
   rebuildHulls();
-  refreshButtonsVisibility();
-  refreshStatusChips();
+  refreshButtons();
+  refreshPanels();
   refreshGhost();
-  refreshAim();
+  refreshEnemyLive();
   refreshHud();
   startLoop(); // keep the HUD billboard tracking the camera
 
@@ -1315,6 +1544,7 @@ export function createGame(ctx) {
     applyState,
     applyMove,
     onPointer,
+    setHover, // hover crosshair reticle over enemy waters + ghost preview during placement
     publicState,
     setRole,
     setSeatRy,

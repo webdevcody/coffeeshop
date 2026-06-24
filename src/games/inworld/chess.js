@@ -1166,6 +1166,15 @@ export function createGame(ctx) {
     if (!legal) throw new GameDesync("chess: no matching legal move");
     performMove(legal);
     afterMove();
+    // Re-cache + re-broadcast authoritative state (and ambient pub) on the
+    // opponent's relayed move too — mirroring commitMove(). Without this, after
+    // every guest (black) move the server's cached pub/full stays stale and
+    // broadcastAmbient never fires (it runs only from the game-state handler),
+    // so ambient/passersby mirrors and any late-join/resync spectator render
+    // the board frozen one ply behind. afterMove() above already advanced phase/
+    // winner on checkmate/stalemate, so this final snapshot also carries the
+    // game-over position publicly.
+    if (role === "host") pushSnapshot();
     return true;
   }
 

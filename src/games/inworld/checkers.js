@@ -904,6 +904,11 @@ export function createGame(ctx) {
     clearHighlights();
     performMove(legal.from, legal.steps, legal.captured);
     afterMove();
+    // Mirror commitMove(): after the host applies a relayed GUEST move, re-broadcast
+    // an authoritative snapshot. This refreshes the server's full/pub cache and fires
+    // broadcastAmbient so spectators, late joiners, resyncs, and ambient passersby all
+    // converge on the position AFTER the guest's move (capture/king/game-over included).
+    if (role === "host") pushSnapshot();
     return true;
   }
 

@@ -65,22 +65,26 @@ export function createGame(ctx) {
   group.name = "pong";
 
   let role = ctx.role;
-  const isHost = role === "host";
-  const isGuest = role === "guest";
-  const isSpectator = !isHost && !isGuest;
+  // IDENTITY is now MUTABLE so a live role transition (board.js InWorldBoard
+  // .setRole performs an IN-PLACE role change without remounting) can recompute
+  // every view-critical value. It is still derived ONLY from role, NEVER from the
+  // wire, so a relayed snapshot can never flip our side.
+  let isHost = role === "host";
+  let isGuest = role === "guest";
+  let isSpectator = !isHost && !isGuest;
 
-  // ----- IDENTITY (derived ONCE from role, never from the wire) -----
+  // ----- IDENTITY (derived from role, never from the wire) -----
   // host owns side A (canonical y=0 end, COLOR A), guest owns side B (y=H end,
   // COLOR B). Spectator owns nothing. mySign tells us, for THIS client, whether
   // its own end is at canonical y=0 (host: +1) or y=H (guest: -1) — which is also
   // exactly the local-view flip we apply when rendering canonical coords.
-  const mySide = isHost ? "A" : isGuest ? "B" : null;
-  const myColor = mySide === "A" ? PALETTE.pongLeft : mySide === "B" ? PALETTE.pongRight : null;
-  const oppColor = mySide === "A" ? PALETTE.pongRight : mySide === "B" ? PALETTE.pongLeft : null;
+  let mySide = isHost ? "A" : isGuest ? "B" : null;
+  let myColor = mySide === "A" ? PALETTE.pongLeft : mySide === "B" ? PALETTE.pongRight : null;
+  let oppColor = mySide === "A" ? PALETTE.pongRight : mySide === "B" ? PALETTE.pongLeft : null;
   // viewFlip: false => render canonical directly (host / spectator). true =>
   // render canonical rotated 180° about table centre so the guest's own end (y=H)
   // lands near (-Z). Spectators take the host/canonical view.
-  const viewFlip = isGuest;
+  let viewFlip = isGuest;
 
   // Canonical field x/y -> local metres in THIS client's view frame. The guest's
   // view is a 180° rotation about table centre, so both axes negate.
@@ -112,7 +116,7 @@ export function createGame(ctx) {
   // We capture left/right in LOCAL-VIEW screen space, then convert to a CANONICAL
   // lateral dir. In the guest's flipped view, local +X is canonical -X, so a guest
   // pressing "right" must move canonical -X. viewSign encodes that flip.
-  const viewSign = viewFlip ? -1 : 1;
+  let viewSign = viewFlip ? -1 : 1;
   const keys = new Set();
   const onKey = (e, down) => {
     let k = null;
@@ -148,9 +152,12 @@ export function createGame(ctx) {
     colorB: keep(standard(THREE, PALETTE.pongRight, { emissive: PALETTE.pongRight, emissiveIntensity: 0.35 })),
     ball: keep(standard(THREE, "#ffffff", { emissive: "#ffffff", emissiveIntensity: 0.55 })),
     line: keep(standard(THREE, PALETTE.gold, { emissive: PALETTE.gold, emissiveIntensity: 0.25 })),
-    mine: myColor ? keep(standard(THREE, myColor, {
-      emissive: myColor, emissiveIntensity: 0.7, transparent: true, opacity: 0.45, depthWrite: false,
-    })) : null,
+    // Always create the "mine" material so a live role change (spectator ->
+    // seat) can light up the halo/home-strip without rebuilding geometry. Its
+    // colour is updated in setRole(); visibility is toggled by myColor.
+    mine: keep(standard(THREE, myColor || PALETTE.pongLeft, {
+      emissive: myColor || PALETTE.pongLeft, emissiveIntensity: 0.7, transparent: true, opacity: 0.45, depthWrite: false,
+    })),
   };
 
   const plankH = 0.018;
@@ -185,15 +192,17 @@ export function createGame(ctx) {
   group.add(ballMesh);
 
   // ----- IDENTITY CUE: glowing home strip + halo under MY paddle -----
+  // Always built; visibility is toggled by whether this client owns a paddle, so
+  // a live spectator<->seat role change can show/hide the cue without rebuilding.
   let homeStrip = null, myHalo = null;
-  if (M.mine) {
-    homeStrip = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W, 0.002, PADDLE_T * SZ * 0.5)), M.mine, false);
-    homeStrip.position.set(0, TOP + 0.003, -COURT_H / 2 + PADDLE_T * SZ * 0.4); // always near (-Z) = my side
-    group.add(homeStrip);
-    myHalo = meshOf(THREE, keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX * 1.25, 0.002, PADDLE_T * SZ * 2.4)), M.mine, false);
-    myHalo.position.y = TOP + 0.004;
-    group.add(myHalo);
-  }
+  homeStrip = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W, 0.002, PADDLE_T * SZ * 0.5)), M.mine, false);
+  homeStrip.position.set(0, TOP + 0.003, -COURT_H / 2 + PADDLE_T * SZ * 0.4); // always near (-Z) = my side
+  homeStrip.visible = !!myColor;
+  group.add(homeStrip);
+  myHalo = meshOf(THREE, keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX * 1.25, 0.002, PADDLE_T * SZ * 2.4)), M.mine, false);
+  myHalo.position.y = TOP + 0.004;
+  myHalo.visible = !!myColor;
+  group.add(myHalo);
 
   // ----- SCOREBOARD placard (canvas texture) -----
   // A flat placard laid just beyond MY near edge (so it reads upright at the
@@ -391,7 +400,7 @@ export function createGame(ctx) {
     ballMesh.position.set(fX(bx), ballMesh.position.y, fZ(by));
 
     // identity halo follows MY paddle (which is always at -Z near edge)
-    if (myHalo && M.mine) {
+    if (myHalo && myColor) {
       const myMesh = mySide === "A" ? padA : padB;
       myHalo.position.x = myMesh.position.x;
       myHalo.position.z = myMesh.position.z;
@@ -496,10 +505,40 @@ export function createGame(ctx) {
   function onPointer() { /* real-time: keyboard only */ }
   function applyMove() { return true; }
   function setRole(r) {
-    // We do NOT live-flip identity/side mid-match (would contradict the derive-
-    // once rule). A role change here only affects whether we keep simulating; the
-    // engine re-mounts for a real seat change. Keep it conservative.
-    role = r || "spectator";
+    // board.js InWorldBoard.setRole() performs an IN-PLACE role change (it calls
+    // instance.setRole without remounting). We therefore RECOMPUTE all
+    // view-critical identity from the new role — still derived ONLY from role,
+    // never from the wire — so a watcher transitioned spectator<->seat (or
+    // host<->guest) cannot keep a stale orientation/colour and render the court
+    // mirror-flipped or its halo on the wrong paddle.
+    const next = r || "spectator";
+    if (next === role) return;
+    role = next;
+    isHost = role === "host";
+    isGuest = role === "guest";
+    isSpectator = !isHost && !isGuest;
+
+    mySide = isHost ? "A" : isGuest ? "B" : null;
+    myColor = mySide === "A" ? PALETTE.pongLeft : mySide === "B" ? PALETTE.pongRight : null;
+    oppColor = mySide === "A" ? PALETTE.pongRight : mySide === "B" ? PALETTE.pongLeft : null;
+    viewFlip = isGuest;
+    viewSign = viewFlip ? -1 : 1;
+
+    // refresh the identity cue (colour + visibility) for the new seat
+    if (M.mine) {
+      const hex = myColor || PALETTE.pongLeft;
+      M.mine.color?.set?.(hex);
+      M.mine.emissive?.set?.(hex);
+      M.mine.needsUpdate = true;
+    }
+    if (homeStrip) homeStrip.visible = !!myColor;
+    if (myHalo) myHalo.visible = !!myColor;
+
+    // a freshly-seated client should drive its own paddle from a sane base
+    if (isGuest && Number.isFinite(pB)) myPredX = pB;
+
+    paintScore();
+    render();
   }
   function setSeatRy() { /* self-oriented: seat ry is irrelevant to our render */ }
 
@@ -519,6 +558,9 @@ export function createGame(ctx) {
   return {
     group,
     orientPolicy: "self", // we own facing; board.js must NOT rotate our group
+    // Real-time, snapshot-driven: applyMove is a no-op and spectators render only
+    // from streamed state, so board.js must NOT swallow post-move snapshots.
+    spectatorAnimates: false,
     applyState,
     applyMove,
     onPointer,

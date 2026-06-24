@@ -220,9 +220,12 @@ export function createGame(ctx) {
     for (const col of order) if (absSquare(col, 1) === k) mat = pathMat[col];
     addTile(c, r, mat);
   }
-  // Home-column tiles (tinted per colour) — only for active colours.
+  // Home-column tiles (tinted per colour). Built for every build-time colour,
+  // but tracked per colour so render() can hide the ones not in the wire's
+  // live s.order (ambient/spectator mounts always build all 4 colours).
+  const homeTiles = {};
   for (const col of order) {
-    for (const [c, r] of HOME[col]) addTile(c, r, pathMat[col]);
+    homeTiles[col] = HOME[col].map(([c, r]) => addTile(c, r, pathMat[col]));
   }
   // Centre triangle plate.
   const centreGeo = keep(new THREE.CylinderGeometry(cell * 1.1, cell * 1.1, 0.005, 4));
@@ -387,11 +390,27 @@ export function createGame(ctx) {
 
   // ---- render -------------------------------------------------------------
   let pulse = 0;
+  // Drive visible colours from the WIRE's s.order, not the local build-time
+  // `order`. Ambient/spectator mounts are always created at seatCount=4 (so
+  // local `order` is length 4), but the real match may be 2- or 3-player — its
+  // s.order tells us which colours are actually in play. Hiding the rest stops
+  // phantom idle tokens/rings/quads of unused colours on a watcher's board.
+  const inPlay = (c) => (Array.isArray(s.order) ? s.order.includes(c) : order.includes(c));
   function render() {
     const active = curColor(s);
     const activeSeat = curSeat(s);
 
     for (const c of order) {
+      const shown = inPlay(c);
+      // Hide all geometry of a colour that is not part of the live match.
+      if (quadMeshes[c]) quadMeshes[c].visible = shown;
+      if (homeTiles[c]) for (const t of homeTiles[c]) t.visible = shown;
+      for (let i = 0; i < 4; i++) {
+        if (tokenMeshes[c] && tokenMeshes[c][i]) tokenMeshes[c][i].visible = shown;
+        if (ringMeshes[c] && ringMeshes[c][i] && !shown) ringMeshes[c][i].visible = false;
+      }
+      if (!shown) continue;
+
       const isActive = c === active && s.phase === "play";
       // identity: brighten the LOCAL player's own colour always; pulse the
       // active player's colour so whose-turn reads even for spectators.
@@ -463,6 +482,10 @@ export function createGame(ctx) {
       if (s.sixes >= 3) { nextTurn(s); pushState(); return; } // three 6s -> forfeit turn
     }
     const moves = legalMoves(s, color);
+    // Broadcast the rolled die NOW so watchers (spectators/passersby/seated
+    // opponent) actually see the die face — before any forced auto-resolve
+    // calls nextTurn(), which would clear s.die before it ever crosses the wire.
+    pushState();
     if (moves.length === 0) {
       // no legal move: a 6 still ends the turn here (nothing to advance);
       // simpler + avoids an infinite re-roll loop.
@@ -587,6 +610,11 @@ export function createGame(ctx) {
   // orientPolicy "self": the framework must not also rotate our group.
   return {
     group,
+    // Snapshot-driven: a spectator's applyMove is a no-op (renders only from
+    // authoritative snapshots), so board.js must NOT swallow the host's post-move
+    // snapshot — that snapshot is the only state a spectator ever sees for a
+    // guest-initiated roll/move. See InWorldBoard._onMove (BUG 1).
+    spectatorAnimates: false,
     applyState,
     applyMove,
     onPointer,
