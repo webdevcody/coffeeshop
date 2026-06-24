@@ -13,7 +13,7 @@ import { Network } from "./net/network.js";
 import { Voice } from "./net/voice.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
-import { getGame } from "./games/registry.js";
+import { getGame, listGames } from "./games/registry.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
@@ -110,10 +110,25 @@ network.on("game-assign", (m) => {
     network.leaveGame();
     return;
   }
-  const game = getGame(m.gameId);
-  if (!game) return;
-  arcade.show(m.gameId, m.roomId, m.role, tableLabel(m.table));
+  const label = tableLabel(m.table);
   controls.setLocked(true);
+
+  // No game chosen yet: the host picks from the menu, the guest waits.
+  if (!m.gameId) {
+    if (m.role === "host") {
+      arcade.showMenu(label, listGames(), (gameId) => {
+        if (!local?.sitting || local.seat?.table !== m.table) return;
+        network.chooseGame(m.table, gameId, getGame(gameId)?.capacity ?? 2);
+      });
+    } else {
+      arcade.showWaiting(label, "Waiting for the host to pick a game…");
+    }
+    return;
+  }
+
+  // A game is locked in — open it.
+  if (!getGame(m.gameId)) return;
+  arcade.show(m.gameId, m.roomId, m.role, label);
 });
 
 network.on("game-end", () => {
@@ -144,14 +159,13 @@ function colorFor(id, fallbackName) {
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
   local = new LocalPlayer(scene, controls, colliders, color, name, seats);
-  // Sitting at a seat that belongs to a game table opens that table's game.
+  // Sitting at a game table asks the server for a role; the reply opens the
+  // game-picker menu (host) or a waiting screen (guest), then the game itself.
   local.onSit = (seat) => {
-    if (seat?.table && seat?.gameId) {
-      network.requestGame(seat.table, seat.gameId, getGame(seat.gameId)?.capacity ?? 2);
-    }
+    if (seat?.table && seat?.gameTable) network.requestGame(seat.table);
   };
   local.onStand = (seat) => {
-    if (seat?.table && seat?.gameId) onLocalStood();
+    if (seat?.table && seat?.gameTable) onLocalStood();
   };
   joined = true;
   network.connect();

@@ -103,11 +103,12 @@ let nextId = 1;
 // ---------------------------------------------------------------------------
 // The server is a generic match coordinator — it doesn't know or care what game
 // a table runs. When a player sits at a table it assigns them a role for that
-// table's current match: the first to sit is the `host` (and gets a fresh room
-// id), the second is the `guest` (same room id), anyone beyond capacity is told
-// the table is `full`. Either player leaving ends the match and frees the table,
-// so the next pair starts on a fresh room id. This mirrors how P2P games like
-// Battleship pair exactly two players per host session.
+// table's current match: the first to sit is the `host`, who then picks a game
+// from a menu (the choice is recorded here and mints the room id); the second
+// is the `guest`, who joins whatever the host picked (same room id); anyone
+// beyond capacity is told the table is `full`. Either player leaving ends the
+// match and frees the table, so the next pair starts fresh. This mirrors how
+// P2P games like Battleship pair exactly two players per host session.
 //
 /** @type {Map<string, {roomId: string|null, gameId: string|null, host: string|null, guest: string|null, capacity: number}>} */
 const tables = new Map();
@@ -118,29 +119,31 @@ function genRoomId() {
   return randomBytes(6).toString("hex").toUpperCase();
 }
 
-// A player sits at a table and requests its game. Replies with a `game-assign`.
+// A player sits at a table. The first to sit becomes the `host` and then picks
+// which game to play (see chooseSeatGame); the next becomes the `guest` of
+// whatever the host picked; anyone beyond capacity is told the table is `full`.
+// Replies with a `game-assign`. The host's reply carries gameId: null until
+// they pick — and a guest who sits before the host picks also gets gameId: null
+// (they'll receive a second game-assign once the host chooses).
 function assignSeat(id, msg) {
   const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
-  const gameId = typeof msg.gameId === "string" ? msg.gameId.slice(0, 64) : null;
-  if (!tableId || !gameId) return;
-  const capacity = Number.isFinite(msg.capacity) ? Math.max(2, Math.min(8, msg.capacity)) : 2;
+  if (!tableId) return;
 
   // If they were already at a (different) table, leave it first.
   releaseSeat(id);
 
   let t = tables.get(tableId);
   if (!t) {
-    t = { roomId: null, gameId, host: null, guest: null, capacity };
+    t = { roomId: null, gameId: null, host: null, guest: null, capacity: 2 };
     tables.set(tableId, t);
   }
 
   let role;
   if (t.host === null) {
-    // Start a fresh match on this table.
-    t.roomId = genRoomId();
-    t.gameId = gameId;
-    t.capacity = capacity;
+    // First to sit hosts; the game is chosen next via "choose-game".
     t.host = id;
+    t.gameId = null;
+    t.roomId = null;
     role = "host";
   } else if (t.guest === null && t.host !== id) {
     t.guest = id;
@@ -156,11 +159,37 @@ function assignSeat(id, msg) {
     send(c.ws, {
       type: "game-assign",
       table: tableId,
-      gameId: t.gameId,
+      gameId: role === "full" ? null : t.gameId, // null until the host picks
       roomId: role === "full" ? null : t.roomId,
       role,
     });
   }
+}
+
+// The host picks which game to play. Records it on the table, mints the room id,
+// and tells the host (and any guest already seated) to open the game.
+function chooseSeatGame(id, msg) {
+  const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
+  const gameId = typeof msg.gameId === "string" ? msg.gameId.slice(0, 64) : null;
+  if (!tableId || !gameId) return;
+  const capacity = Number.isFinite(msg.capacity) ? Math.max(2, Math.min(8, msg.capacity)) : 2;
+
+  const t = tables.get(tableId);
+  if (!t || t.host !== id) return; // only the table's host may choose
+  if (t.gameId) return; // a game is already locked in for this match
+
+  t.gameId = gameId;
+  t.capacity = capacity;
+  t.roomId = genRoomId();
+
+  const announce = (pid, role) => {
+    const c = clients.get(pid);
+    if (c) {
+      send(c.ws, { type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role });
+    }
+  };
+  announce(t.host, "host");
+  if (t.guest) announce(t.guest, "guest"); // a guest who sat before the pick
 }
 
 // A player stands up / disconnects. Ends the match for both players and frees
@@ -323,8 +352,13 @@ wss.on("connection", (ws) => {
         break;
       }
       case "sit-game": {
-        // Player sat at a game table and wants a room + role for it.
+        // Player sat at a game table and wants a role for it.
         assignSeat(id, msg);
+        break;
+      }
+      case "choose-game": {
+        // Host picked a game from the table menu.
+        chooseSeatGame(id, msg);
         break;
       }
       case "leave-game": {

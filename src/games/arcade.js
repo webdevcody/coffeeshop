@@ -1,14 +1,17 @@
-// Arcade — manages the full-viewport overlay that hosts a game in an <iframe>
-// when you sit down at a table. It is deliberately game-agnostic: it just loads
-// whatever URL the registry hands it. The server decides the room id and your
-// role (host/guest); this only renders.
+// Arcade — manages the full-viewport overlay shown when you sit at a table.
+// It has three states:
+//   - menu:    the host picks which game to spin up (showMenu)
+//   - waiting: the guest waits for the host to pick a game (showWaiting)
+//   - game:    the chosen game runs in an <iframe> (show)
+// It is deliberately game-agnostic: it just loads whatever URL the registry
+// hands it. The server decides the room id and your role (host/guest).
 
 import { getGame } from "./registry.js";
 
 export class Arcade {
   constructor(root) {
     this.root = root || document.getElementById("ui");
-    this.onLeave = null; // called when the player closes the game
+    this.onLeave = null; // called when the player closes the overlay
     this.open = false;
     this.table = null;
     this._build();
@@ -32,6 +35,57 @@ export class Arcade {
     el.querySelector("#arcade-leave").addEventListener("click", () => this.onLeave?.());
   }
 
+  _reveal() {
+    this.el.classList.remove("hidden");
+    this.open = true;
+  }
+
+  // Host view: choose a game to spin up. `games` is the registry catalog
+  // (id/name/blurb/icon). `onPick(gameId)` fires when a card is clicked.
+  showMenu(tableLabel, games, onPick) {
+    this.table = tableLabel || null;
+    this.titleEl.textContent = `🎮 Pick a game${tableLabel ? ` · ${tableLabel}` : ""}`;
+    this.statusEl.textContent = "You're hosting — choose what to play.";
+
+    this.stage.textContent = "";
+    this.frame = null;
+    const menu = document.createElement("div");
+    menu.className = "arcade-menu";
+    for (const g of games) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "arcade-card";
+      card.innerHTML = `
+        <span class="arcade-card-icon">${g.icon || "🎮"}</span>
+        <span class="arcade-card-name"></span>
+        <span class="arcade-card-blurb"></span>`;
+      card.querySelector(".arcade-card-name").textContent = g.name;
+      card.querySelector(".arcade-card-blurb").textContent = g.blurb || "";
+      card.addEventListener("click", () => onPick?.(g.id));
+      menu.appendChild(card);
+    }
+    this.stage.appendChild(menu);
+    this._reveal();
+    return true;
+  }
+
+  // Guest view: the host hasn't picked a game yet.
+  showWaiting(tableLabel, text) {
+    this.table = tableLabel || null;
+    this.titleEl.textContent = `🎮 ${tableLabel || "Game"}`;
+    this.statusEl.textContent = "";
+    this.stage.textContent = "";
+    this.frame = null;
+    const wrap = document.createElement("div");
+    wrap.className = "arcade-waiting";
+    wrap.innerHTML = `<div class="arcade-spinner"></div><p class="arcade-waiting-text"></p>`;
+    wrap.querySelector(".arcade-waiting-text").textContent =
+      text || "Waiting for the host to pick a game…";
+    this.stage.appendChild(wrap);
+    this._reveal();
+    return true;
+  }
+
   // Open a game. `gameId` is a registry key; `roomId`/`role` come from the
   // server. Returns true if the game was opened, false if it couldn't be.
   show(gameId, roomId, role, tableLabel) {
@@ -50,8 +104,7 @@ export class Arcade {
     this.stage.appendChild(frame);
     this.frame = frame;
 
-    this.el.classList.remove("hidden");
-    this.open = true;
+    this._reveal();
     return true;
   }
 
@@ -64,7 +117,7 @@ export class Arcade {
     this.open = false;
     this.table = null;
     this.el.classList.add("hidden");
-    // Drop the iframe so the game tears down its PeerJS connection / audio.
+    // Drop the iframe / menu so the game tears down its PeerJS connection / audio.
     this.stage.textContent = "";
     this.frame = null;
   }
