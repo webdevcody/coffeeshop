@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#6b4423" />
+    <title>Mancala · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online Mancala (Kalah) — sit at a café table and play a friend."
+    />
+    <style>
+      :root {
+        --bg: #2a1a0d;
+        --wood: #8a5a2b;
+        --wood-edge: #5e3c1a;
+        --pit: #3f2814;
+        --pit-edge: #5e3c1a;
+        --ink: #f6ecd9;
+        --muted: #e9d2ad;
+        --stone: #e8e0cf;
+        --stone-edge: #b9ad90;
+        --accent: #ffd166;
+        --legal: #6fe0a8;
+        --capture: #ff7a5c;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a2614, #140b04 72%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 12px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #9be7c4; font-weight: 700; }
+      #status.lose { color: #ffb0b8; font-weight: 700; }
+      #status.draw { color: #ffe08a; font-weight: 700; }
+
+      #board {
+        width: min(94vw, 820px);
+        background: var(--wood);
+        border: 5px solid var(--wood-edge);
+        border-radius: 18px;
+        padding: clamp(8px, 1.6vw, 16px);
+        display: grid;
+        grid-template-columns: 1.1fr 6fr 1.1fr;
+        gap: clamp(6px, 1.4vw, 14px);
+        align-items: stretch;
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+        touch-action: manipulation;
+      }
+      .pits {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        grid-template-rows: repeat(2, 1fr);
+        gap: clamp(6px, 1.4vw, 14px);
+      }
+      .pit, .store {
+        position: relative;
+        background: radial-gradient(circle at 50% 35%, #4c3219, var(--pit) 75%);
+        border: 2px solid var(--pit-edge);
+        box-shadow: inset 0 6px 12px rgba(0, 0, 0, 0.55);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        cursor: default;
+      }
+      .pit { border-radius: 44%; aspect-ratio: 1 / 1; }
+      .store { border-radius: 40px; }
+      .store.mine, .pit.own { border-color: #7a5226; }
+      .pit.legal {
+        cursor: pointer;
+        border-color: var(--legal);
+        box-shadow: inset 0 6px 12px rgba(0, 0, 0, 0.5), 0 0 0 2px rgba(111, 224, 168, 0.5);
+      }
+      .pit.legal:hover { background: radial-gradient(circle at 50% 35%, #5c4022, #4a3018 75%); }
+      .count {
+        font-weight: 800;
+        font-size: clamp(14px, 2.4vw, 22px);
+        color: var(--ink);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+        z-index: 2;
+      }
+      .store .count { font-size: clamp(18px, 3.2vw, 30px); }
+      .stones {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        justify-content: center;
+        align-content: center;
+        max-width: 80%;
+        z-index: 1;
+      }
+      .seed {
+        width: clamp(4px, 1vw, 8px);
+        height: clamp(4px, 1vw, 8px);
+        border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, #fff, var(--stone) 70%);
+        border: 1px solid var(--stone-edge);
+      }
+      .store-label {
+        position: absolute;
+        bottom: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        opacity: 0.85;
+        z-index: 2;
+      }
+      /* Sowing trail: each pit the move dropped a stone into pulses in turn. */
+      .pit.sown, .store.sown { animation: sown 420ms ease-out; }
+      @keyframes sown {
+        0% { box-shadow: inset 0 6px 12px rgba(0,0,0,0.5), 0 0 0 3px rgba(255, 209, 102, 0.9); }
+        100% { box-shadow: inset 0 6px 12px rgba(0,0,0,0.55), 0 0 0 0 rgba(255, 209, 102, 0); }
+      }
+      .pit.captured, .store.captured { animation: captured 600ms ease-out; }
+      @keyframes captured {
+        0%, 100% { outline: 0 solid transparent; }
+        40% { outline: 3px solid var(--capture); outline-offset: -2px; }
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .tag { display: inline-flex; align-items: center; gap: 6px; }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: #5e3c1a;
+        border: 1px solid #8a5a2b;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #714a22; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🫘 Mancala</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="board" aria-label="Mancala board"></div>
+      <footer>
+        <span class="tag" id="youTag">You: <b id="myColorLabel">—</b></span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // Same room contract as the other café games: #host=<CODE> registers the
+      // room's PeerJS peer, #join=<CODE> connects to it, #spectate=<CODE> watches
+      // read-only. Peer ids are namespaced so they never collide with other games
+      // on the public PeerJS cloud.
+      const PEER_PREFIX = "coffeeshop-mancala-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ===== PURE LOGIC START (no DOM/network — deterministic Kalah rules) =====
+      // 14 pits in counter-clockwise order:
+      //   0..5  host's pits      6  host's store (right)
+      //   7..12 guest's pits    13  guest's store (left)
+      const HOST_PITS = [0, 1, 2, 3, 4, 5];
+      const GUEST_PITS = [7, 8, 9, 10, 11, 12];
+      const STORE = { host: 6, guest: 13 };
+      const OPP_STORE = { host: 13, guest: 6 };
+      const pitsOf = (side) => (side === "host" ? HOST_PITS : GUEST_PITS);
+      const otherSide = (s) => (s === "host" ? "guest" : "host");
+      const ownsPit = (side, i) => pitsOf(side).includes(i);
+      const opposite = (i) => 12 - i; // pit directly across (stores excluded)
+
+      function initialBoard() {
+        const b = Array(14).fill(4);
+        b[6] = 0;
+        b[13] = 0;
+        return b;
+      }
+
+      function legalPits(board, side) {
+        return pitsOf(side).filter((i) => board[i] > 0);
+      }
+
+      function nextIndex(i, side) {
+        let n = (i + 1) % 14;
+        if (n === OPP_STORE[side]) n = (n + 1) % 14; // never sow into the opponent's store
+        return n;
+      }
+
+      function rowEmpty(board, side) {
+        return pitsOf(side).every((i) => board[i] === 0);
+      }
+
+      function isGameOver(board) {
+        return rowEmpty(board, "host") || rowEmpty(board, "guest");
+      }
+
+      // Move all remaining pit stones into each side's own store (end of game).
+      function sweep(board) {
+        const b = board.slice();
+        for (const side of ["host", "guest"]) {
+          for (const i of pitsOf(side)) {
+            b[STORE[side]] += b[i];
+            b[i] = 0;
+          }
+        }
+        return b;
+      }
+
+      // Sow from `pit` for `side`. Returns the resulting board plus metadata:
+      //   path     — indices that received a stone, in sow order (for animation)
+      //   last     — index of the final stone
+      //   freeTurn — last stone landed in the player's own store
+      //   captured — stones captured (0 if none); capturePit/oppPit when > 0
+      //   over     — game ended (a row emptied); board is already swept
+      // Assumes the move is legal (caller validates with legalPits first).
+      function sow(board, side, pit) {
+        const b = board.slice();
+        let stones = b[pit];
+        b[pit] = 0;
+        let idx = pit;
+        const path = [];
+        while (stones > 0) {
+          idx = nextIndex(idx, side);
+          b[idx] += 1;
+          path.push(idx);
+          stones -= 1;
+        }
+        const last = idx;
+        let freeTurn = last === STORE[side];
+        let captured = 0;
+        let capturePit = -1;
+        let oppPit = -1;
+        if (!freeTurn && ownsPit(side, last) && b[last] === 1 && b[opposite(last)] > 0) {
+          oppPit = opposite(last);
+          captured = b[oppPit] + 1; // opponent's pile + your landing stone
+          b[STORE[side]] += captured;
+          b[last] = 0;
+          b[oppPit] = 0;
+          capturePit = last;
+        }
+        let over = false;
+        let final = b;
+        if (isGameOver(b)) {
+          final = sweep(b);
+          over = true;
+          freeTurn = false;
+        }
+        return { board: final, path, last, freeTurn, captured, capturePit, oppPit, over };
+      }
+
+      function score(board) {
+        return { host: board[6], guest: board[13] };
+      }
+      // ===== PURE LOGIC END =====
+
+      // ---- Game state ------------------------------------------------------
+      let board = initialBoard();
+      let turn = "host"; // host moves first
+      let mySide = null; // "host" | "guest"
+      let phase = "lobby"; // lobby | play | over
+      let conn = null;
+      let isSpectator = false; // true when watching read-only via #spectate
+      const spectators = []; // host-side: open read-only data channels to onlookers
+      // Most recent move's animation hints (sown path + capture cells), echoed to
+      // spectators so they animate the same way.
+      let anim = null;
+
+      const sideLabel = (s) => (s === "host" ? "Host (bottom)" : "Guest (top)");
+
+      // ---- Rendering -------------------------------------------------------
+      // Fixed orientation for everyone: guest store on the left, guest's six pits
+      // along the top (right→left in play order), host's six pits along the
+      // bottom (left→right), host store on the right. Your own pits are the ones
+      // highlighted as playable on your turn, so the side is never ambiguous.
+      const TOP_ROW = [12, 11, 10, 9, 8, 7];
+      const BOTTOM_ROW = [0, 1, 2, 3, 4, 5];
+
+      function render() {
+        boardEl.innerHTML = "";
+        const myTurn = phase === "play" && !isSpectator && turn === mySide;
+        const legal = new Set(myTurn ? legalPits(board, mySide) : []);
+        const sownOrder = new Map();
+        if (anim) anim.path.forEach((i, k) => { if (!sownOrder.has(i)) sownOrder.set(i, k); });
+        const capSet = new Set(anim && anim.captured ? [anim.capturePit, anim.oppPit] : []);
+
+        const makeCell = (index, kind) => {
+          const el = document.createElement("div");
+          el.className = kind; // "pit" or "store"
+          if (kind === "pit" && ownsPit(mySide, index)) el.classList.add("own");
+          if (kind === "store" && index === STORE[mySide]) el.classList.add("mine");
+          if (kind === "pit" && legal.has(index)) {
+            el.classList.add("legal");
+            el.addEventListener("click", () => onPitClick(index));
+          }
+          if (sownOrder.has(index)) {
+            el.classList.add("sown");
+            el.style.animationDelay = sownOrder.get(index) * 70 + "ms";
+          }
+          if (capSet.has(index)) el.classList.add("captured");
+
+          const count = document.createElement("div");
+          count.className = "count";
+          count.textContent = board[index];
+          const stones = document.createElement("div");
+          stones.className = "stones";
+          const dots = Math.min(board[index], kind === "store" ? 24 : 14);
+          for (let s = 0; s < dots; s++) {
+            const seed = document.createElement("div");
+            seed.className = "seed";
+            stones.appendChild(seed);
+          }
+          el.appendChild(stones);
+          el.appendChild(count);
+          return el;
+        };
+
+        // Left store (guest).
+        const left = makeCell(STORE.guest, "store");
+        const ll = document.createElement("div");
+        ll.className = "store-label";
+        ll.textContent = "Guest";
+        left.appendChild(ll);
+        boardEl.appendChild(left);
+
+        // Middle: top row (guest) then bottom row (host).
+        const pits = document.createElement("div");
+        pits.className = "pits";
+        for (const i of TOP_ROW) pits.appendChild(makeCell(i, "pit"));
+        for (const i of BOTTOM_ROW) pits.appendChild(makeCell(i, "pit"));
+        boardEl.appendChild(pits);
+
+        // Right store (host).
+        const right = makeCell(STORE.host, "store");
+        const rl = document.createElement("div");
+        rl.className = "store-label";
+        rl.textContent = "Host";
+        right.appendChild(rl);
+        boardEl.appendChild(right);
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onPitClick(pit) {
+        if (phase !== "play" || isSpectator || turn !== mySide) return;
+        if (!ownsPit(mySide, pit) || board[pit] <= 0) return;
+        commitMove(pit);
+      }
+
+      function commitMove(pit) {
+        send({ type: "move", pit });
+        doMove(turn, pit);
+      }
+
+      function applyRemoteMove(pit) {
+        // Never trust a remote packet: only sow a pit the side to move actually
+        // owns and that holds stones, so a malformed message can't desync.
+        if (!Number.isInteger(pit) || !ownsPit(turn, pit) || board[pit] <= 0) {
+          handleDesync();
+          return;
+        }
+        doMove(turn, pit);
+      }
+
+      // Apply a (validated) move for `side`, then advance turn / free-turn / end.
+      function doMove(side, pit) {
+        const res = sow(board, side, pit);
+        board = res.board;
+        anim = { path: res.path, last: res.last, captured: res.captured, capturePit: res.capturePit, oppPit: res.oppPit };
+
+        if (res.over) {
+          phase = "over";
+          showResult();
+          render();
+          broadcastState();
+          return;
+        }
+
+        let extra = "";
+        if (res.captured > 0) {
+          extra = (side === mySide ? "You" : "Opponent") + " captured " + res.captured + ".";
+        }
+        if (res.freeTurn) {
+          // Last stone landed in the player's store — they move again.
+          extra = (side === mySide ? "You earn" : "Opponent earns") + " a free turn!";
+        } else {
+          turn = otherSide(turn);
+        }
+        updateTurnStatus(extra);
+        render();
+        broadcastState();
+      }
+
+      function updateTurnStatus(extra) {
+        if (phase !== "play") return;
+        const mine = turn === mySide;
+        const tail = mine ? "Your move." : "Opponent's move…";
+        setStatus((extra ? extra + " " : "") + tail, mine ? "turn" : "");
+      }
+
+      function showResult() {
+        const sc = score(board);
+        const mine = sc[mySide];
+        const theirs = sc[otherSide(mySide)];
+        let text;
+        let cls;
+        if (sc.host === sc.guest) {
+          text = `It's a draw — ${sc.host}–${sc.guest}.`;
+          cls = "draw";
+        } else {
+          const iWon = mine > theirs;
+          text = iWon ? `You win ${mine}–${theirs}! 🎉` : `You lose ${theirs}–${mine}.`;
+          cls = iWon ? "win" : "lose";
+        }
+        setStatus(text, cls);
+        newGameBtn.classList.remove("hidden");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
+      // ---- New game --------------------------------------------------------
+      function resetGame(broadcast) {
+        board = initialBoard();
+        turn = "host";
+        phase = "play";
+        anim = null;
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus("");
+        render();
+        broadcastState();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      // ---- Spectators ------------------------------------------------------
+      // The host owns the room's fixed peer id, so onlookers connect to it. We
+      // keep their read-only channels here and push a full board snapshot after
+      // every change (and on connect) so a late joiner sees the live position.
+      function snapshot() {
+        return { type: "state", board, turn, phase, anim };
+      }
+      function sendSnapshot(c) {
+        if (c && c.open) c.send(snapshot());
+      }
+      function broadcastState() {
+        for (const c of spectators) sendSnapshot(c);
+      }
+      function addSpectator(c) {
+        c.on("open", () => {
+          spectators.push(c);
+          sendSnapshot(c);
+        });
+        c.on("data", () => {}); // spectators are read-only
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) {
+        const i = spectators.indexOf(c);
+        if (i >= 0) spectators.splice(i, 1);
+      }
+      // Spectator-side: adopt the host's snapshot and render read-only.
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.board)) return;
+        board = s.board;
+        turn = s.turn;
+        phase = s.phase;
+        anim = s.anim || null;
+        newGameBtn.classList.add("hidden");
+        if (phase === "over") {
+          const sc = score(board);
+          setStatus(
+            sc.host === sc.guest
+              ? `👁 Spectating — draw ${sc.host}–${sc.guest}.`
+              : `👁 Spectating — ${sc.host > sc.guest ? "Host" : "Guest"} wins ${Math.max(sc.host, sc.guest)}–${Math.min(sc.host, sc.guest)}.`,
+            ""
+          );
+        } else if (phase === "lobby") {
+          setStatus("👁 Waiting for the match to start…", "");
+        } else {
+          setStatus("👁 Spectating — " + (turn === "host" ? "Host" : "Guest") + "'s move.", "");
+        }
+        render();
+      }
+
+      function startMatch() {
+        myColorLabelEl.textContent = sideLabel(mySide);
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        // Spectators only ever consume read-only state snapshots from the host.
+        if (isSpectator) {
+          if (msg.type === "state") applySpectatorState(msg);
+          return;
+        }
+        switch (msg.type) {
+          case "hello":
+            if (phase === "lobby") startMatch();
+            break;
+          case "move":
+            if (phase === "play") applyRemoteMove(msg.pit);
+            break;
+          case "restart":
+            resetGame(false);
+            break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => {
+          send({ type: "hello" });
+          if (phase === "lobby") startMatch();
+        });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      // Spectator-side: the host's peer went away (match ended / host left).
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("The match ended.", "");
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("spectate=")) return { role: "spectator", code: h.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") {
+          setStatus("Failed to load networking library.", "lose");
+          return;
+        }
+        const info = parseHash();
+        render();
+        if (!info) {
+          setStatus("Open this game from a café table to start a match.", "");
+          return;
+        }
+        if (info.role === "host") {
+          mySide = "host";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("connection", (c) => {
+            // Onlookers connect with spectator metadata — wire them read-only
+            // instead of treating them as the opponent.
+            if (c.metadata && c.metadata.spectator) {
+              addSpectator(c);
+              return;
+            }
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          mySide = null;
+          myColorLabelEl.textContent = "Spectator";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () =>
+            wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } }))
+          );
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          mySide = "guest";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>
