@@ -63,6 +63,24 @@ export const GAMES = {
       return `/games/connect4/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
+  chess: {
+    id: "chess",
+    name: "Chess",
+    blurb: "Checkmate the king.",
+    icon: "♟",
+    // Host plays white and moves first; guest plays black.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other board games (#host=<CODE> / #join=<CODE>),
+    // plus a read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/chess/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
 };
 
 export function getGame(id) {
