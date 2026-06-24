@@ -63,6 +63,24 @@ export const GAMES = {
       return `/games/connect4/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
+  gomoku: {
+    id: "gomoku",
+    name: "Gomoku",
+    blurb: "Get five stones in a row.",
+    icon: "⚫",
+    // Host plays black and moves first; guest plays white.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/gomoku/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
 };
 
 export function getGame(id) {
