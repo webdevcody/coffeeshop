@@ -43,14 +43,20 @@ export class Arcade {
 
     // Closing the modal kicks you out of the game. A click on the dimmed
     // backdrop (outside the modal) counts as closing — but only when the press
-    // both starts and ends on the backdrop, so a drag out of the game doesn't
-    // accidentally end the match.
+    // both starts and ends on the backdrop. Tracking both endpoints keeps it
+    // symmetric: neither a drag out of the game (down inside, up on backdrop)
+    // nor a drag into it (down on backdrop, up inside) accidentally closes,
+    // since click's target is the common ancestor and can't be trusted alone.
     let downOnBackdrop = false;
+    let upOnBackdrop = false;
     el.addEventListener("mousedown", (e) => {
       downOnBackdrop = e.target === el;
     });
-    el.addEventListener("click", (e) => {
-      if (downOnBackdrop && e.target === el) this.onLeave?.();
+    el.addEventListener("mouseup", (e) => {
+      upOnBackdrop = e.target === el;
+    });
+    el.addEventListener("click", () => {
+      if (downOnBackdrop && upOnBackdrop) this.onLeave?.();
     });
 
     // Escape closes too (best-effort — a focused game iframe may swallow it).
