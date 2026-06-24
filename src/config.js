@@ -48,11 +48,16 @@ export const VOICE = {
   speakRelease: 0.35,
 };
 
-// A friendly palette used for character bodies when the player doesn't pick one.
+// A friendly palette used for character clothing when the player doesn't pick one.
 export const PALETTE = [
   "#e76f51", "#2a9d8f", "#e9c46a", "#8ecae6", "#f4a261",
   "#a78bfa", "#ef476f", "#06d6a0", "#118ab2", "#ffb4a2",
 ];
+
+// Skin and hair palettes shared by the character model and the customize panel,
+// so the panel's swatches line up exactly with what the model can render.
+export const SKIN_TONES = ["#ffdbac", "#f1c9a5", "#e0ac81", "#c68642", "#8d5524", "#5a3825"];
+export const HAIR_TONES = ["#2b1b10", "#4a2f1b", "#1c1c1c", "#6b4423", "#8a8a8a", "#caa05a", "#d94f4f", "#7b4fd9"];
 
 export function randomColor() {
   return PALETTE[Math.floor(Math.random() * PALETTE.length)];

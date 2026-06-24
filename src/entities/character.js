@@ -3,9 +3,7 @@
 // a `head` anchor so labels/chat bubbles can attach above it.
 
 import * as THREE from "three";
-
-const SKIN_TONES = ["#f1c9a5", "#e0ac81", "#c68642", "#8d5524", "#ffdbac"];
-const HAIR_TONES = ["#2b1b10", "#4a2f1b", "#1c1c1c", "#6b4423", "#8a8a8a", "#caa05a"];
+import { SKIN_TONES, HAIR_TONES } from "../config.js";
 
 // World-space height of the underside of the hips when standing (group at y=0).
 // Used to drop a seated body so its hips rest on the seating surface.
@@ -18,7 +16,11 @@ function hashPick(arr, seed) {
 }
 
 export class Character {
-  constructor(color = "#e76f51", seed = "x") {
+  // `appearance` is { color, skin, hair }; any omitted field falls back to a
+  // deterministic default derived from `seed` (so un-customized players still
+  // look distinct). A bare color string is accepted for backward compatibility.
+  constructor(appearance = {}, seed = "x") {
+    if (typeof appearance === "string") appearance = { color: appearance };
     this.group = new THREE.Group();
     this.phase = Math.random() * Math.PI * 2;
     this.swing = 0;
@@ -30,14 +32,19 @@ export class Character {
     this.seatBlend = 0;
     this.sitDrop = 0;
 
-    const skin = hashPick(SKIN_TONES, seed + "s");
-    const hair = hashPick(HAIR_TONES, seed + "h");
+    const color = appearance.color || "#e76f51";
+    const skin = appearance.skin || hashPick(SKIN_TONES, seed + "s");
+    const hair = appearance.hair || hashPick(HAIR_TONES, seed + "h");
     const pants = "#3a4a5a";
 
+    // bodyMat = clothing (torso + arms); skinMat = head/neck/hands; hairMat =
+    // hair cap. All three are customizable at runtime (see setAppearance).
     this.bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.7, flatShading: true });
-    const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7, flatShading: true });
+    this.skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7, flatShading: true });
     const pantsMat = new THREE.MeshStandardMaterial({ color: pants, roughness: 0.8, flatShading: true });
-    const hairMat = new THREE.MeshStandardMaterial({ color: hair, roughness: 0.85, flatShading: true });
+    this.hairMat = new THREE.MeshStandardMaterial({ color: hair, roughness: 0.85, flatShading: true });
+    const skinMat = this.skinMat;
+    const hairMat = this.hairMat;
 
     const m = (geo, mat) => {
       const mesh = new THREE.Mesh(geo, mat);
@@ -110,11 +117,34 @@ export class Character {
       pivot.rotation.z = side * 0.08;
       this.group.add(pivot);
       this.arms.push(pivot);
+      // Right hand gets an anchor a held item can be parented to, so it swings
+      // naturally with the arm.
+      if (side === 1) {
+        this.handAnchor = new THREE.Group();
+        this.handAnchor.position.set(0.04, -0.66, 0.06);
+        pivot.add(this.handAnchor);
+      }
     }
   }
 
   setColor(hex) {
     this.bodyMat.color.set(hex);
+  }
+
+  // Live appearance editing. Pass any subset of { color, skin, hair }; only the
+  // provided fields change. `color` is the clothing (shirt) color.
+  setAppearance(app = {}) {
+    if (app.color) this.bodyMat.color.set(app.color);
+    if (app.skin) this.skinMat.color.set(app.skin);
+    if (app.hair) this.hairMat.color.set(app.hair);
+  }
+
+  getAppearance() {
+    return {
+      color: "#" + this.bodyMat.color.getHexString(),
+      skin: "#" + this.skinMat.color.getHexString(),
+      hair: "#" + this.hairMat.color.getHexString(),
+    };
   }
 
   // Sit on / get up from a seat. `seatTopY` is the world-space height of the
