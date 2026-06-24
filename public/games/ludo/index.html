@@ -249,7 +249,13 @@
           const oi = state.order.indexOf(entry.color);
           delete state.tokens[entry.color];
           state.order.splice(oi, 1);
-          if (oi < state.turn || state.turn >= state.order.length) state.turn = state.order.length ? state.turn % state.order.length : 0;
+          // The splice shifted every entry after oi down by one. If the removed
+          // player sat before the cursor, the current player moved down a slot,
+          // so follow them by decrementing; then wrap if the cursor fell off the
+          // now-shorter end. When oi === turn the cursor already points at the
+          // next player, so only the wrap applies.
+          if (oi < state.turn) state.turn--;
+          if (state.turn >= state.order.length) state.turn = 0;
           state.die = null; state.awaiting = false; state.sixes = 0;
           if (state.order.length <= 1) { state.phase = "over"; state.winner = state.order[0] || null; }
           players.splice(i, 1);
