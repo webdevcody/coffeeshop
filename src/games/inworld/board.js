@@ -20,6 +20,12 @@ import { TABLE_SURFACE_Y, orientFor, hitToCell, GameDesync } from "./createGame.
 // pixels is a board "click"; more is a camera-orbit drag (controls.js keeps it).
 const CLICK_SLOP = 6;
 
+// Per-game seated-camera zoom-out factor. Most boards fit the default first-person
+// framing (1). Battleship's two ocean grids are much larger, so we pull the camera
+// FURTHER BACK (and up) for that game ONLY, so the whole board is visible. Other
+// games are unaffected. localPlayer._updateSeatedCamera reads this via getSeatedView.
+const SEATED_CAM_ZOOM = { battleship: 1.7 };
+
 // Derive the tabletop's local Y for parenting a board to a table group, the same
 // way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
 // face, fall back to the authored constant. Standalone so the ambient passersby
@@ -228,6 +234,8 @@ export class InWorldBoard {
       },
       seatRy: a.seatRy,
       tableId: a.tableId,
+      // Per-game pull-back (battleship only); 1 = default first-person framing.
+      zoom: SEATED_CAM_ZOOM[a.gameId] || 1,
     };
   }
 

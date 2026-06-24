@@ -336,8 +336,12 @@ export class LocalPlayer {
     // board fits when scrolled out.
     const zoomIn = cl((SEATED_CAM.zoomNeutral - zf) / (SEATED_CAM.zoomNeutral - SEATED_CAM.zoomMin), 0, 1);
     const zoomOut = cl((zf - SEATED_CAM.zoomNeutral) / (SEATED_CAM.zoomMax - SEATED_CAM.zoomNeutral), 0, 1);
-    const lean = SEATED_CAM.eyeForward + zoomIn * SEATED_CAM.zoomLean - zoomOut * SEATED_CAM.zoomBack;
-    const eyeY = seatY + SEATED_CAM.eyeHeight - zoomIn * SEATED_CAM.zoomDrop + zoomOut * SEATED_CAM.zoomRise;
+    // Per-game pull-back (battleship ONLY): view.zoom > 1 dollies the eye further
+    // back along -fwd and lifts it so the larger board fits. zoom = 1 (every other
+    // game) leaves the framing exactly as before. The player can still scroll.
+    const camZoom = (view.zoom && view.zoom > 0) ? view.zoom : 1;
+    const lean = SEATED_CAM.eyeForward + zoomIn * SEATED_CAM.zoomLean - zoomOut * SEATED_CAM.zoomBack - (camZoom - 1) * 0.55;
+    const eyeY = seatY + SEATED_CAM.eyeHeight - zoomIn * SEATED_CAM.zoomDrop + zoomOut * SEATED_CAM.zoomRise + (camZoom - 1) * 0.5;
     this._seatCamPos.set(
       this.pos.x + this._fwd.x * lean,
       eyeY,
