@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1c130b" />
+    <title>Ludo · The Daily Grind</title>
+    <meta name="description" content="2–4 player online Ludo — sit at a café table and race your tokens home." />
+    <style>
+      :root { --ink: #f3e9dc; --muted: #c9b6a0; --accent: #e0a23a; --panel: #3a281a; }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a281a, #1c130b 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none; user-select: none; overflow: hidden;
+      }
+      #app { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px; }
+      header { text-align: center; line-height: 1.2; }
+      header h1 { margin: 0; font-size: clamp(16px, 3.6vw, 24px); letter-spacing: 1px; }
+      #status { margin-top: 3px; font-size: clamp(13px, 3vw, 16px); color: var(--muted); min-height: 1.2em; }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fd18f; font-weight: 700; }
+      #status.lose { color: #e7796a; font-weight: 700; }
+      #board { background: #120c06; border: 4px solid #4a311c; border-radius: 10px; box-shadow: 0 14px 40px rgba(0,0,0,0.55); width: min(92vw, 64vh); height: min(92vw, 64vh); touch-action: manipulation; }
+      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+      .players { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; font-size: 13px; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel); border: 1px solid #5a3f26; }
+      .pill.active { outline: 2px solid var(--accent); }
+      .pill.me { font-weight: 800; }
+      .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+      .die { width: 46px; height: 46px; border-radius: 10px; background: #f3e9dc; color: #2b1d12; font-weight: 900; font-size: 26px; display: inline-flex; align-items: center; justify-content: center; box-shadow: inset 0 -3px 0 rgba(0,0,0,0.2); }
+      button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid #5a3f26; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+      button:hover:not(:disabled) { background: #4a331f; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🎲 Ludo</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div class="players" id="players"></div>
+      <canvas id="board" width="600" height="600" aria-label="Ludo board"></canvas>
+      <div class="row" id="controls">
+        <span class="die hidden" id="die">–</span>
+        <button id="rollBtn" class="hidden">Roll</button>
+        <button id="startBtn" class="hidden">Start game</button>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </div>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // ----------------------------------------------------------------------
+      // Ludo — the café's first 4-player game. Host-authoritative, multi-guest:
+      //   #host=<CODE>     -> host: owns game state, accepts up to 3 guests,
+      //                       runs the simulation, broadcasts a snapshot
+      //   #join=<CODE>     -> guest: gets a colour, sends roll/move, renders state
+      //   #spectate=<CODE> -> read-only onlooker
+      // Every guest joins the host the same way; the host assigns each a colour
+      // by connection order (the server already seats host + up to 3 guests).
+      //
+      // Rules: 2–4 players, 4 tokens each. Roll a 6 to bring a token out of the
+      // yard (and roll again). Move a token `die` steps along its path: 51 shared
+      // track squares, then 6 private home squares (57 steps total) to finish —
+      // exact count required. Landing on an opponent on a non-safe square sends it
+      // home. Safe squares (the four coloured starts + four stars) can't be
+      // captured. Three 6s in a row forfeits the turn. First to get all 4 tokens
+      // home wins.
+      // ----------------------------------------------------------------------
+      const PEER_PREFIX = "coffeeshop-ludo-";
+
+      // ==== Board geometry (15×15 grid) =====================================
+      const N = 15, CELL = 600 / N;
+      // The 52-cell main track, clockwise, red's start at index 0.
+      const TRACK = [
+        [6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],[0,7],[0,8],
+        [1,8],[2,8],[3,8],[4,8],[5,8],[6,9],[6,10],[6,11],[6,12],[6,13],[6,14],[7,14],[8,14],
+        [8,13],[8,12],[8,11],[8,10],[8,9],[9,8],[10,8],[11,8],[12,8],[13,8],[14,8],[14,7],[14,6],
+        [13,6],[12,6],[11,6],[10,6],[9,6],[8,5],[8,4],[8,3],[8,2],[8,1],[8,0],[7,0],[6,0],
+      ];
+      const COLORS = ["red", "green", "yellow", "blue"];
+      const START = { red: 0, green: 13, yellow: 26, blue: 39 };
+      const HOME = {
+        red:    [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6]],
+        green:  [[1,7],[2,7],[3,7],[4,7],[5,7],[6,7]],
+        yellow: [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8]],
+        blue:   [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]],
+      };
+      const YARD = {
+        red:    [[1.5,1.5],[1.5,3.5],[3.5,1.5],[3.5,3.5]],
+        green:  [[1.5,10.5],[1.5,12.5],[3.5,10.5],[3.5,12.5]],
+        yellow: [[10.5,10.5],[10.5,12.5],[12.5,10.5],[12.5,12.5]],
+        blue:   [[10.5,1.5],[10.5,3.5],[12.5,1.5],[12.5,3.5]],
+      };
+      const SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]); // coloured starts + stars
+      const INK = { red: "#d65a4a", green: "#4caf6a", yellow: "#e3b34a", blue: "#4a85d6" };
+      const INK_DARK = { red: "#9c2f23", green: "#2f7a47", yellow: "#a87c1e", blue: "#2c5a9c" };
+
+      // step (1..51 track, 52..57 home) -> [row,col]; 0 = yard slot.
+      function cellOf(color, step, tokenIdx) {
+        if (step <= 0) return YARD[color][tokenIdx];
+        if (step <= 51) return TRACK[(START[color] + step - 1) % 52];
+        return HOME[color][step - 52];
+      }
+      const absSquare = (color, step) => (START[color] + step - 1) % 52;
+
+      // ==== Game state (host-authoritative) =================================
+      // tokens: { color: [step×4] }, step 0..57 (57 = finished).
+      let state = null; // { tokens, order, turn, die, awaiting, sixes, phase, winner }
+      function newGame(order) {
+        const tokens = {};
+        for (const c of order) tokens[c] = [0, 0, 0, 0];
+        return { tokens, order, turn: 0, die: null, awaiting: false, sixes: 0, phase: "play", winner: null };
+      }
+
+      function legalMoves(s, color) {
+        const out = [];
+        const die = s.die;
+        s.tokens[color].forEach((step, i) => {
+          if (step === 57) return; // already home
+          if (step === 0) { if (die === 6) out.push(i); return; } // leave the yard
+          if (step + die <= 57) out.push(i); // exact-or-under to finish
+        });
+        return out;
+      }
+
+      // Apply a validated move; returns { captured: bool }. Mutates s.
+      function applyMove(s, color, idx) {
+        const die = s.die;
+        let step = s.tokens[color][idx];
+        step = step === 0 ? 1 : step + die; // a 6 brings it to the start square
+        s.tokens[color][idx] = step;
+        let captured = false;
+        if (step >= 1 && step <= 51) {
+          const sq = absSquare(color, step);
+          if (!SAFE.has(sq)) {
+            for (const other of s.order) {
+              if (other === color) continue;
+              s.tokens[other].forEach((ostep, j) => {
+                if (ostep >= 1 && ostep <= 51 && absSquare(other, ostep) === sq) {
+                  s.tokens[other][j] = 0; // send home
+                  captured = true;
+                }
+              });
+            }
+          }
+        }
+        return { captured };
+      }
+
+      const allHome = (s, color) => s.tokens[color].every((st) => st === 57);
+      const curColor = (s) => (s && s.order ? s.order[s.turn] : null);
+
+      function nextTurn(s) {
+        s.turn = (s.turn + 1) % s.order.length;
+        s.die = null; s.awaiting = false; s.sixes = 0;
+      }
+
+      // Host: perform a die roll for the current player, then resolve it.
+      function hostRoll() {
+        if (!isHost || !state || state.phase !== "play" || state.awaiting || state.die !== null) return;
+        const color = curColor(state);
+        state.die = 1 + Math.floor(Math.random() * 6);
+        state.sixes = state.die === 6 ? state.sixes + 1 : 0;
+        if (state.sixes === 3) { state.die = null; nextTurn(state); broadcastState(); renderAll(); return; }
+        const legal = legalMoves(state, color);
+        if (legal.length === 0) {
+          // No move: a 6 still doesn't help, so the turn passes.
+          state.die = null; nextTurn(state); broadcastState(); renderAll(); return;
+        }
+        if (legal.length === 1) { hostApply(color, legal[0]); return; }
+        state.awaiting = true; broadcastState(); renderAll();
+      }
+
+      // Host: apply a move for the current player and advance the turn / grant a
+      // bonus roll on a 6 / detect a win.
+      function hostApply(color, idx) {
+        if (!isHost || !state || state.phase !== "play") return;
+        const die = state.die;
+        applyMove(state, color, idx);
+        if (allHome(state, color)) { state.phase = "over"; state.winner = color; state.die = null; state.awaiting = false; broadcastState(); renderAll(); return; }
+        if (die === 6) { state.die = null; state.awaiting = false; /* same player rolls again */ }
+        else nextTurn(state);
+        broadcastState(); renderAll();
+      }
+
+      // ==== Connection / roles ==============================================
+      let role = null;          // "host" | "guest" | "spectator"
+      let isHost = false;
+      let myColor = null;       // assigned colour (host = red)
+      let mySeat = -1;
+      let conn = null;          // guest/spectator: link to host
+      const players = [];       // host-side: [{ seat, color, conn }]  seat 0 = host
+      const spectators = [];    // host-side
+      let started = false;
+
+      const statusEl = document.getElementById("status");
+      const playersEl = document.getElementById("players");
+      const canvas = document.getElementById("board");
+      const ctx = canvas.getContext("2d");
+      const dieEl = document.getElementById("die");
+      const rollBtn = document.getElementById("rollBtn");
+      const startBtn = document.getElementById("startBtn");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+      // ---- Snapshots --------------------------------------------------------
+      function snapshot() {
+        return { type: "state", state, roster: players.map((p) => p.color), started };
+      }
+      function send(c, msg) { if (c && c.open) c.send(msg); }
+      function broadcastState() {
+        const snap = snapshot();
+        for (const p of players) if (p.conn) send(p.conn, snap);
+        for (const c of spectators) send(c, snap);
+      }
+      function broadcastLobby() { broadcastState(); }
+
+      // ---- Host: managing players ------------------------------------------
+      function colorForSeat(seat) { return COLORS[seat]; }
+
+      function addPlayerConn(c) {
+        const seat = players.length; // 0 is host, so first guest = seat 1
+        if (seat > 3 || started) { addSpectator(c); return; }
+        const color = colorForSeat(seat);
+        const entry = { seat, color, conn: c };
+        players.push(entry);
+        c.on("open", () => { send(c, { type: "welcome", seat, color }); broadcastLobby(); renderAll(); });
+        c.on("data", (m) => onHostData(entry, m));
+        c.on("close", () => onPlayerGone(entry));
+        c.on("error", () => onPlayerGone(entry));
+        // If it opened before the handler attached (rare), greet now.
+        if (c.open) { send(c, { type: "welcome", seat, color }); broadcastLobby(); renderAll(); }
+      }
+      function onPlayerGone(entry) {
+        const i = players.indexOf(entry);
+        if (i < 0) return;
+        if (!started) { players.splice(i, 1); broadcastLobby(); renderAll(); return; }
+        // Mid-game: drop that colour from the rotation; their tokens leave the board.
+        if (state && state.order.includes(entry.color)) {
+          const wasCur = curColor(state) === entry.color;
+          const oi = state.order.indexOf(entry.color);
+          delete state.tokens[entry.color];
+          state.order.splice(oi, 1);
+          if (oi < state.turn || state.turn >= state.order.length) state.turn = state.order.length ? state.turn % state.order.length : 0;
+          state.die = null; state.awaiting = false; state.sixes = 0;
+          if (state.order.length <= 1) { state.phase = "over"; state.winner = state.order[0] || null; }
+          players.splice(i, 1);
+          broadcastState(); renderAll();
+        } else { players.splice(i, 1); broadcastLobby(); renderAll(); }
+      }
+      function addSpectator(c) {
+        c.on("open", () => { spectators.push(c); send(c, snapshot()); });
+        c.on("data", () => {});
+        c.on("close", () => { const i = spectators.indexOf(c); if (i >= 0) spectators.splice(i, 1); });
+        c.on("error", () => { const i = spectators.indexOf(c); if (i >= 0) spectators.splice(i, 1); });
+        if (c.open) { spectators.push(c); send(c, snapshot()); }
+      }
+      function onHostData(entry, m) {
+        if (!m || typeof m !== "object" || !state || state.phase !== "play") return;
+        if (curColor(state) !== entry.color) return; // not this player's turn
+        if (m.type === "roll") { if (!state.awaiting && state.die === null) hostRoll(); }
+        else if (m.type === "move" && Number.isInteger(m.token)) {
+          if (state.awaiting && legalMoves(state, entry.color).includes(m.token)) hostApply(entry.color, m.token);
+        }
+      }
+
+      function startGame() {
+        if (!isHost || started || players.length < 2) return;
+        started = true;
+        state = newGame(players.map((p) => p.color));
+        broadcastState();
+        renderAll();
+      }
+      startBtn.addEventListener("click", startGame);
+      newGameBtn.addEventListener("click", () => {
+        if (isHost) { state = newGame(players.map((p) => p.color)); broadcastState(); renderAll(); }
+        else send(conn, { type: "playagain" });
+      });
+
+      // ---- Guest/spectator: receiving --------------------------------------
+      function onClientData(m) {
+        if (!m || typeof m !== "object") return;
+        if (m.type === "welcome") { mySeat = m.seat; myColor = m.color; renderAll(); }
+        else if (m.type === "state") { state = m.state; started = m.started; window.__roster = m.roster; renderAll(); }
+      }
+
+      // ---- Local actions (host or guest) -----------------------------------
+      const isMyTurn = () => state && state.phase === "play" && curColor(state) === myColor && role !== "spectator";
+      function doRoll() {
+        if (!isMyTurn() || state.awaiting || state.die !== null) return;
+        if (isHost) hostRoll(); else send(conn, { type: "roll" });
+      }
+      rollBtn.addEventListener("click", doRoll);
+      function chooseToken(idx) {
+        if (!isMyTurn() || !state.awaiting) return;
+        if (!legalMoves(state, myColor).includes(idx)) return;
+        if (isHost) hostApply(myColor, idx); else send(conn, { type: "move", token: idx });
+      }
+      canvas.addEventListener("click", (e) => {
+        if (!isMyTurn() || !state.awaiting) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 600;
+        const y = ((e.clientY - rect.top) / rect.height) * 600;
+        const legal = legalMoves(state, myColor);
+        for (const idx of legal) {
+          const [r, c] = cellOf(myColor, state.tokens[myColor][idx], idx);
+          const cx = (c + 0.5) * CELL, cy = (r + 0.5) * CELL;
+          if (Math.hypot(x - cx, y - cy) <= CELL * 0.55) { chooseToken(idx); return; }
+        }
+      });
+
+      // ==== Rendering ========================================================
+      function renderAll() { drawBoard(); drawTokens(); updateChrome(); }
+
+      function fillCell(r, c, color) {
+        ctx.fillStyle = color;
+        ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+        ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = 1;
+        ctx.strokeRect(c * CELL + 0.5, r * CELL + 0.5, CELL, CELL);
+      }
+      function drawBoard() {
+        ctx.fillStyle = "#f3e9dc";
+        ctx.fillRect(0, 0, 600, 600);
+        // yards
+        const yard = (r, c, color) => {
+          ctx.fillStyle = INK[color]; roundRect(c * CELL, r * CELL, 6 * CELL, 6 * CELL, 10); ctx.fill();
+          ctx.fillStyle = "#f3e9dc"; roundRect(c * CELL + CELL, r * CELL + CELL, 4 * CELL, 4 * CELL, 8); ctx.fill();
+        };
+        yard(0, 0, "red"); yard(0, 9, "green"); yard(9, 9, "yellow"); yard(9, 0, "blue");
+        // track cells
+        TRACK.forEach((cell, i) => fillCell(cell[0], cell[1], SAFE.has(i) ? "#efe2cf" : "#fbf6ec"));
+        // colour the start cells + safe stars a touch stronger
+        for (const color of COLORS) { const [r, c] = TRACK[START[color]]; fillCell(r, c, INK[color]); }
+        // home columns
+        for (const color of COLORS) for (const [r, c] of HOME[color]) fillCell(r, c, INK[color]);
+        // centre home triangle
+        ctx.save();
+        const cxp = 7 * CELL, cyp = 7 * CELL, s = CELL;
+        const tri = (x1,y1,x2,y2,color) => { ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(cxp + s*1.5, cyp + s*1.5); ctx.lineTo(x1,y1); ctx.lineTo(x2,y2); ctx.closePath(); ctx.fill(); };
+        tri(cxp, cyp, cxp + 3*s, cyp, INK.green);
+        tri(cxp + 3*s, cyp, cxp + 3*s, cyp + 3*s, INK.yellow);
+        tri(cxp + 3*s, cyp + 3*s, cxp, cyp + 3*s, INK.blue);
+        tri(cxp, cyp + 3*s, cxp, cyp, INK.red);
+        ctx.restore();
+        // safe-square dots
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        SAFE.forEach((i) => { const [r, c] = TRACK[i]; ctx.beginPath(); ctx.arc((c+0.5)*CELL, (r+0.5)*CELL, CELL*0.16, 0, 7); ctx.fill(); });
+      }
+      function drawTokens() {
+        if (!state) return;
+        const legal = isMyTurn() && state.awaiting ? new Set(legalMoves(state, myColor)) : new Set();
+        // group tokens by cell to fan out stacks
+        for (const color of state.order) {
+          state.tokens[color].forEach((step, i) => {
+            const [r, c] = cellOf(color, step, i);
+            let cx = (c + 0.5) * CELL, cy = (r + 0.5) * CELL;
+            const rad = CELL * 0.34;
+            ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7);
+            ctx.fillStyle = INK[color]; ctx.fill();
+            ctx.lineWidth = 3; ctx.strokeStyle = INK_DARK[color]; ctx.stroke();
+            ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255,0.55)";
+            ctx.beginPath(); ctx.arc(cx, cy, rad * 0.55, 0, 7); ctx.stroke();
+            if (color === myColor && legal.has(i)) {
+              ctx.lineWidth = 4; ctx.strokeStyle = "#fff";
+              ctx.beginPath(); ctx.arc(cx, cy, rad + 4, 0, 7); ctx.stroke();
+            }
+          });
+        }
+      }
+      function roundRect(x, y, w, h, r) {
+        ctx.beginPath(); ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+      }
+
+      function updateChrome() {
+        // roster pills
+        const roster = isHost ? players.map((p) => p.color) : (window.__roster || (state ? state.order : []));
+        playersEl.innerHTML = "";
+        for (const color of roster) {
+          const pill = document.createElement("span");
+          pill.className = "pill" + (state && state.phase === "play" && curColor(state) === color ? " active" : "") + (color === myColor ? " me" : "");
+          pill.innerHTML = `<span class="swatch" style="background:${INK[color]}"></span>${color}${color === myColor ? " (you)" : ""}`;
+          playersEl.appendChild(pill);
+        }
+        // die
+        if (state && state.die) { dieEl.textContent = state.die; dieEl.classList.remove("hidden"); }
+        else dieEl.classList.add("hidden");
+        // buttons
+        const inLobby = !started || !state || state.phase === undefined;
+        startBtn.classList.toggle("hidden", !(isHost && !started));
+        startBtn.disabled = isHost && players.length < 2;
+        rollBtn.classList.toggle("hidden", !(state && state.phase === "play"));
+        rollBtn.disabled = !(isMyTurn() && !state.awaiting && state.die === null);
+        newGameBtn.classList.toggle("hidden", !(state && state.phase === "over" && role !== "spectator"));
+
+        // status line
+        if (state && state.phase === "over") {
+          const w = state.winner;
+          if (role === "spectator") setStatus(w ? w + " wins! 🎉" : "Game over.", "");
+          else setStatus(w === myColor ? "You win! 🎉" : (w ? w + " wins." : "Game over."), w === myColor ? "win" : "lose");
+        } else if (state && state.phase === "play") {
+          const cur = curColor(state);
+          if (role === "spectator") setStatus("👁 " + cur + "'s turn" + (state.die ? " — rolled " + state.die : ""), "");
+          else if (cur === myColor) {
+            if (state.awaiting) setStatus("You rolled " + state.die + " — pick a token.", "turn");
+            else if (state.die === null) setStatus("Your turn — roll the die.", "turn");
+            else setStatus("Moving…", "turn");
+          } else setStatus(cur + " is playing…", "");
+        } else {
+          // lobby
+          if (isHost) setStatus(players.length < 2 ? "Waiting for players to join…" : "Ready — press Start when everyone's in.", "");
+          else if (role === "spectator") setStatus("👁 Waiting for the match to start…", "");
+          else setStatus(myColor ? "You are " + myColor + " — waiting for the host to start…" : "Connecting…", "");
+        }
+      }
+
+      // ==== Boot ============================================================
+      function parseHash() {
+        const hs = (location.hash || "").replace(/^#/, "");
+        if (hs.startsWith("host=")) return { role: "host", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("join=")) return { role: "guest", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("spectate=")) return { role: "spectator", code: hs.slice(9).toUpperCase() };
+        return null;
+      }
+      function boot() {
+        renderAll();
+        if (typeof Peer === "undefined") { setStatus("Failed to load networking library.", "lose"); return; }
+        const info = parseHash();
+        if (!info) { setStatus("Open this game from a café table to start a match.", ""); return; }
+        if (info.role === "host") {
+          role = "host"; isHost = true; myColor = "red"; mySeat = 0;
+          players.push({ seat: 0, color: "red", conn: null }); // the host occupies seat 0
+          setStatus("Waiting for players to join…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+          peer.on("connection", (c) => { if (c.metadata && c.metadata.spectator) addSpectator(c); else addPlayerConn(c); });
+          renderAll();
+        } else if (info.role === "spectator") {
+          role = "spectator";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () => { conn = peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } }); conn.on("data", onClientData); });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          role = "guest";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => {
+            conn = peer.connect(PEER_PREFIX + info.code, { reliable: true });
+            conn.on("data", onClientData);
+            conn.on("close", () => { if (!state || state.phase !== "over") setStatus("Disconnected from the host.", "lose"); });
+            conn.on("error", () => setStatus("Connection error.", "lose"));
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>
