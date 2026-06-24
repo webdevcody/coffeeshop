@@ -259,6 +259,93 @@ body {
   display: none;
 }
 
+/* ---------- Coffee-bar shop ---------- */
+.shop-panel {
+  position: fixed;
+  left: 16px;
+  bottom: 84px;
+  width: min(80vw, 230px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 10px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+.shop-panel.hidden {
+  display: none;
+}
+.shop-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #d9b89a;
+  margin: 2px 2px 8px;
+}
+.shop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.shop-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: var(--cream);
+  background: rgba(255, 234, 200, 0.06);
+  border: 1px solid rgba(255, 234, 200, 0.16);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.12s, border-color 0.12s;
+}
+.shop-item:hover {
+  background: rgba(224, 162, 58, 0.22);
+  border-color: rgba(224, 162, 58, 0.6);
+}
+.shop-item:active {
+  transform: translateY(1px);
+}
+.shop-item-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+.shop-item-name {
+  flex: 1;
+}
+.shop-item-price {
+  color: #e0a23a;
+  font-weight: 700;
+}
+
+.held-item {
+  position: fixed;
+  left: 50%;
+  bottom: 108px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: rgba(224, 162, 58, 0.92);
+  color: #2b1b0e;
+  border-radius: 999px;
+  padding: 6px 15px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.held-item.hidden {
+  display: none;
+}
+
 .chat-bar {
   position: fixed;
   left: 50%;

@@ -178,6 +178,8 @@ export function buildCoffeeshop(scene) {
   counter.position.set(-2.5, 0, -halfD + 1.4);
   group.add(counter);
   addBox(colliders, -2.5, -halfD + 1.4, counterLen + 0.2, 1.0);
+  // The order zone in front of the counter: stand here to use the coffee bar.
+  const bar = { x: -2.5, z: -halfD + 1.4, halfW: counterLen / 2 + 0.5, range: 2.6 };
 
   const espresso = makeEspressoMachine();
   espresso.position.set(-4.0, 1.13, -halfD + 1.4);
@@ -291,7 +293,7 @@ export function buildCoffeeshop(scene) {
   ];
   const spawn = { x: 0, z: 4 };
 
-  return { group, colliders, lights, seats, ground, spawn, update: outside.update };
+  return { group, colliders, lights, seats, bar, ground, spawn, update: outside.update };
 }
 
 // Register an axis-aligned box collider centered at (cx, cz) with full size (w, d).

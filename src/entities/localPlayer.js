@@ -15,9 +15,12 @@ const FALL = { gravity: 22, respawnY: -12 };
 export class LocalPlayer {
   // `appearance` is { color, skin, hair } (a bare color string also works).
   constructor(scene, controls, colliders, appearance, name, seats = [], ground = null, spawn = null) {
+    this.scene = scene;
     this.controls = controls;
     this.colliders = colliders;
     this.seats = seats;
+    // The silly item you bought from the coffee bar (one at a time).
+    this.heldItem = null; // { obj, def }
     // Walkable ground rectangles. Stand outside all of them and you fall.
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
@@ -84,6 +87,41 @@ export class LocalPlayer {
     this.bubbleTimer = Math.min(7, 2.5 + text.length * 0.05);
   }
 
+  // Buy/hold an item from the coffee bar. Only one at a time — buying a new one
+  // replaces (and discards) whatever you were already holding.
+  holdItem(def) {
+    if (!def) return;
+    if (this.heldItem) this._removeHeld();
+    const obj = def.build();
+    this.character.handAnchor.add(obj);
+    this.heldItem = { obj, def };
+  }
+
+  // Drop the held item onto the floor at your feet, freeing your hand.
+  dropItem() {
+    if (!this.heldItem) return;
+    const def = this.heldItem.def;
+    this._removeHeld();
+    const drop = def.build();
+    const fx = this.pos.x + Math.sin(this.facing) * 0.5;
+    const fz = this.pos.z + Math.cos(this.facing) * 0.5;
+    drop.position.set(fx, 0.1, fz);
+    drop.rotation.y = Math.random() * Math.PI * 2;
+    this.scene.add(drop);
+  }
+
+  _removeHeld() {
+    if (!this.heldItem) return;
+    this.character.handAnchor.remove(this.heldItem.obj);
+    this.heldItem.obj.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    this.heldItem = null;
+  }
+
+  // Display name of the item you're holding, or null.
+  heldName() {
+    return this.heldItem ? this.heldItem.def.name : null;
+  }
+
   update(dt, camera) {
     const { move, orbit, zoom } = this.controls;
 
@@ -92,6 +130,10 @@ export class LocalPlayer {
       if (this.sitting) this._stand();
       else this._trySit();
     }
+
+    // G drops whatever you're holding (the controls layer already ignores keys
+    // while you're typing in chat, so this won't fire mid-message).
+    if (this.controls.consumeDrop?.()) this.dropItem();
 
     // Camera-relative basis on the ground plane from the orbit yaw.
     this._fwd.set(Math.sin(orbit.yaw), 0, Math.cos(orbit.yaw)); // toward camera->player
