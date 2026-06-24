@@ -1,19 +1,20 @@
 // Game registry — the single place that knows about playable games inside the
-// café. Each table in the world points at one of these by `id`; sitting down at
-// a table opens the game in an overlay iframe connected to that table's room.
+// café. When you sit at a table you pick one of these from a menu; the choice
+// opens the game in an overlay iframe connected to that table's room.
 //
-// To add a new game later:
+// To add a new game:
 //   1. Drop its static build under  public/games/<id>/
 //   2. Add an entry here describing how to build its room URL.
-//   3. Point one or more tables at it (see world/coffeeshop.js -> TABLE_GAME).
 // Nothing else in the codebase needs to know the game exists — the server is a
-// generic room coordinator and the Arcade overlay just loads whatever URL the
-// registry produces.
+// generic room coordinator, the table menu lists whatever is registered here,
+// and the Arcade overlay just loads whatever URL the registry produces.
 
 export const GAMES = {
   battleship: {
     id: "battleship",
     name: "Battleship",
+    blurb: "Sink your opponent's fleet.",
+    icon: "🚢",
     // Two players per match (one host + one guest). The server uses this to
     // decide when a table is full.
     capacity: 2,
@@ -40,8 +41,33 @@ export const GAMES = {
       return `/games/checkers/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
+  connect4: {
+    id: "connect4",
+    name: "Connect 4",
+    blurb: "Line up four in a row.",
+    icon: "🔴",
+    // Host plays red and drops first; guest plays yellow.
+    capacity: 2,
+    // Same room contract as battleship (#host=<CODE> / #join=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : "join";
+      return `/games/connect4/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
 };
 
 export function getGame(id) {
   return GAMES[id] || null;
+}
+
+// The catalog the table menu renders. Order is stable for a build.
+export function listGames() {
+  return Object.values(GAMES).map((g) => ({
+    id: g.id,
+    name: g.name,
+    blurb: g.blurb || "",
+    icon: g.icon || "🎮",
+    capacity: g.capacity ?? 2,
+  }));
 }

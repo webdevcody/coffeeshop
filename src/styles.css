@@ -573,3 +573,65 @@ body {
   border: 0;
   display: block;
 }
+
+/* Game-picker menu (shown to the host) and the guest's waiting screen. */
+.arcade-menu {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-content: center;
+  justify-items: center;
+  gap: 18px;
+  padding: 28px;
+  overflow: auto;
+}
+.arcade-card {
+  width: 100%;
+  max-width: 240px;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px 16px;
+  cursor: pointer;
+  color: var(--cream);
+  background: rgba(30, 18, 10, 0.85);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 16px;
+  transition: transform 0.08s, border-color 0.15s, background 0.15s;
+}
+.arcade-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 234, 200, 0.55);
+  background: rgba(46, 28, 16, 0.95);
+}
+.arcade-card:active { transform: translateY(0); }
+.arcade-card-icon { font-size: 40px; line-height: 1; }
+.arcade-card-name { font-size: 18px; font-weight: 700; }
+.arcade-card-blurb { font-size: 13px; color: #b9a489; text-align: center; }
+
+.arcade-waiting {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  color: var(--cream);
+}
+.arcade-waiting-text { font-size: 15px; color: #b9a489; margin: 0; }
+.arcade-spinner {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 234, 200, 0.18);
+  border-top-color: rgba(255, 234, 200, 0.75);
+  animation: arcade-spin 0.9s linear infinite;
+}
+@keyframes arcade-spin {
+  to { transform: rotate(360deg); }
+}

@@ -94,10 +94,18 @@ export class Network {
     });
   }
 
-  // Ask the server for a room + role for the game on the table we just sat at.
-  // The reply arrives as a "game-assign" event.
-  requestGame(table, gameId, capacity = 2) {
-    this._send({ type: "sit-game", table, gameId, capacity });
+  // Sit at a table and ask the server for a role. The reply arrives as a
+  // "game-assign": the first sitter becomes "host" (and then picks a game via
+  // chooseGame); later sitters become "guest" for whatever the host picked.
+  requestGame(table) {
+    this._send({ type: "sit-game", table });
+  }
+
+  // Host picks a game from the table menu. The server records it, mints the
+  // room id, and replies (to host and any waiting guest) with a "game-assign"
+  // that carries the chosen gameId + roomId.
+  chooseGame(table, gameId, capacity = 2) {
+    this._send({ type: "choose-game", table, gameId, capacity });
   }
 
   // Tell the server we left the game (stood up / closed the overlay).

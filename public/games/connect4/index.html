@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#13294b" />
+    <title>Connect 4 · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online Connect 4 — sit at a café table and play a friend."
+    />
+    <style>
+      :root {
+        --bg: #0c1b33;
+        --board: #1f4ea8;
+        --board-edge: #16387a;
+        --hole: #0a1426;
+        --ink: #eaf1ff;
+        --muted: #9fb3d6;
+        --red: #e23b4e;
+        --red-hi: #ff7080;
+        --yellow: #f2c14e;
+        --yellow-hi: #ffe08a;
+        --accent: #7fd1ff;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #15294d, #060c18 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 14px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fe0a0; font-weight: 700; }
+      #status.lose { color: var(--red-hi); font-weight: 700; }
+      #status.draw { color: var(--yellow-hi); font-weight: 700; }
+
+      #board {
+        --cols: 7;
+        --gap: clamp(5px, 1.4vw, 10px);
+        width: min(92vw, calc(64vh * 7 / 6));
+        background: var(--board);
+        border: 4px solid var(--board-edge);
+        border-radius: 14px;
+        padding: var(--gap);
+        display: grid;
+        grid-template-columns: repeat(var(--cols), 1fr);
+        gap: var(--gap);
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+        touch-action: manipulation;
+      }
+      .col {
+        display: grid;
+        grid-template-rows: repeat(6, 1fr);
+        gap: var(--gap);
+        cursor: default;
+      }
+      .col.playable { cursor: pointer; }
+      .col.playable:hover .cell.empty:last-child {
+        box-shadow: inset 0 0 0 3px rgba(127, 209, 255, 0.6);
+      }
+      .cell {
+        aspect-ratio: 1 / 1;
+        border-radius: 50%;
+        background: var(--hole);
+        box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.55);
+        position: relative;
+      }
+      .disc {
+        position: absolute;
+        inset: 6%;
+        border-radius: 50%;
+        box-shadow: inset 0 -4px 6px rgba(0, 0, 0, 0.35),
+          inset 0 4px 6px rgba(255, 255, 255, 0.25);
+      }
+      .disc.red { background: radial-gradient(circle at 35% 30%, var(--red-hi), var(--red) 70%); }
+      .disc.yellow { background: radial-gradient(circle at 35% 30%, var(--yellow-hi), var(--yellow) 70%); }
+      .cell.win .disc { outline: 3px solid #fff; outline-offset: -1px; }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .tag { display: inline-flex; align-items: center; gap: 6px; }
+      .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+      .dot.red { background: var(--red); }
+      .dot.yellow { background: var(--yellow); }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: #16387a;
+        border: 1px solid #2a5bc0;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #1c4695; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🔴 Connect 4 🟡</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="board" aria-label="Connect 4 board"></div>
+      <footer>
+        <span class="tag">You: <span class="dot" id="myDot"></span><span id="myColorLabel">—</span></span>
+        <button id="newGameBtn" class="hidden">New game</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // Same room contract as the other café games: #host=<CODE> registers the
+      // room's PeerJS peer, #join=<CODE> connects to it. Peer ids are namespaced
+      // so they never collide with other games on the public PeerJS cloud.
+      const PEER_PREFIX = "coffeeshop-connect4-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const myDotEl = document.getElementById("myDot");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ===== PURE LOGIC START (no DOM/network — validated by connect4-test) =====
+      const ROWS = 6;
+      const COLS = 7;
+
+      function emptyBoard() {
+        return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+      }
+
+      // Lowest empty row in a column, or -1 if the column is full.
+      function dropRow(board, col) {
+        for (let r = ROWS - 1; r >= 0; r--) if (!board[r][col]) return r;
+        return -1;
+      }
+
+      function isFull(board) {
+        for (let c = 0; c < COLS; c++) if (dropRow(board, c) >= 0) return false;
+        return true;
+      }
+
+      // If placing `color` at (r,c) completes a line of 4, return the winning
+      // cells; otherwise null. Checks the four axes through that cell.
+      function winningCells(board, r, c, color) {
+        const dirs = [
+          [0, 1], // horizontal
+          [1, 0], // vertical
+          [1, 1], // diagonal ↘
+          [1, -1], // diagonal ↙
+        ];
+        for (const [dr, dc] of dirs) {
+          const line = [[r, c]];
+          for (const sign of [1, -1]) {
+            let rr = r + dr * sign;
+            let cc = c + dc * sign;
+            while (
+              rr >= 0 && rr < ROWS && cc >= 0 && cc < COLS &&
+              board[rr][cc] === color
+            ) {
+              line.push([rr, cc]);
+              rr += dr * sign;
+              cc += dc * sign;
+            }
+          }
+          if (line.length >= 4) return line;
+        }
+        return null;
+      }
+      // ===== PURE LOGIC END =====
+
+      // ---- Game state ------------------------------------------------------
+      let board = emptyBoard();
+      let turn = "red"; // red (host) always drops first
+      let myColor = null; // "red" | "yellow"
+      let phase = "lobby"; // lobby | play | over
+      let conn = null;
+      let winCells = [];
+
+      const other = (c) => (c === "red" ? "yellow" : "red");
+
+      // ---- Rendering -------------------------------------------------------
+      function render() {
+        boardEl.innerHTML = "";
+        const myTurn = phase === "play" && turn === myColor;
+        const winSet = new Set(winCells.map(([r, c]) => r + "," + c));
+
+        for (let c = 0; c < COLS; c++) {
+          const col = document.createElement("div");
+          col.className = "col" + (myTurn && dropRow(board, c) >= 0 ? " playable" : "");
+          for (let r = 0; r < ROWS; r++) {
+            const cell = document.createElement("div");
+            const val = board[r][c];
+            cell.className = "cell " + (val ? "" : "empty") + (winSet.has(r + "," + c) ? " win" : "");
+            if (val) {
+              const disc = document.createElement("div");
+              disc.className = "disc " + val;
+              cell.appendChild(disc);
+            }
+            col.appendChild(cell);
+          }
+          col.addEventListener("click", () => onColumnClick(c));
+          boardEl.appendChild(col);
+        }
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onColumnClick(col) {
+        if (phase !== "play" || turn !== myColor) return;
+        if (dropRow(board, col) < 0) return; // full column
+        commitDrop(col);
+      }
+
+      function applyDrop(col, color) {
+        const r = dropRow(board, col);
+        if (r < 0) return null;
+        board[r][col] = color;
+        return r;
+      }
+
+      function commitDrop(col) {
+        const color = turn;
+        const r = applyDrop(col, color);
+        if (r === null) return;
+        send({ type: "drop", col });
+        afterDrop(r, col, color);
+      }
+
+      function applyRemoteDrop(col) {
+        const color = turn;
+        const r = applyDrop(col, color);
+        if (r === null) return;
+        afterDrop(r, col, color);
+      }
+
+      function afterDrop(r, col, color) {
+        const win = winningCells(board, r, col, color);
+        if (win) {
+          winCells = win;
+          phase = "over";
+          const iWon = color === myColor;
+          setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose");
+          newGameBtn.classList.remove("hidden");
+          render();
+          return;
+        }
+        if (isFull(board)) {
+          phase = "over";
+          setStatus("It's a draw.", "draw");
+          newGameBtn.classList.remove("hidden");
+          render();
+          return;
+        }
+        turn = other(turn);
+        updateTurnStatus();
+        render();
+      }
+
+      function updateTurnStatus() {
+        if (phase !== "play") return;
+        if (turn === myColor) setStatus("Your turn — drop a disc.", "turn");
+        else setStatus("Opponent's turn…", "");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      // ---- New game --------------------------------------------------------
+      function resetGame(broadcast) {
+        board = emptyBoard();
+        turn = "red";
+        phase = "play";
+        winCells = [];
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      function startMatch() {
+        myDotEl.className = "dot " + myColor;
+        myColorLabelEl.textContent = myColor === "red" ? "Red (first)" : "Yellow";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        switch (msg.type) {
+          case "hello":
+            if (phase === "lobby") startMatch();
+            break;
+          case "drop":
+            // Bound-check the column: a malformed/hostile peer could otherwise
+            // send a negative, fractional, or out-of-grid col, writing a
+            // "ghost" off-grid cell that silently desyncs the boards.
+            if (
+              phase === "play" &&
+              Number.isInteger(msg.col) &&
+              msg.col >= 0 &&
+              msg.col < COLS
+            )
+              applyRemoteDrop(msg.col);
+            break;
+          case "restart":
+            resetGame(false);
+            break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => {
+          send({ type: "hello" });
+          if (phase === "lobby") startMatch();
+        });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") {
+          setStatus("Failed to load networking library.", "lose");
+          return;
+        }
+        const info = parseHash();
+        render();
+        if (!info) {
+          setStatus("Open this game from a café table to start a match.", "");
+          return;
+        }
+        if (info.role === "host") {
+          myColor = "red";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("connection", (c) => {
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          myColor = "yellow";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>

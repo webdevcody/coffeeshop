@@ -20,13 +20,6 @@ import {
   makeWindow,
 } from "./props.js";
 
-// Maps a table index to the game it hosts (a key in games/registry.js). Tables
-// alternate between Checkers and Battleship so both are reachable in the café;
-// change the mapping here to mix games differently per table.
-function TABLE_GAME(i) {
-  return i % 2 === 0 ? "checkers" : "battleship";
-}
-
 export function buildCoffeeshop(scene) {
   const group = new THREE.Group();
   scene.add(group);
@@ -180,23 +173,21 @@ export function buildCoffeeshop(scene) {
   ];
   tablePositions.forEach(([x, z], i) => {
     const tableId = `table-${i}`;
-    // Which game lives on this table. All tables host Battleship today; point
-    // individual tables at other registry ids here to mix games per table.
-    const gameId = TABLE_GAME(i);
 
     const table = makeTable();
     table.position.set(x, 0, z);
     group.add(table);
     addBox(colliders, x, z, 1.0, 1.0); // table footprint
     // four chairs around it — each seat remembers which table (and therefore
-    // which game room) it belongs to.
+    // which game room) it belongs to. The game itself is chosen from a menu by
+    // whoever sits first, so seats only flag that they belong to a game table.
     const offsets = [[0, 0.85, 0], [0, -0.85, Math.PI], [0.85, 0, -Math.PI / 2], [-0.85, 0, Math.PI / 2]];
     for (const [ox, oz, ry] of offsets) {
       const chair = makeChair();
       chair.position.set(x + ox, 0, z + oz);
       chair.rotation.y = ry;
       group.add(chair);
-      seats.push({ x: x + ox, z: z + oz, ry, seatY: chair.userData.seatY, table: tableId, gameId });
+      seats.push({ x: x + ox, z: z + oz, ry, seatY: chair.userData.seatY, table: tableId, gameTable: true });
     }
     // mug on table sometimes
     if ((x + z) % 2 === 0) {
