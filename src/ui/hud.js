@@ -130,9 +130,9 @@ export class HUD {
     // Customize panel: one swatch row per editable part. Picking a swatch fires
     // onCustomize with just that field and re-highlights the active choice.
     this._swatchRows = {
-      skin: this._buildSwatchRow(ui.querySelector("#skin-swatches"), SKIN_TONES, "skin"),
-      hair: this._buildSwatchRow(ui.querySelector("#hair-swatches"), HAIR_TONES, "hair"),
-      color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color"),
+      skin: this._buildSwatchRow(ui.querySelector("#skin-swatches"), SKIN_TONES, "skin", "Skin"),
+      hair: this._buildSwatchRow(ui.querySelector("#hair-swatches"), HAIR_TONES, "hair", "Hair"),
+      color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color", "Clothing"),
     };
     this.lookBtn.addEventListener("click", () => {
       const open = this.customizePanel.classList.toggle("hidden");
@@ -165,8 +165,10 @@ export class HUD {
 
   // Build a row of color swatches for one appearance field; clicking one fires
   // onCustomize({ [field]: hex }). Returns the row's <button> elements so
-  // setAppearance can highlight the active one.
-  _buildSwatchRow(container, colors, field) {
+  // setAppearance can highlight the active one. `label` is the human field name
+  // (e.g. "Clothing") used for each swatch's accessible name, since the swatch
+  // itself is only a background colour with nothing for a screen reader to read.
+  _buildSwatchRow(container, colors, field, label) {
     const btns = [];
     for (const c of colors) {
       const s = document.createElement("button");
@@ -174,6 +176,8 @@ export class HUD {
       s.className = "swatch sm";
       s.style.background = c;
       s.dataset.color = c.toLowerCase();
+      s.setAttribute("aria-label", `${label} ${c}`);
+      s.setAttribute("aria-pressed", "false");
       s.addEventListener("click", () => {
         this.appearance[field] = c;
         this._highlightRow(field);
@@ -188,7 +192,10 @@ export class HUD {
   _highlightRow(field) {
     const active = (this.appearance[field] || "").toLowerCase();
     for (const b of this._swatchRows[field]) {
-      b.classList.toggle("active", b.dataset.color === active);
+      const on = b.dataset.color === active;
+      b.classList.toggle("active", on);
+      // Expose the selected swatch to assistive tech, not just the visual outline.
+      b.setAttribute("aria-pressed", on ? "true" : "false");
     }
   }
 
