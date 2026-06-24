@@ -9,11 +9,12 @@ import { makeNameLabel, makeChatBubble, makeSpeakingIndicator } from "../ui/labe
 import { PLAYER, CAMERA, WORLD, SEAT } from "../config.js";
 
 export class LocalPlayer {
-  constructor(scene, controls, colliders, color, name, seats = []) {
+  // `appearance` is { color, skin, hair } (a bare color string also works).
+  constructor(scene, controls, colliders, appearance, name, seats = []) {
     this.controls = controls;
     this.colliders = colliders;
     this.seats = seats;
-    this.character = new Character(color, name || "me");
+    this.character = new Character(appearance, name || "me");
     this.character.group.position.set(0, 0, 4);
     this.character.group.rotation.y = Math.PI;
     scene.add(this.character.group);
@@ -51,6 +52,14 @@ export class LocalPlayer {
 
   setColor(hex) {
     this.character.setColor(hex);
+  }
+
+  setAppearance(app) {
+    this.character.setAppearance(app);
+  }
+
+  getAppearance() {
+    return this.character.getAppearance();
   }
 
   setSpeaking(on) {

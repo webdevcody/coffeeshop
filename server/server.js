@@ -292,12 +292,31 @@ function sanitizeChat(text) {
   return text.replace(/[\u0000-\u001f<>]/g, "").trim().slice(0, 200);
 }
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+// Copy any valid #rrggbb fields from `msg` onto the player. Returns the subset
+// that actually changed, so callers can broadcast just the new look.
+function applyAppearance(player, msg) {
+  const out = {};
+  for (const key of ["color", "skin", "hair"]) {
+    if (typeof msg[key] === "string" && HEX_COLOR.test(msg[key])) {
+      player[key] = msg[key];
+      out[key] = msg[key];
+    }
+  }
+  return out;
+}
+
 wss.on("connection", (ws) => {
   const id = String(nextId++);
   const player = {
     id,
     name: `Guest${id}`,
     color: COLORS[(Number(id) - 1) % COLORS.length],
+    // Customizable look (skin + hair). null until the client sends its choice;
+    // a client renders un-set values from a per-id default so nobody is faceless.
+    skin: null,
+    hair: null,
     x: 0,
     z: 4,
     ry: Math.PI,
@@ -328,9 +347,7 @@ wss.on("connection", (ws) => {
     switch (msg.type) {
       case "join": {
         player.name = sanitizeName(msg.name) || player.name;
-        if (typeof msg.color === "string" && /^#[0-9a-fA-F]{6}$/.test(msg.color)) {
-          player.color = msg.color;
-        }
+        applyAppearance(player, msg); // color + skin + hair (each validated)
         // Tell the newcomer who is already here.
         const others = [];
         for (const [oid, c] of clients) {
@@ -339,6 +356,13 @@ wss.on("connection", (ws) => {
         send(ws, { type: "welcome", id, you: player, players: others });
         // Tell everyone else about the newcomer.
         broadcast({ type: "player-joined", player }, id);
+        break;
+      }
+      case "appearance": {
+        // Live look change (skin / hair / clothing). Store and relay just the
+        // changed fields so other clients restyle this player.
+        const changed = applyAppearance(player, msg);
+        if (Object.keys(changed).length) broadcast({ type: "appearance", id, ...changed }, id);
         break;
       }
       case "state": {
