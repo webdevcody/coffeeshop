@@ -153,6 +153,25 @@ export const GAMES = {
       return `/games/dotsandboxes/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+  mancala: {
+    id: "mancala",
+    name: "Mancala",
+    blurb: "Sow seeds, fill your store.",
+    icon: "🫘",
+    // Host owns the bottom row + right store and moves first; guest owns the top
+    // row + left store.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/mancala/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
 };
 
 export function getGame(id) {
