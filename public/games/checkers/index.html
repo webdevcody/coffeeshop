@@ -600,7 +600,15 @@
           peer.on("error", (e) => {
             setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose");
           });
-          peer.on("connection", (c) => wireConnection(c));
+          peer.on("connection", (c) => {
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
         } else {
           myColor = "black";
           setStatus("Connecting to the table…", "");
