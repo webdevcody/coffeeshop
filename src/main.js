@@ -15,6 +15,7 @@ import { ScreenShare } from "./net/screenShare.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
 import { InWorldBoard } from "./games/inworld/board.js";
+import { AmbientBoards } from "./games/inworld/ambient.js";
 import { createGame as createFlipbookMenu } from "./games/inworld/menu.js";
 import { getGame, listGames } from "./games/registry.js";
 import { ITEMS, getItem } from "./world/items.js";
@@ -46,6 +47,18 @@ const inWorld = new InWorldBoard({
 });
 // Host receives real-time guest steering through the same bus.
 network.on("game-input", (m) => inWorld.onGameInput(m));
+
+// PASSERSBY: mounts a live READ-ONLY mirror of every OTHER active match on its
+// table, so a player walking past sees the games in progress across the room. It
+// listens for the server's public "ambient" broadcasts and skips the one table
+// InWorldBoard already owns (seated play / spectating / menu). Hidden-info games
+// only ever expose their public snapshot, so a passerby never sees ship layouts.
+const ambient = new AmbientBoards({
+  network,
+  tables,
+  getGameMeta: (id) => getGame(id),
+  getActiveTableId: () => inWorld.activeTableId,
+});
 
 let local = null;
 let joined = false;
@@ -210,6 +223,11 @@ function mountFlipbookMenu(m) {
       },
     },
   });
+  // We now own this table's mount — shed any ambient passersby mirror on it.
+  // Release by id synchronously: inWorld.mount() is async (awaits a module import
+  // before setting activeTableId), so syncActiveTable() alone could miss the table
+  // we just sat at and let its ambient mirror z-fight the incoming board.
+  ambient.releaseTable(m.table);
 }
 
 // Mount the in-world board for this game-assign. `seatRy` is null for spectators.
@@ -223,6 +241,11 @@ function mountInWorld(m, seatRy) {
     seatIndex: m.seatIndex,
     seatCount: m.seatCount,
   });
+  // We now own this table's mount — shed any ambient passersby mirror on it.
+  // Release by id synchronously: inWorld.mount() is async (awaits a module import
+  // before setting activeTableId), so syncActiveTable() alone could miss the table
+  // we just sat at and let its ambient mirror z-fight the incoming board.
+  ambient.releaseTable(m.table);
 }
 
 // --- Reconnect handling ----------------------------------------------------
@@ -246,6 +269,9 @@ network.on("close", () => {
   // down so we don't leave a dead, interactive board mounted; a successful
   // reconnect + re-sit will re-mount it fresh.
   if (inWorld.open) inWorld.unmount();
+  // Ambient passersby mirrors are stale too — drop them all. The server replays
+  // every active board on rejoin, so they re-mount fresh on reconnect.
+  ambient.clear();
 });
 
 network.on("game-end", () => {
@@ -402,6 +428,9 @@ function frame() {
 
   // Pump real-time game sims (pong/tron host tick, ludo, etc.) on the shared loop.
   inWorld.update(dt);
+  // Pump the passersby mirrors too (their real-time games animate off the public
+  // snapshot the same way the live board does).
+  ambient.update(dt);
 
   remotes.update(dt);
   voice.updateVolumes();
@@ -439,5 +468,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient };
 window.__coffeeReady = true;

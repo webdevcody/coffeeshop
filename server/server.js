@@ -195,6 +195,55 @@ function broadcastSeat(id, table) {
   broadcast({ type: "seat-update", id, table: table ?? null });
 }
 
+// ---------------------------------------------------------------------------
+// PASSERSBY — ambient board mirroring
+// ---------------------------------------------------------------------------
+// Beyond seated players and explicit spectators, the café broadcasts a low-rate
+// PUBLIC view of every active match to the WHOLE room, so anyone walking by sees
+// the live board on the table from a distance (read-only). This is strictly
+// public: it carries ONLY the table's `pub` snapshot (never `full`, never raw
+// moves). For hidden-info games (battleship/memory) `pub` already excludes
+// private data by construction, so a passerby can never see ship layouts or face-
+// down cards — the gate is structural, exactly like the spectator relay.
+//
+// We broadcast on every game-state change (host snapshot) and replay the full set
+// of active boards to each newcomer on join, so a late arrival paints all live
+// tables immediately. A board is cleared (gameId:null, pub:null) on reset, match
+// end, or when the table frees, so the client unmounts its ambient mirror.
+
+// Snapshot of one table's public ambient view, or a "cleared" marker.
+function ambientPayload(tableId, t) {
+  const active = !!(t && t.gameId && t.roomId);
+  return {
+    type: "ambient",
+    table: tableId,
+    gameId: active ? t.gameId : null,
+    // Always the PUBLIC snapshot — never `full`. null until the host pushes state
+    // (or once cleared). Passersby render read-only from this and nothing else.
+    pub: active ? (t.pub ?? null) : null,
+  };
+}
+
+// Fan one table's current public ambient view to the whole room. Cheap: it fires
+// only when the host commits a snapshot (or the match's lifecycle changes), not
+// per real-time frame.
+function broadcastAmbient(tableId, t) {
+  broadcast(ambientPayload(tableId, t));
+}
+
+// Tell `id` cleared the table (unmount any ambient mirror for it).
+function broadcastAmbientClear(tableId) {
+  broadcast({ type: "ambient", table: tableId, gameId: null, pub: null });
+}
+
+// Replay every active board's public ambient view to a single newcomer, so they
+// converge on all live tables the moment they join (not only on the next move).
+function sendAllAmbient(ws) {
+  for (const [tid, t] of tables) {
+    if (t && t.gameId && t.roomId) send(ws, ambientPayload(tid, t));
+  }
+}
+
 // A player sits at a table. The first to sit becomes the `host` and then picks
 // which game to play (see chooseSeatGame); the next becomes the `guest` of
 // whatever the host picked; anyone beyond capacity is told the table is `full`.
@@ -355,6 +404,9 @@ function releaseSeat(id) {
     }
   }
   tables.delete(tableId);
+  // PASSERSBY: the match is over and the table is free — tell the whole room to
+  // unmount any ambient mirror they were showing for it.
+  broadcastAmbientClear(tableId);
 }
 
 const COLORS = [
@@ -448,6 +500,9 @@ wss.on("connection", (ws) => {
         send(ws, { type: "welcome", id, you: player, players: others });
         // Tell everyone else about the newcomer.
         broadcast({ type: "player-joined", player }, id);
+        // PASSERSBY: paint every active match's PUBLIC board for the newcomer so
+        // a late arrival sees all live tables at once (not only on the next move).
+        sendAllAmbient(ws);
         break;
       }
       case "appearance": {
@@ -576,6 +631,9 @@ wss.on("connection", (ws) => {
             if (sc) send(sc.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
           }
         }
+        // PASSERSBY: mirror the new PUBLIC view to the whole room (read-only).
+        // Only `pub` leaves this scope — hidden-info layouts never do.
+        broadcastAmbient(st.tid, st.t);
         break;
       }
       case "game-input": {
@@ -606,6 +664,11 @@ wss.on("connection", (ws) => {
           const sc = clients.get(sid);
           if (sc) send(sc.ws, out);
         }
+        // PASSERSBY: the board is now empty for everyone — re-broadcast the
+        // (now-null) public view so passersby clear their mirror. The match is
+        // still active (gameId/roomId intact), so this is a pub:null update, not
+        // an unmount; the next snapshot repaints it.
+        broadcastAmbient(st.tid, st.t);
         break;
       }
       case "watch": {

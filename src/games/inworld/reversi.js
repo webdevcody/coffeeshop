@@ -1,15 +1,37 @@
-// Reversi / Othello — in-world 3D module (createGame contract). 8×8, full-info.
-// Host = black (moves first), guest = white. Discs flip black↔white on capture.
-// Turn may auto-pass when a side has no legal move; game ends when neither can.
+// Reversi / Othello — in-world 3D module (createGame contract). 8x8, full-info.
+//
+// Host = BLACK (moves first), guest = WHITE. Discs flip black<->white on capture.
+// Turn auto-passes when a side has no legal move; the game ends when neither side
+// can move and the winner is decided by disc count.
+//
+// Candidate #4. Distinct structural choices vs. the shipped module:
+//   * A single authoritative `commit()` path drives BOTH local clicks and relayed
+//     moves, so the host re-broadcasts an authoritative snapshot after EVERY
+//     committed move — including a guest's relayed move. (The shipped module
+//     pushed a snapshot only on the host's own clicks, so a guest's move never
+//     reached spectators and broke resync.)
+//   * Identity / colour is derived ONCE from the local role and NEVER recomputed
+//     from the wire. applyState only ingests board/turn/phase/winner; the local
+//     player's side + the board facing are owned locally.
+//   * Per-seat facing is owned by the module (orientPolicy:"self"): each player
+//     sees their OWN home edge nearest them; the opponent sits across.
 
 import { GameDesync, orientFor } from "./createGame.js";
-import { PALETTE, meshOf, standard, discGeometry, buildGridBoard, cellX, cellZ } from "./pieces.js";
+import {
+  PALETTE,
+  meshOf,
+  standard,
+  discGeometry,
+  buildGridBoard,
+  cellX,
+  cellZ,
+} from "./pieces.js";
 
 const N = 8;
 const DIRS = [
   [-1, -1], [-1, 0], [-1, 1],
-  [0, -1], [0, 1],
-  [1, -1], [1, 0], [1, 1],
+  [0, -1],           [0, 1],
+  [1, -1],  [1, 0],  [1, 1],
 ];
 const other = (c) => (c === "black" ? "white" : "black");
 
@@ -22,13 +44,16 @@ export function initialBoard() {
   return b;
 }
 
+// Cells captured if `color` plays at (r,c); [] if the move is illegal/occupied.
 function flipsFor(board, r, c, color) {
-  if (board[r][c]) return [];
+  if (r < 0 || r >= N || c < 0 || c >= N || board[r][c]) return [];
+  const opp = other(color);
   const out = [];
   for (const [dr, dc] of DIRS) {
     const line = [];
-    let rr = r + dr, cc = c + dc;
-    while (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr][cc] === other(color)) {
+    let rr = r + dr;
+    let cc = c + dc;
+    while (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr][cc] === opp) {
       line.push([rr, cc]);
       rr += dr;
       cc += dc;
@@ -42,10 +67,21 @@ function flipsFor(board, r, c, color) {
 
 function legalMoves(board, color) {
   const out = [];
-  for (let r = 0; r < N; r++)
-    for (let c = 0; c < N; c++)
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
       if (!board[r][c] && flipsFor(board, r, c, color).length) out.push({ r, c });
+    }
+  }
   return out;
+}
+
+function hasMove(board, color) {
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (!board[r][c] && flipsFor(board, r, c, color).length) return true;
+    }
+  }
+  return false;
 }
 
 function count(board, color) {
@@ -58,37 +94,35 @@ export function createGame(ctx) {
   const THREE = ctx.THREE;
   const group = new THREE.Group();
   group.name = "reversi";
-  group.userData.gridN = N;
+  group.userData.gridN = N; // help the host's geometric cell fallback
 
+  // ---- Local identity (derived ONCE from role; NEVER from the wire) ----------
   let role = ctx.role;
   let seatRy = ctx.seatRy;
+  // host => black & moves first; guest => white; spectator => no side.
   let myColor = role === "host" ? "black" : role === "guest" ? "white" : null;
 
-  // ---- Orientation --------------------------------------------------------
-  // Cues/home edges are authored in ONE canonical frame: black home on the -Z
-  // edge, white home on the +Z edge. The framework's default "flat" policy would
-  // rotate our group by orientFor(seatRy), which brings the canonical -Z (black)
-  // edge to WHOEVER is looking — so the guest (white, +Z home) would see the
-  // BLACK edge near and their own white home + lit identity bar on the FAR edge.
-  // We instead give each player their own colour near (matching chess/checkers on
-  // the same table): declare orientPolicy:"self" so board.js does NOT rotate us,
-  // and rotate the group ourselves by
-  //   orientFor(seatRy) + (myColor === "white" ? PI : 0)
-  // orientFor(seatRy) brings the -Z (black) home near; the extra PI for white
-  // flips the +Z (white) home near instead. Othello play is symmetric, so clicks
-  // still resolve to the same canonical cell via the colliders that rotate WITH
-  // the group. Spectators (myColor null, seatRy null) get the canonical view.
+  // ---- Per-seat facing -------------------------------------------------------
+  // Cues/home edges are authored in ONE canonical frame: black home at -Z, white
+  // home at +Z. We declare orientPolicy:"self" so the host does NOT rotate us,
+  // then rotate the group ourselves so each player's OWN home edge faces them:
+  //   orientFor(seatRy) brings the canonical -Z (black) edge near the seat;
+  //   a further PI for white brings the +Z (white) edge near instead.
+  // Othello is symmetric and clicks resolve through group.worldToLocal (which
+  // undoes the full rotation), so cells stay canonical regardless of facing.
   function applyFacing() {
     const extra = myColor === "white" ? Math.PI : 0;
     group.rotation.y = orientFor(seatRy) + extra;
   }
   applyFacing();
 
+  // ---- Logical state ---------------------------------------------------------
   let board = initialBoard();
   let turn = "black";
-  let phase = "play";
-  let winner = null;
+  let phase = "play"; // "play" | "over"
+  let winner = null;  // "black" | "white" | null(draw/none)
 
+  // ---- Materials / geometry (module owns disposal) ---------------------------
   const owned = [];
   const keep = (x) => (owned.push(x), x);
   const M = {
@@ -96,12 +130,18 @@ export function createGame(ctx) {
     plank: keep(standard(THREE, PALETTE.felt, { roughness: 0.85 })),
     dark: keep(standard(THREE, PALETTE.felt, { roughness: 0.85 })),
     light: keep(standard(THREE, "#28925e", { roughness: 0.85 })),
-    black: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.5 })),
-    white: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.5 })),
-    ghost: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.5, transparent: true, opacity: 0.45, depthWrite: false })),
-    // Persistent identity / turn cues: a home-edge tint bar + turn lamp per side,
-    // each in that side's disc colour, with its OWN material instance so the local
-    // player's bar/lamp can be lit independently of the opponent's.
+    // The two sides MUST read as clearly distinct materials.
+    black: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.5, metalness: 0.05 })),
+    white: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.45, metalness: 0.05 })),
+    ghost: keep(standard(THREE, PALETTE.accent, {
+      emissive: PALETTE.accent,
+      emissiveIntensity: 0.55,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+    })),
+    // Per-side identity bars + turn lamps, each its own instance so the local
+    // side can light independently of the opponent's.
     homeBlack: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.5, emissive: "#6b6b7a", emissiveIntensity: 0 })),
     homeWhite: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.5, emissive: "#cfe6d8", emissiveIntensity: 0 })),
     lampBlack: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.35, metalness: 0.2, emissive: "#9aa0b5", emissiveIntensity: 0 })),
@@ -123,20 +163,14 @@ export function createGame(ctx) {
   const discGeo = keep(discGeometry(THREE, DISC_R, DISC_T, true));
   const ghostGeo = keep(new THREE.CylinderGeometry(DISC_R * 0.55, DISC_R * 0.55, 0.004, 20));
 
-  // --- Identity / turn cues -------------------------------------------------
-  // Per side: a home-edge tint bar (in that side's disc colour) on the long frame
-  // rail, plus a turn lamp beside it. Authored in the CANONICAL frame — black
-  // home on the -Z edge, white home on the +Z edge — so once applyFacing() rotates
-  // the whole group by orientFor(seatRy) + (white ? PI : 0) each client's OWN home
-  // edge faces them. The local player's bar glows steadily ("this near side, in my
-  // colour, is me"); the side-to-move's lamp glows (brighter when it's MY turn) so
-  // it's unambiguous whose turn it is even when it's not mine.
+  // ---- Identity / turn cues (authored canonical; rotated by applyFacing) -----
   const cue = { black: { bar: null, lamp: null }, white: { bar: null, lamp: null } };
   {
-    const HALF = STEP * (N / 2);                 // = BOARD_HALF
-    const frameW = 0.03, frameH = 0.012;
-    const railTop = base.tileTop + frameH;        // roughly the proud frame top
-    const edge = HALF + frameW / 2;               // centre of a long frame rail
+    const HALF = STEP * (N / 2);
+    const frameW = 0.03;
+    const frameH = 0.012;
+    const railTop = base.tileTop + frameH;
+    const edge = HALF + frameW / 2;
     const barGeo = keep(new THREE.BoxGeometry(STEP * N * 0.7, frameH * 0.5, frameW * 0.5));
     const lampGeo = keep(new THREE.SphereGeometry(frameW * 0.32, 18, 14));
     const sides = [
@@ -155,8 +189,7 @@ export function createGame(ctx) {
     }
   }
 
-  // Drive the identity/turn cue emissives. Called on every state/turn/role/seat
-  // change. NEVER reads colour from the wire — purely from local `myColor`/`turn`.
+  // Drive cue emissives purely from local myColor/turn/phase — NEVER the wire.
   function updateCues() {
     for (const color of ["black", "white"]) {
       const c = cue[color];
@@ -168,28 +201,25 @@ export function createGame(ctx) {
     }
   }
 
-  // One reusable disc mesh per cell; color via material swap + flip animation.
+  // ---- Disc meshes + ghosts --------------------------------------------------
   const discs = Array.from({ length: N }, () => Array(N).fill(null));
   const ghosts = [];
-  let busy = false;
+  let busy = false;     // an animation is in flight (gates input)
   let disposed = false;
 
-  // --- animation ---
-  const flips = []; // { mesh, t, dur, to }
+  // ---- Flip animation --------------------------------------------------------
+  const flips = []; // { mesh, t, dur, to, swapped }
   let rafId = 0;
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   let lastT = 0;
-  function loopActive() {
-    return flips.length > 0;
-  }
   function startLoop() {
-    if (rafId || disposed) return;
+    if (rafId || disposed || typeof requestAnimationFrame === "undefined") return;
     lastT = nowMs();
     const tick = (t) => {
       const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
       lastT = t;
       step(dt);
-      rafId = loopActive() && !disposed ? requestAnimationFrame(tick) : 0;
+      rafId = flips.length && !disposed ? requestAnimationFrame(tick) : 0;
     };
     rafId = requestAnimationFrame(tick);
   }
@@ -234,14 +264,30 @@ export function createGame(ctx) {
     }
   }
 
+  function removeDisc(r, c) {
+    const d = discs[r][c];
+    if (d) {
+      group.remove(d);
+      discs[r][c] = null;
+    }
+  }
+
+  // ---- Ghost legal-move markers (only on the LOCAL player's own turn) --------
   function clearGhosts() {
     for (const g of ghosts) group.remove(g);
     ghosts.length = 0;
   }
   function refreshGhosts() {
-    updateCues();
     clearGhosts();
-    if (phase !== "play" || role === "spectator" || turn !== myColor || !ctx.isLocalTurnAllowed()) return;
+    if (
+      phase !== "play" ||
+      role === "spectator" ||
+      myColor == null ||
+      turn !== myColor ||
+      !safeTurnAllowed()
+    ) {
+      return;
+    }
     for (const m of legalMoves(board, myColor)) {
       const g = meshOf(THREE, ghostGeo, M.ghost, false);
       g.position.set(cellX(m.c, N), REST_Y + 0.01, cellZ(m.r, N));
@@ -250,22 +296,32 @@ export function createGame(ctx) {
     }
   }
 
-  function paint(animate) {
+  function safeTurnAllowed() {
+    try {
+      return !!ctx.isLocalTurnAllowed();
+    } catch {
+      return false;
+    }
+  }
+
+  // Full repaint from `board` (used by applyState + initial paint). Idempotent.
+  function paint() {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         const v = board[r][c];
         if (v) setDisc(r, c, v, false);
-        else if (discs[r][c]) {
-          group.remove(discs[r][c]);
-          discs[r][c] = null;
-        }
+        else removeDisc(r, c);
       }
     }
+    updateCues();
     refreshGhosts();
   }
 
-  // Apply a validated move locally: place + flip + advance turn (with auto-pass).
-  function performMove(r, c, color, animate) {
+  // ---- Move application ------------------------------------------------------
+  // Apply a VALIDATED move to logical + visual state, then advance the turn
+  // (with auto-pass / game-over). This is the single commit path for local
+  // clicks AND relayed moves so behaviour can never diverge.
+  function commit(r, c, color, animate) {
     const flipped = flipsFor(board, r, c, color);
     board[r][c] = color;
     setDisc(r, c, color, animate);
@@ -278,60 +334,116 @@ export function createGame(ctx) {
 
   function advanceTurn(justMoved) {
     let next = other(justMoved);
-    if (legalMoves(board, next).length === 0) {
-      // pass; if neither can move, game over.
-      if (legalMoves(board, justMoved).length === 0) {
-        phase = "over";
-        const b = count(board, "black"), w = count(board, "white");
-        winner = b === w ? null : b > w ? "black" : "white";
-        clearGhosts();
-        updateCues();
-        try { ctx.onGameOver({ winner, reason: "no-moves" }); } catch { /* */ }
+    if (!hasMove(board, next)) {
+      // `next` must pass. If the side that just moved also has no move, the game
+      // is over; otherwise the same side moves again.
+      if (!hasMove(board, justMoved)) {
+        endGame();
         return;
       }
-      next = justMoved; // opponent passes
+      next = justMoved;
     }
     turn = next;
+    updateCues();
     refreshGhosts();
   }
 
+  function endGame() {
+    phase = "over";
+    const b = count(board, "black");
+    const w = count(board, "white");
+    winner = b === w ? null : b > w ? "black" : "white";
+    clearGhosts();
+    updateCues();
+    try {
+      ctx.onGameOver({
+        winner,
+        reason: "no-moves",
+        black: b,
+        white: w,
+      });
+    } catch {
+      /* never let a host callback crash play */
+    }
+  }
+
+  // ---- Pointer (local move) --------------------------------------------------
   function onPointer(hit) {
-    if (!ctx.isLocalTurnAllowed() || busy) return;
-    if (phase !== "play" || turn !== myColor) return;
+    if (disposed || busy) return;
+    if (phase !== "play" || role === "spectator" || myColor == null) return;
+    if (turn !== myColor || !safeTurnAllowed()) return;
     const cell = hit && hit.cell;
     if (!cell) return;
     const { r, c } = cell;
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
     if (r < 0 || r >= N || c < 0 || c >= N) return;
     if (board[r][c] || flipsFor(board, r, c, myColor).length === 0) return;
+
     clearGhosts();
-    performMove(r, c, myColor, true);
-    try { ctx.net.sendMove({ type: "move", r, c }); } catch { /* */ }
+    commit(r, c, myColor, true);
+    // Relay the delta to peers...
+    try {
+      ctx.net.sendMove({ type: "move", r, c });
+    } catch {
+      /* ignore */
+    }
+    // ...and, if we're authoritative, push the resulting snapshot so spectators
+    // (and resyncing guests) converge.
     if (role === "host") pushSnapshot();
   }
 
+  // ---- Relayed move (from the other player) ----------------------------------
+  // The host receives the GUEST's move here (and the guest receives nothing, as
+  // the host re-broadcasts authoritative state instead). We validate against the
+  // CURRENT turn colour, never the local colour, then commit + (host) re-push.
   function applyMove(move) {
-    if (phase !== "play") throw new GameDesync("reversi: not in play");
-    if (!move || move.type !== "move") return false;
+    if (!move || move.type !== "move") return true; // not ours; ignore, no resync
+    if (phase !== "play") throw new GameDesync("reversi: relayed move while not in play");
     const { r, c } = move;
-    if (!Number.isInteger(r) || !Number.isInteger(c)) return false;
-    if (board[r][c] || flipsFor(board, r, c, turn).length === 0)
+    if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || r >= N || c < 0 || c >= N) {
+      throw new GameDesync("reversi: relayed move out of range");
+    }
+    if (board[r][c] || flipsFor(board, r, c, turn).length === 0) {
       throw new GameDesync("reversi: illegal relayed move");
-    performMove(r, c, turn, true);
+    }
+    commit(r, c, turn, true);
+    if (role === "host") pushSnapshot();
     return true;
   }
 
+  // ---- Snapshots -------------------------------------------------------------
   function snapshot() {
-    return { board: board.map((row) => row.slice()), turn, phase, winner };
+    return {
+      board: board.map((row) => row.slice()),
+      turn,
+      phase,
+      winner,
+    };
   }
-  function publicState() { return snapshot(); }
+  function publicState() {
+    return snapshot();
+  }
   function pushSnapshot() {
+    if (role !== "host") return;
     const s = snapshot();
-    try { ctx.net.sendState(s, s); } catch { /* */ }
+    try {
+      ctx.net.sendState(s, s); // full + public are identical (full-info game)
+    } catch {
+      /* ignore */
+    }
   }
 
+  // Ingest authoritative board/turn/phase from the wire. NEVER touches the local
+  // role/colour/facing. Idempotent: rebuilds purely from the snapshot.
   function applyState(state) {
+    // Drop any in-flight animation; we snap to the authoritative layout.
+    if (rafId && typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
     flips.length = 0;
     busy = false;
+
     if (!state) {
       board = initialBoard();
       turn = "black";
@@ -340,54 +452,65 @@ export function createGame(ctx) {
     } else {
       const b = Array.from({ length: N }, () => Array(N).fill(null));
       const src = Array.isArray(state.board) ? state.board : [];
-      for (let r = 0; r < N; r++)
+      for (let r = 0; r < N; r++) {
         for (let c = 0; c < N; c++) {
           const v = src[r] && src[r][c];
           if (v === "black" || v === "white") b[r][c] = v;
         }
+      }
       board = b;
       turn = state.turn === "white" ? "white" : "black";
       phase = state.phase === "over" ? "over" : "play";
       winner = state.winner === "black" || state.winner === "white" ? state.winner : null;
     }
-    paint(false);
+    paint();
   }
 
+  // ---- Role / seat changes ---------------------------------------------------
   function setRole(r) {
     role = r || "spectator";
     myColor = role === "host" ? "black" : role === "guest" ? "white" : null;
-    applyFacing();             // colour may have changed -> re-derive the half-turn
+    applyFacing(); // colour may flip -> re-derive the half-turn
+    updateCues();
     refreshGhosts();
   }
   function setSeatRy(ry) {
     seatRy = ry;
-    applyFacing();             // re-face the board for the new seat ourselves
+    applyFacing();
     refreshGhosts();
   }
 
+  // ---- Teardown --------------------------------------------------------------
   function dispose() {
-    if (disposed) return; // idempotent: never double-free owned geometries/materials
+    if (disposed) return; // idempotent; never double-free owned resources
     disposed = true;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (rafId && typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(rafId);
+    }
+    rafId = 0;
     flips.length = 0;
     clearGhosts();
     if (group.parent) group.parent.remove(group);
     base.dispose();
-    // discGeo + ghostGeo are already in `owned` (via keep), so disposing `owned`
-    // alone frees every minted geometry/material exactly once.
     for (const o of owned) o.dispose?.();
     owned.length = 0;
   }
 
-  paint(false);
+  // Initial render.
+  paint();
 
   return {
     group,
-    // We own our own per-seat facing (applyFacing): orientFor(seatRy) plus a PI
-    // half-turn for white so each player sees their OWN home edge near. board.js
-    // must NOT also rotate the group, or the two would fight.
+    // We own per-seat facing (applyFacing). board.js must NOT also rotate us, or
+    // the two transforms fight.
     orientPolicy: "self",
-    applyState, applyMove, onPointer, publicState, setRole, setSeatRy, dispose,
+    applyState,
+    applyMove,
+    onPointer,
+    publicState,
+    setRole,
+    setSeatRy,
+    dispose,
   };
 }
 

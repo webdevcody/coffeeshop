@@ -1,33 +1,57 @@
 // Dots and Boxes — in-world 3D module (createGame contract). Full-info.
-// DOTS=6 → 5×5 boxes. Move targets an EDGE {o:'h'|'v', r, c}. Closing a box
-// grants another turn. Host = red (first), guest = blue.
+//
+// DOTS=6 → 5×5 boxes. A move targets an EDGE {o:'h'|'v', r, c}. Drawing the
+// fourth side of a box CLAIMS it for the mover and grants them ANOTHER turn;
+// otherwise the turn passes. The game ends when every box is claimed; the side
+// owning the most boxes wins (equal → draw).
+//
+// Identity / orientation contract:
+//   * host = RED and moves first; guest = BLUE; spectator has no colour.
+//   * The two sides render in clearly distinct materials (warm red / cool blue).
+//   * The framework rotates the whole group by orientFor(seatRy), so the canonical
+//     near edge (-Z, "row 0") always faces the LOCAL seat. We therefore author the
+//     LOCAL player's identity furniture (home rail + name plate) at -Z and the
+//     opponent's at +Z, re-laying it out whenever the role/seat changes. This is
+//     derived ONLY from the local `myColor`, NEVER from a relayed snapshot, so a
+//     mirrored wire state can never flip which side is "me".
+//   * Whose-turn cue: a floating beacon hovers over the board centre, tinted in the
+//     side-to-move's colour and tipped toward that side's home rail; the matching
+//     home rail + a turn lamp glow, and (only on the local player's own turn) the
+//     open edges they may legally take pulse in their colour with a ghost preview.
+//
+// Candidate variation #4: distinct approach — a single re-laid-out identity frame
+// (local colour always nearest), a central tilting beacon as the turn cue, and a
+// hover ghost on the edge under the cursor.
 
 import { GameDesync } from "./createGame.js";
-import { BOARD_SIZE, BOARD_HALF, PALETTE, meshOf, standard } from "./pieces.js";
+import { BOARD_SIZE, PALETTE, meshOf, standard } from "./pieces.js";
 
 const DOTS = 6;
-const BOXN = DOTS - 1;
+const BOXN = DOTS - 1; // 5×5 boxes
+const COLORS = ["red", "blue"];
 const other = (p) => (p === "red" ? "blue" : "red");
 
+// ---- pure rules ------------------------------------------------------------
 function emptyState() {
   return {
-    h: Array.from({ length: DOTS }, () => Array(BOXN).fill(null)), // h[r][c] top/bottom edges
-    v: Array.from({ length: BOXN }, () => Array(DOTS).fill(null)), // v[r][c] left/right edges
+    h: Array.from({ length: DOTS }, () => Array(BOXN).fill(null)), // horizontal edges: h[r][c], r∈[0,DOTS), c∈[0,BOXN)
+    v: Array.from({ length: BOXN }, () => Array(DOTS).fill(null)), // vertical   edges: v[r][c], r∈[0,BOXN), c∈[0,DOTS)
     boxes: Array.from({ length: BOXN }, () => Array(BOXN).fill(null)),
   };
 }
 
 function edgeFree(st, o, r, c) {
   if (o === "h") return r >= 0 && r < DOTS && c >= 0 && c < BOXN && !st.h[r][c];
-  return r >= 0 && r < BOXN && c >= 0 && c < DOTS && !st.v[r][c];
+  if (o === "v") return r >= 0 && r < BOXN && c >= 0 && c < DOTS && !st.v[r][c];
+  return false;
 }
 
-// Apply edge, return list of box [r,c] newly completed.
+// Apply an edge and return the list of [br,bc] boxes newly completed by it.
 function applyEdge(st, o, r, c, player) {
   if (o === "h") st.h[r][c] = player;
   else st.v[r][c] = player;
   const completed = [];
-  const check = (br, bc) => {
+  const tryClose = (br, bc) => {
     if (br < 0 || br >= BOXN || bc < 0 || bc >= BOXN) return;
     if (st.boxes[br][bc]) return;
     if (st.h[br][bc] && st.h[br + 1][bc] && st.v[br][bc] && st.v[br][bc + 1]) {
@@ -35,8 +59,8 @@ function applyEdge(st, o, r, c, player) {
       completed.push([br, bc]);
     }
   };
-  if (o === "h") { check(r - 1, c); check(r, c); }
-  else { check(r, c - 1); check(r, c); }
+  if (o === "h") { tryClose(r - 1, c); tryClose(r, c); }
+  else { tryClose(r, c - 1); tryClose(r, c); }
   return completed;
 }
 
@@ -44,9 +68,13 @@ function isFull(st) {
   for (let r = 0; r < BOXN; r++) for (let c = 0; c < BOXN; c++) if (!st.boxes[r][c]) return false;
   return true;
 }
+
 function tally(st) {
   let red = 0, blue = 0;
-  for (const row of st.boxes) for (const v of row) { if (v === "red") red++; else if (v === "blue") blue++; }
+  for (const row of st.boxes) for (const v of row) {
+    if (v === "red") red++;
+    else if (v === "blue") blue++;
+  }
   return { red, blue };
 }
 
@@ -55,37 +83,44 @@ export function createGame(ctx) {
   const group = new THREE.Group();
   group.name = "dotsandboxes";
 
+  // Local identity is derived ONLY from role (never from the wire).
   let role = ctx.role;
   let myColor = role === "host" ? "red" : role === "guest" ? "blue" : null;
-  let st = emptyState();
-  let turn = "red";
-  let phase = "play";
-  let winner = null;
 
+  let st = emptyState();
+  let turn = "red";        // side to move
+  let phase = "play";      // "play" | "over"
+  let winner = null;       // "red" | "blue" | null(draw / in-progress)
+
+  // ---- materials (owned for disposal) --------------------------------------
   const owned = [];
   const keep = (x) => (owned.push(x), x);
+  const RED = PALETTE.pongLeft;   // warm red
+  const BLUE = PALETTE.pongRight; // cool blue
   const M = {
-    plank: keep(standard(THREE, "#3a281a", { roughness: 0.8 })),
-    dot: keep(standard(THREE, "#d8c39a", { roughness: 0.6 })),
-    edgeOpen: keep(standard(THREE, "#5a4633", { roughness: 0.8, transparent: true, opacity: 0.25, depthWrite: false })),
-    red: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.5 })),
-    blue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5 })),
-    boxRed: keep(standard(THREE, "#e08a7e", { roughness: 0.6, transparent: true, opacity: 0.7 })),
-    boxBlue: keep(standard(THREE, "#8ab0e0", { roughness: 0.6, transparent: true, opacity: 0.7 })),
-    // Legal-move hints: an open edge gently glows in the LOCAL player's colour
-    // while it's their turn, so it's obvious which moves are theirs to make.
-    legalRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.5, emissive: PALETTE.pongLeft, emissiveIntensity: 0.0, transparent: true, opacity: 0.45, depthWrite: false })),
-    legalBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5, emissive: PALETTE.pongRight, emissiveIntensity: 0.0, transparent: true, opacity: 0.45, depthWrite: false })),
-    // Persistent identity cue: a home-edge bar in each side's colour. The local
-    // player's own bar glows steadily ("this near side is me"); the framework
-    // rotation puts it directly in front of whichever seat they're in.
-    homeRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.5, metalness: 0.1, emissive: PALETTE.pongLeft, emissiveIntensity: 0.0 })),
-    homeBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5, metalness: 0.1, emissive: PALETTE.pongRight, emissiveIntensity: 0.0 })),
-    // Turn lamp: only the side-to-move's lamp glows (brighter if it's MY turn).
-    lampRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.35, metalness: 0.2, emissive: "#ff9a86", emissiveIntensity: 0.0 })),
-    lampBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.35, metalness: 0.2, emissive: "#9ec2ff", emissiveIntensity: 0.0 })),
+    plank: keep(standard(THREE, "#3a281a", { roughness: 0.85 })),
+    dot: keep(standard(THREE, "#d8c39a", { roughness: 0.55, metalness: 0.1 })),
+    edgeOpen: keep(standard(THREE, "#5a4633", { roughness: 0.8, transparent: true, opacity: 0.22, depthWrite: false })),
+    red: keep(standard(THREE, RED, { roughness: 0.45, metalness: 0.1 })),
+    blue: keep(standard(THREE, BLUE, { roughness: 0.45, metalness: 0.1 })),
+    boxRed: keep(standard(THREE, "#e08a7e", { roughness: 0.6, transparent: true, opacity: 0.72, emissive: RED, emissiveIntensity: 0.12 })),
+    boxBlue: keep(standard(THREE, "#8ab0e0", { roughness: 0.6, transparent: true, opacity: 0.72, emissive: BLUE, emissiveIntensity: 0.12 })),
+    // legal-move hints: own colour, glow pulsed only on the local turn
+    legalRed: keep(standard(THREE, RED, { roughness: 0.5, emissive: RED, emissiveIntensity: 0, transparent: true, opacity: 0.5, depthWrite: false })),
+    legalBlue: keep(standard(THREE, BLUE, { roughness: 0.5, emissive: BLUE, emissiveIntensity: 0, transparent: true, opacity: 0.5, depthWrite: false })),
+    // home rails (persistent identity), driven by local myColor/turn
+    homeRed: keep(standard(THREE, RED, { roughness: 0.5, metalness: 0.15, emissive: RED, emissiveIntensity: 0 })),
+    homeBlue: keep(standard(THREE, BLUE, { roughness: 0.5, metalness: 0.15, emissive: BLUE, emissiveIntensity: 0 })),
+    // turn lamps beside each home rail
+    lampRed: keep(standard(THREE, RED, { roughness: 0.3, metalness: 0.2, emissive: "#ff9a86", emissiveIntensity: 0 })),
+    lampBlue: keep(standard(THREE, BLUE, { roughness: 0.3, metalness: 0.2, emissive: "#9ec2ff", emissiveIntensity: 0 })),
+    // central turn beacon (tinted to side-to-move)
+    beacon: keep(standard(THREE, "#888888", { roughness: 0.3, metalness: 0.3, emissive: "#000000", emissiveIntensity: 0.0, transparent: true, opacity: 0.92 })),
+    // hover ghost on the edge under the cursor (own colour)
+    ghost: keep(standard(THREE, RED, { roughness: 0.4, emissive: RED, emissiveIntensity: 0.6, transparent: true, opacity: 0.55, depthWrite: false })),
   };
 
+  // ---- board base ----------------------------------------------------------
   const plankH = 0.022;
   const outer = BOARD_SIZE + 0.05;
   const plank = meshOf(THREE, keep(new THREE.BoxGeometry(outer, plankH, outer)), M.plank);
@@ -98,9 +133,11 @@ export function createGame(ctx) {
   const x0 = -span / 2, z0 = -span / 2;
   const dotX = (c) => x0 + c * gap;
   const dotZ = (r) => z0 + r * gap;
+  const midX = (c) => (dotX(c) + dotX(c + 1)) / 2;
+  const midZ = (r) => (dotZ(r) + dotZ(r + 1)) / 2;
 
   // dots
-  const dotGeo = keep(new THREE.SphereGeometry(gap * 0.09, 10, 8));
+  const dotGeo = keep(new THREE.SphereGeometry(gap * 0.09, 12, 8));
   for (let r = 0; r < DOTS; r++)
     for (let c = 0; c < DOTS; c++) {
       const d = meshOf(THREE, dotGeo, M.dot);
@@ -108,176 +145,265 @@ export function createGame(ctx) {
       group.add(d);
     }
 
-  // edges: a thin bar mesh + a collider per possible edge.
-  const hBarGeo = keep(new THREE.BoxGeometry(gap * 0.8, gap * 0.06, gap * 0.06));
-  const vBarGeo = keep(new THREE.BoxGeometry(gap * 0.06, gap * 0.06, gap * 0.8));
-  const hHitGeo = keep(new THREE.BoxGeometry(gap * 0.8, 0.03, gap * 0.5));
-  const vHitGeo = keep(new THREE.BoxGeometry(gap * 0.5, 0.03, gap * 0.8));
+  // ---- edge bars + invisible colliders -------------------------------------
+  const hBarGeo = keep(new THREE.BoxGeometry(gap * 0.8, gap * 0.07, gap * 0.07));
+  const vBarGeo = keep(new THREE.BoxGeometry(gap * 0.07, gap * 0.07, gap * 0.8));
+  const hHitGeo = keep(new THREE.BoxGeometry(gap * 0.82, 0.04, gap * 0.5));
+  const vHitGeo = keep(new THREE.BoxGeometry(gap * 0.5, 0.04, gap * 0.82));
   const invis = keep(new THREE.MeshBasicMaterial({ visible: false }));
   const edgeBars = { h: {}, v: {} };
+  const edgePos = { h: {}, v: {} }; // {x,z} centre per edge (for the ghost)
 
   for (let r = 0; r < DOTS; r++)
     for (let c = 0; c < BOXN; c++) {
-      const px = (dotX(c) + dotX(c + 1)) / 2, pz = dotZ(r);
+      const px = midX(c), pz = dotZ(r);
       const bar = meshOf(THREE, hBarGeo, M.edgeOpen);
       bar.position.set(px, TOP + gap * 0.05, pz);
       group.add(bar);
       edgeBars.h[`${r},${c}`] = bar;
-      const box = new THREE.Mesh(hHitGeo, invis);
-      box.position.set(px, TOP + 0.015, pz);
-      box.userData.cell = { o: "h", r, c };
-      group.add(box);
+      edgePos.h[`${r},${c}`] = { x: px, z: pz };
+      const hit = new THREE.Mesh(hHitGeo, invis);
+      hit.position.set(px, TOP + 0.02, pz);
+      hit.userData.cell = { o: "h", r, c };
+      group.add(hit);
     }
   for (let r = 0; r < BOXN; r++)
     for (let c = 0; c < DOTS; c++) {
-      const px = dotX(c), pz = (dotZ(r) + dotZ(r + 1)) / 2;
+      const px = dotX(c), pz = midZ(r);
       const bar = meshOf(THREE, vBarGeo, M.edgeOpen);
       bar.position.set(px, TOP + gap * 0.05, pz);
       group.add(bar);
       edgeBars.v[`${r},${c}`] = bar;
-      const box = new THREE.Mesh(vHitGeo, invis);
-      box.position.set(px, TOP + 0.015, pz);
-      box.userData.cell = { o: "v", r, c };
-      group.add(box);
+      edgePos.v[`${r},${c}`] = { x: px, z: pz };
+      const hit = new THREE.Mesh(vHitGeo, invis);
+      hit.position.set(px, TOP + 0.02, pz);
+      hit.userData.cell = { o: "v", r, c };
+      group.add(hit);
     }
 
-  // box fills
-  const boxGeo = keep(new THREE.BoxGeometry(gap * 0.8, 0.004, gap * 0.8));
+  // ---- box fills -----------------------------------------------------------
+  const boxGeo = keep(new THREE.BoxGeometry(gap * 0.78, 0.006, gap * 0.78));
   const boxMeshes = Array.from({ length: BOXN }, () => Array(BOXN).fill(null));
 
-  // ---- Persistent identity / turn cues (built once, in the canonical frame) ---
-  // A home-edge bar per side + a turn lamp beside it. Authored canonically: red
-  // home on the +Z edge, blue home on -Z. The framework rotates the whole group
-  // by orientFor(seatRy), so each client sees their OWN home bar nearest them and
-  // the opponent's across the table — host and guest see opposite, consistent
-  // identities. Driven purely from local myColor/turn, never from the wire.
-  const cue = { red: { bar: null, lamp: null }, blue: { bar: null, lamp: null } };
-  {
-    const barGeo = keep(new THREE.BoxGeometry(span * 0.8, plankH * 0.5, gap * 0.12));
-    const lampGeo = keep(new THREE.SphereGeometry(gap * 0.1, 16, 12));
-    const edgeZ = span / 2 + gap * 0.32; // just outside the dot grid
-    const barY = TOP + plankH * 0.3;
-    const sides = [
-      { color: "red", z: edgeZ, barMat: M.homeRed, lampMat: M.lampRed },
-      { color: "blue", z: -edgeZ, barMat: M.homeBlue, lampMat: M.lampBlue },
-    ];
-    for (const s of sides) {
-      const bar = meshOf(THREE, barGeo, s.barMat, false);
-      bar.position.set(0, barY, s.z);
-      group.add(bar);
-      const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
-      lamp.position.set(span * 0.46, barY + gap * 0.05, s.z);
-      group.add(lamp);
-      cue[s.color].bar = bar;
-      cue[s.color].lamp = lamp;
-    }
+  // ---- identity furniture: home rails + lamps (re-laid-out per role) --------
+  // Built once; positions are assigned in layoutIdentity() so the LOCAL colour is
+  // always at the -Z near edge (which orientFor turns toward the local seat).
+  const railGeo = keep(new THREE.BoxGeometry(span * 0.82, plankH * 0.55, gap * 0.13));
+  const lampGeo = keep(new THREE.SphereGeometry(gap * 0.11, 16, 12));
+  const home = {
+    red: { rail: meshOf(THREE, railGeo, M.homeRed, false), lamp: meshOf(THREE, lampGeo, M.lampRed, false) },
+    blue: { rail: meshOf(THREE, railGeo, M.homeBlue, false), lamp: meshOf(THREE, lampGeo, M.lampBlue, false) },
+  };
+  for (const col of COLORS) {
+    group.add(home[col].rail);
+    group.add(home[col].lamp);
+  }
+  const edgeZ = span / 2 + gap * 0.34;
+  const railY = TOP + plankH * 0.35;
+
+  // Place colour `near` at -Z (local near edge) and the other at +Z. When there's
+  // no local colour (spectator), keep red=+Z / blue=-Z as a stable canonical view.
+  function layoutIdentity() {
+    const nearColor = myColor || "blue"; // spectator: blue nearest by convention
+    const farColor = other(nearColor);
+    const place = (col, z) => {
+      home[col].rail.position.set(0, railY, z);
+      home[col].lamp.position.set(span * 0.46, railY + gap * 0.06, z);
+    };
+    place(nearColor, -edgeZ);
+    place(farColor, edgeZ);
   }
 
-  // Open edges that the LOCAL player may legally take this turn, so the glow pulse
-  // only touches their own legal moves.
+  // ---- central turn beacon -------------------------------------------------
+  // A cone floating above the centre, tinted to the side-to-move and tipped toward
+  // that side's home rail (-Z if it's the local player's turn, +Z otherwise).
+  const beaconGeo = keep(new THREE.ConeGeometry(gap * 0.28, gap * 0.7, 18));
+  const beacon = meshOf(THREE, beaconGeo, M.beacon, false);
+  const beaconBaseY = TOP + gap * 1.15;
+  beacon.position.set(0, beaconBaseY, 0);
+  group.add(beacon);
+
+  // ---- hover ghost ---------------------------------------------------------
+  const ghostH = meshOf(THREE, hBarGeo, M.ghost, false);
+  const ghostV = meshOf(THREE, vBarGeo, M.ghost, false);
+  ghostH.visible = false;
+  ghostV.visible = false;
+  group.add(ghostH);
+  group.add(ghostV);
+  let hoverCell = null;
+
+  // ---- per-turn cue derivation (LOCAL state only) --------------------------
   const legalBars = [];
+  function isMyTurn() {
+    if (phase !== "play" || myColor == null || turn !== myColor) return false;
+    return typeof ctx.isLocalTurnAllowed === "function" ? !!ctx.isLocalTurnAllowed() : true;
+  }
+
   function refreshLegal() {
     legalBars.length = 0;
-    // Shared legal-hint materials are pulsed in update(); reset to matte so a
-    // stale glow can't linger once it's no longer the local player's turn.
     M.legalRed.emissiveIntensity = 0;
     M.legalBlue.emissiveIntensity = 0;
-    const allowed = typeof ctx.isLocalTurnAllowed === "function" ? ctx.isLocalTurnAllowed() : true;
-    const myTurn = phase === "play" && myColor != null && turn === myColor && allowed;
+    const myTurn = isMyTurn();
     const legalMat = myColor === "red" ? M.legalRed : myColor === "blue" ? M.legalBlue : null;
     for (const o of ["h", "v"]) {
       for (const key of Object.keys(edgeBars[o])) {
         const [r, c] = key.split(",").map(Number);
-        const bar = edgeBars[o][key];
         const taken = o === "h" ? st.h[r][c] : st.v[r][c];
-        if (taken) continue;          // claimed edges keep their owner colour
+        if (taken) continue; // claimed edges keep their owner colour
+        const bar = edgeBars[o][key];
         if (myTurn && legalMat) {
-          bar.material = legalMat;     // hint open edge in my colour
+          bar.material = legalMat;
           legalBars.push(bar);
         } else {
-          bar.material = M.edgeOpen;   // neutral when not my turn / spectator
+          bar.material = M.edgeOpen;
         }
       }
     }
   }
 
-  // Drive the identity/turn cue emissives. Called on every state/turn/role/seat
-  // change. Reads ONLY local myColor/turn, never the wire, so a relayed snapshot
-  // can't flip which side is "me".
-  function updateIdentityCues() {
-    for (const color of ["red", "blue"]) {
-      const c = cue[color];
-      if (!c.bar || !c.lamp) continue;
-      const isMine = myColor != null && color === myColor;
-      const isTurn = phase === "play" && turn === color;
-      c.bar.material.emissiveIntensity = isMine ? 0.55 : 0.0;
-      c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
+  function refreshIdentityEmissive() {
+    for (const col of COLORS) {
+      const isMine = myColor != null && col === myColor;
+      const isTurn = phase === "play" && turn === col;
+      home[col].rail.material.emissiveIntensity = isMine ? 0.6 : 0.08;
+      home[col].lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.45) : 0.0;
     }
   }
 
-  // Per-frame pulse so the "your turn" cue reads as alive: lamps + legal-edge
-  // hints breathe while it's the local player's turn.
+  function refreshBeacon() {
+    if (phase === "over") {
+      // settle the beacon: tint to winner (or neutral on a draw), stop tilting
+      const tint = winner === "red" ? RED : winner === "blue" ? BLUE : "#cccccc";
+      M.beacon.color.set(tint);
+      M.beacon.emissive.set(tint);
+      M.beacon.emissiveIntensity = winner ? 0.5 : 0.15;
+      beacon.rotation.set(0, 0, 0);
+      return;
+    }
+    const tint = turn === "red" ? RED : BLUE;
+    M.beacon.color.set(tint);
+    M.beacon.emissive.set(tint);
+    M.beacon.emissiveIntensity = 0.55;
+    // Point the cone toward the side-to-move's home rail. Cone apex is +Y by
+    // default; tilting about X tips the apex toward ±Z. Local turn → tip toward
+    // -Z (the local near edge); opponent → tip toward +Z. Spectator (no myColor):
+    // tip toward whichever rail that colour sits at (blue=-Z near by layout).
+    const towardNear =
+      myColor != null ? turn === myColor : turn === (myColor || "blue");
+    beacon.rotation.set(towardNear ? Math.PI * 0.62 : -Math.PI * 0.62, 0, 0);
+  }
+
+  function refreshCues() {
+    refreshLegal();
+    refreshIdentityEmissive();
+    refreshBeacon();
+    updateGhost();
+  }
+
+  // ---- hover ghost handling ------------------------------------------------
+  function clearGhost() {
+    ghostH.visible = false;
+    ghostV.visible = false;
+  }
+  function updateGhost() {
+    clearGhost();
+    if (!hoverCell || !isMyTurn()) return;
+    const { o, r, c } = hoverCell;
+    if (!edgeFree(st, o, r, c)) return;
+    const pos = edgePos[o][`${r},${c}`];
+    if (!pos) return;
+    const tint = myColor === "red" ? RED : BLUE;
+    M.ghost.color.set(tint);
+    M.ghost.emissive.set(tint);
+    const g = o === "h" ? ghostH : ghostV;
+    g.position.set(pos.x, TOP + gap * 0.05, pos.z);
+    g.visible = true;
+  }
+
+  // ---- per-frame breathing pulse -------------------------------------------
   let pulseT = 0;
   function update(dt) {
     pulseT += dt || 0.016;
     const wave = 0.5 + 0.5 * Math.sin(pulseT * 4.0);
-    const myTurn = phase === "play" && myColor != null && turn === myColor;
-    const lamp = myColor ? cue[myColor].lamp : null;
-    if (lamp && myTurn) lamp.material.emissiveIntensity = 0.6 + 0.5 * wave;
-    const glow = myTurn ? 0.25 + 0.35 * wave : 0.0;
+    const myTurn = isMyTurn();
+    // legal-edge glow breathes on the local turn
+    const glow = myTurn ? 0.22 + 0.4 * wave : 0.0;
     for (const bar of legalBars) bar.material.emissiveIntensity = glow;
+    // local lamp breathes a touch brighter on its turn
+    if (myColor && myTurn) home[myColor].lamp.material.emissiveIntensity = 0.7 + 0.45 * wave;
+    // beacon bob + gentle spin while in play
+    if (phase === "play") {
+      beacon.position.y = beaconBaseY + Math.sin(pulseT * 2.2) * gap * 0.08;
+      beacon.rotation.y = pulseT * 0.8;
+    }
+    if (ghostH.visible || ghostV.visible) {
+      M.ghost.emissiveIntensity = 0.4 + 0.4 * wave;
+    }
   }
 
+  // ---- painters ------------------------------------------------------------
   function setEdge(o, r, c, player) {
     const bar = edgeBars[o][`${r},${c}`];
     if (bar) bar.material = player === "red" ? M.red : player === "blue" ? M.blue : M.edgeOpen;
-  }
-  // Re-derive every per-turn cue from local state (legal-edge hints + home/lamp
-  // emissives). Cheap; called after any move/state/role/seat change.
-  function refreshCues() {
-    refreshLegal();
-    updateIdentityCues();
   }
   function setBox(r, c, player) {
     if (boxMeshes[r][c]) { group.remove(boxMeshes[r][c]); boxMeshes[r][c] = null; }
     if (!player) return;
     const m = meshOf(THREE, boxGeo, player === "red" ? M.boxRed : M.boxBlue, false);
-    m.position.set((dotX(c) + dotX(c + 1)) / 2, TOP + 0.006, (dotZ(r) + dotZ(r + 1)) / 2);
+    m.position.set(midX(c), TOP + 0.008, midZ(r));
     group.add(m);
     boxMeshes[r][c] = m;
   }
 
+  function paint() {
+    for (let r = 0; r < DOTS; r++) for (let c = 0; c < BOXN; c++) setEdge("h", r, c, st.h[r][c]);
+    for (let r = 0; r < BOXN; r++) for (let c = 0; c < DOTS; c++) setEdge("v", r, c, st.v[r][c]);
+    for (let r = 0; r < BOXN; r++) for (let c = 0; c < BOXN; c++) setBox(r, c, st.boxes[r][c]);
+    layoutIdentity();
+    refreshCues();
+  }
+
+  // ---- move application ----------------------------------------------------
   function performMove(o, r, c, player) {
     const completed = applyEdge(st, o, r, c, player);
     setEdge(o, r, c, player);
     for (const [br, bc] of completed) setBox(br, bc, player);
+    hoverCell = null;
     if (isFull(st)) {
       phase = "over";
       const t = tally(st);
       winner = t.red === t.blue ? null : t.red > t.blue ? "red" : "blue";
-      try { ctx.onGameOver({ winner, reason: "filled" }); } catch { /* */ }
+      try { ctx.onGameOver({ winner, reason: "filled", score: t }); } catch { /* ignore */ }
       refreshCues();
       return;
     }
-    if (completed.length === 0) turn = other(player); // box claim → same player again
+    // Completing ≥1 box → SAME player moves again; otherwise pass the turn.
+    if (completed.length === 0) turn = other(player);
     refreshCues();
   }
 
+  // ---- contract surface ----------------------------------------------------
   function onPointer(hit) {
-    if (!ctx.isLocalTurnAllowed() || turn !== myColor) return;
+    if (phase !== "play") return;
+    if (typeof ctx.isLocalTurnAllowed === "function" && !ctx.isLocalTurnAllowed()) return;
+    if (myColor == null || turn !== myColor) return;
     const cell = hit && hit.cell;
     if (!cell || (cell.o !== "h" && cell.o !== "v")) return;
     if (!edgeFree(st, cell.o, cell.r, cell.c)) return;
     performMove(cell.o, cell.r, cell.c, myColor);
-    try { ctx.net.sendMove({ type: "move", o: cell.o, r: cell.r, c: cell.c }); } catch { /* */ }
+    try { ctx.net.sendMove({ type: "move", o: cell.o, r: cell.r, c: cell.c }); } catch { /* ignore */ }
     if (role === "host") pushSnapshot();
   }
 
+  // Relayed move from the other side. The host applies the move locally too (for a
+  // guest move it relays) and re-pushes its authoritative snapshot.
   function applyMove(move) {
     if (phase !== "play") throw new GameDesync("dots: not in play");
     if (!move || move.type !== "move") return false;
-    if (!edgeFree(st, move.o, move.r, move.c)) throw new GameDesync("dots: edge taken");
+    if (move.o !== "h" && move.o !== "v") return false;
+    if (!edgeFree(st, move.o, move.r, move.c)) throw new GameDesync("dots: edge already taken");
     performMove(move.o, move.r, move.c, turn);
+    if (role === "host") pushSnapshot();
     return true;
   }
 
@@ -292,16 +418,10 @@ export function createGame(ctx) {
   function publicState() { return snapshot(); }
   function pushSnapshot() {
     const s = snapshot();
-    try { ctx.net.sendState(s, s); } catch { /* */ }
+    try { ctx.net.sendState(s, s); } catch { /* ignore */ }
   }
 
-  function paint() {
-    for (let r = 0; r < DOTS; r++) for (let c = 0; c < BOXN; c++) setEdge("h", r, c, st.h[r][c]);
-    for (let r = 0; r < BOXN; r++) for (let c = 0; c < DOTS; c++) setEdge("v", r, c, st.v[r][c]);
-    for (let r = 0; r < BOXN; r++) for (let c = 0; c < BOXN; c++) setBox(r, c, st.boxes[r][c]);
-    refreshCues();
-  }
-
+  // Idempotent rebuild from an authoritative snapshot. NEVER touches myColor/role.
   function applyState(state) {
     if (!state) {
       st = emptyState();
@@ -326,25 +446,49 @@ export function createGame(ctx) {
       phase = state.phase === "over" ? "over" : "play";
       winner = state.winner === "red" || state.winner === "blue" ? state.winner : null;
     }
+    hoverCell = null;
     paint();
   }
 
   function setRole(r) {
     role = r || "spectator";
-    // Side derived from ROLE (canonical 2-player convention), never from the wire.
     myColor = role === "host" ? "red" : role === "guest" ? "blue" : null;
+    layoutIdentity();
     refreshCues();
   }
-  // Flat board: the framework rotates the group by orientFor(seatRy), so the local
-  // home edge faces the seat automatically. We only refresh cues on a seat change.
+
+  // Flat board: the framework rotates the group by orientFor(seatRy); we only need
+  // to re-derive the cues (identity furniture is already laid out per myColor).
   function setSeatRy() { refreshCues(); }
+
+  // Hover preview (framework routes a resolved board cell here). cell may be a
+  // grid {r,c} from the geometric fallback (ignore) or our edge {o,r,c}.
+  function setHover(cell) {
+    if (cell && (cell.o === "h" || cell.o === "v")) hoverCell = cell;
+    else hoverCell = null;
+    updateGhost();
+  }
+
   function dispose() {
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
   }
 
+  // initial layout + paint
   paint();
-  return { group, applyState, applyMove, onPointer, publicState, update, setRole, setSeatRy, dispose };
+
+  return {
+    group,
+    applyState,
+    applyMove,
+    onPointer,
+    publicState,
+    update,
+    setRole,
+    setSeatRy,
+    setHover,
+    dispose,
+  };
 }
 
 export default createGame;

@@ -20,6 +20,113 @@ import { TABLE_SURFACE_Y, orientFor, hitToCell, GameDesync } from "./createGame.
 // pixels is a board "click"; more is a camera-orbit drag (controls.js keeps it).
 const CLICK_SLOP = 6;
 
+// Derive the tabletop's local Y for parenting a board to a table group, the same
+// way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
+// face, fall back to the authored constant. Standalone so the ambient passersby
+// manager can mount read-only mirrors without an InWorldBoard instance.
+export function tabletopLocalY(table) {
+  let best = null;
+  try {
+    for (const child of table.children || []) {
+      const g = child.geometry;
+      const p = g && g.parameters;
+      if (p && p.radiusTop != null && p.height != null && p.radiusTop >= 0.4) {
+        const topY = child.position.y + p.height / 2;
+        if (best == null || topY > best) best = topY;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  if (Number.isFinite(best)) return best;
+  return TABLE_SURFACE_Y;
+}
+
+// Reusable READ-ONLY board mount for passersby / ambient mirroring.
+//
+// Creates a game instance in the canonical "spectator" role (seatRy null → fixed
+// canonical orientation), parents its group onto `table` at the tabletop surface,
+// and returns a tiny handle the caller drives with the PUBLIC snapshots it gets
+// from the relay. There is NO pointer routing, NO turn gating, NO outbound net —
+// a passerby only ever watches. The module's own publicState()/applyState already
+// strips private data, and the server only ever sends `pub` to non-members, so a
+// hidden-info layout can never reach this mount.
+//
+// opts: { createGame, table, gameId, seatCount }
+// returns: { group, applyState(state), update(dt), dispose() } or null on failure.
+export function mountAmbientBoard(opts) {
+  const { createGame, table } = opts || {};
+  if (typeof createGame !== "function" || !table) return null;
+  const anchorY = tabletopLocalY(table);
+
+  // A no-op relay surface: passersby are pure observers, so nothing they could
+  // emit is ever wired through. Keeping the shape lets unmodified game modules
+  // build their ctx without special-casing the ambient path.
+  const noopNet = {
+    sendMove() {},
+    sendState() {},
+    sendPublic() {},
+    sendInput() {},
+  };
+
+  const ctx = {
+    THREE,
+    table,
+    anchorY,
+    role: "spectator",
+    seatRy: null,
+    seatIndex: null,
+    seatCount: opts.seatCount ?? 2,
+    net: noopNet,
+    isLocalTurnAllowed: () => false,
+    onGameOver: () => {},
+  };
+
+  let instance;
+  try {
+    instance = createGame(ctx);
+  } catch {
+    return null;
+  }
+  if (!instance || !instance.group) return null;
+
+  instance.group.position.y = anchorY;
+  // Spectator orientation is the fixed canonical frame (orientFor(null) === 0).
+  // A module that orients itself per-seat (orientPolicy "self") is left alone.
+  if (instance.orientPolicy !== "self") instance.group.rotation.y = orientFor(null);
+  table.add(instance.group);
+
+  return {
+    group: instance.group,
+    applyState(state) {
+      try {
+        instance.applyState?.(state);
+      } catch {
+        /* a bad snapshot must not crash the render loop */
+      }
+    },
+    update(dt) {
+      if (typeof instance.update === "function") {
+        try {
+          instance.update(dt);
+        } catch {
+          /* a module sim error must not kill the loop */
+        }
+      }
+    },
+    dispose() {
+      try {
+        instance.dispose?.();
+      } catch {
+        /* ignore */
+      }
+      if (instance.group && instance.group.parent) {
+        instance.group.parent.remove(instance.group);
+      }
+    },
+  };
+}
+
 export class InWorldBoard {
   // deps: { scene, camera, getCanvas, controls, network, tables, getLocal, getGameMeta }
   //   tables   : Map(tableId -> THREE.Group) from buildCoffeeshop
@@ -64,6 +171,13 @@ export class InWorldBoard {
 
   get open() {
     return this.active != null;
+  }
+
+  // The table this client currently owns a mount on (seated play / spectating /
+  // flip-book menu), or null. The ambient passersby manager reads this to AVOID
+  // double-mounting a read-only mirror on the table this client already renders.
+  get activeTableId() {
+    return this.active ? this.active.tableId : null;
   }
 
   // Seated board-view camera hook.

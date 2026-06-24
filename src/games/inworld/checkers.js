@@ -1,90 +1,63 @@
 // Checkers (American / English draughts, 8x8) — in-world 3D table game module.
 //
-// A COMPLETE, fully self-contained ES module implementing the createGame()
-// contract documented in ./createGame.js. The framework (board.js -> InWorldBoard)
-// owns the physical café table, the WebSocket relay, role/turn gating and the
-// spectator read-only mode; THIS module owns ONLY the rules, the 3D geometry
-// (real meshes parented to the café table) and per-cell hit-testing.
+// CANDIDATE VARIATION #2 — "framework-pumped, pooled discs, recessed well board."
 //
-//   import { createGame } from "../inworld/checkers.js";
-//   const instance = createGame(ctx);   // InWorldBoard.mount() does this
+// A complete, self-contained ES module implementing the createGame() contract
+// from ./createGame.js. The framework (board.js -> InWorldBoard) owns the café
+// table, the relay, role/turn gating and the spectator read-only mode; THIS
+// module owns ONLY the rules, the 3D geometry and per-cell hit-testing.
 //
-// ===========================================================================
-// CANDIDATE VARIATION #29 — "ledger of living chips, raised inlaid board,
-// captures swept into a side tray."
+// Deliberately distinct from the internal-rAF / capture-tray candidates:
 //
-// A deliberately distinct take from the pool/occupancy candidates. The whole
-// module is built around ONE idea: every physical disc is a long-lived object
-// with a stable identity (an integer id), tracked in a `pieces` Map. The logical
-// 8x8 board never stores piece data directly — it stores the id sitting on each
-// square (or 0). This "id-on-the-grid" model makes both kinds of update cheap and
-// strobe-free:
+//   1. FRAMEWORK-PUMPED ANIMATION. There is NO internal requestAnimationFrame
+//      loop. All cosmetic motion (glides, parabolic jump hops, capture fades,
+//      crown spring-ins, turn-cue + selection pulses) is advanced from the
+//      module's optional update(dt) hook, which InWorldBoard.update(dt) already
+//      pumps every frame (and which the ambient read-only mount also drives). The
+//      LOGICAL board is always mutated synchronously when a move commits, so the
+//      rules/turn never wait on a frame — the meshes merely trail.
 //
-//   1. LEDGER OF LIVING CHIPS. createGame mints exactly 24 discs up front (12 red,
-//      12 black), each its own THREE.Group with a stable id, and never destroys
-//      them for the life of the instance. A captured disc is not deleted — it is
-//      retired to a capture tray off the side of the board. applyState reconciles
-//      the ledger to a snapshot by MOVING existing chips to where they belong and
-//      retiring/reviving the surplus, so a catch-up never deletes+recreates meshes
-//      (no flicker). Promotion just flips a chip's crown on; demotion (from a
-//      snapshot) flips it off. The id is the single source of mesh identity.
+//   2. POOLED DISCS WITH STABLE IDS. createGame mints exactly 24 discs up front
+//      (12 red, 12 black). Each is a long-lived THREE.Group with a stable integer
+//      id, tracked in a Map. The logical 8x8 grid stores the id sitting on each
+//      square (or 0). applyState reconciles the pool to a snapshot by MOVING
+//      existing discs and parking the surplus off-board (never delete+recreate),
+//      so a catch-up never strobes. Captures fade + sink the disc, then park it on
+//      its captor's rail. Promotion flips a gold crown ring on; demotion off.
 //
-//   2. RAISED INLAID BOARD WITH A BEVELED WOODEN FRAME. The board is a solid plank
-//      with a chamfered frame border (the 2D "6px wooden frame, rounded corners,
-//      drop shadow"), and 64 thin inlaid square tiles sitting PROUD of the plank
-//      top — pieces rest ON the tiles, not down in a well. Dark playable tiles
-//      #7a4a25, light tiles #e8d2ab, frame #4a311c, all MeshStandard per props.js.
+//   3. RECESSED WELL BOARD. A solid plank with a raised frame and 64 square wells
+//      sunk INTO the top; pieces seat in the wells. Dark playable squares #7a4a25,
+//      light #e8d2ab, frame #4a311c — mirrors the 2D :root tokens.
 //
-//   3. CAPTURES SLIDE INTO A SIDE TRAY. A taken disc sinks a hair, then slides off
-//      the board to a little recessed tray along the capturing side's frame edge
-//      and stacks there. It stays visible (you can see the score mounting) rather
-//      than vanishing — a calmer, "set aside" beat than flicking a disc into the
-//      void, and it gives the table a tactile, played-with feel.
+//   4. UNMISTAKABLE IDENTITY + TURN CUES. Each home edge carries a colour bar in
+//      that side's colour; the LOCAL player's own bar glows steadily (that's me).
+//      A turn lamp on the side-to-move glows, brighter when it's the local turn.
+//      On your turn your movable discs glow and lift; the picked disc gets a gold
+//      ring and each legal landing floats a bobbing gold target token. Spectators
+//      and the off-turn player get NONE of these.
 //
-//   4. MOVE MOTION = FLAT GLIDE (simple) / PARABOLIC HOP (jump). A simple move
-//      glides flat tile-to-tile with an ease. A jump lifts in a clean parabola
-//      over the captured disc and lands with a small settle; multi-jumps chain one
-//      hop per segment, and each captured disc peels into the tray as the hopper
-//      clears it.
-//
-//   5. KING = STACKED DISC + FACETED GOLD CROWN RING. Promotion seats a second
-//      disc of the same colour on top and clamps a low-poly gold ring (the spec's
-//      "stacked / double disc … crowned disc in gold accent") around the seam, both
-//      springing in with a short overshoot. Readable from any seat, no billboard.
-//
-//   6. SEATED-PLAYER AFFORDANCES, THEIR TURN ONLY. Selectable own chips lift a hair
-//      and glow; the picked chip gets a gold selection ring on the tile; each legal
-//      next landing floats a translucent gold target token that bobs. Spectators
-//      and the off-turn player get NONE of this (onPointer gated inert via
-//      ctx.isLocalTurnAllowed()).
+//   5. SELF-ORIENTATION. orientPolicy:"self" — the module rotates its own group so
+//      the LOCAL player's army sits on the near edge (red host near red, black
+//      guest near black, opponent across). applyState NEVER recomputes the local
+//      colour from the wire (no side-flip): colour is fixed by role at mount.
 //
 // WIRE FORMAT (matches the spec's moveFormat):
 //   { type:"move", from:{r,c}, steps:[{r,c}...] }
-//   `captured` is intentionally OMITTED on send — the receiver ignores a sender's
-//   captured list and recomputes a trusted one (and promotion) via matchLegalMove.
-//   Only (from, ordered step path) are trusted; an unmatched path -> GameDesync,
-//   the contract's explicit resync signal (mirrors checkers' handleDesync).
+//   `captured` is OMITTED on send — the receiver recomputes a trusted captured
+//   list (and promotion) via matchLegalMove. Only (from, ordered steps) are
+//   trusted; an unmatched path -> GameDesync (the contract's resync signal).
 //
-// Palette mirrors the 2D :root tokens of public/games/checkers/index.html:
-//   dark-sq #7a4a25 / light-sq #e8d2ab / frame #4a311c / accent gold #e0a23a
-//   red #c4452f (hi #e7796a) / black #2a2320 (hi #6b6058).
-//
-// Three.js style follows src/world/props.js: MeshStandardMaterial with
-// roughness/metalness, shared geometry/materials created once and freed in
-// dispose(), castShadow/receiveShadow on real meshes. Geometry maps cells the same
-// way createGame.js cellCenter()/hitToCell() do (col -> local X, row -> local Z,
-// canonical row 0 at -Z) so a raycast on a disc resolves to that disc's own cell.
+// Palette: dark #7a4a25 / light #e8d2ab / frame #4a311c / accent gold #e0a23a
+//          red #c4452f (hi #e7796a) / black #2a2320 (hi #6b6058).
 
 import { GameDesync, BOARD_SIZE as FRAMEWORK_BOARD_SIZE, orientFor } from "./createGame.js";
 
 // ===========================================================================
-// PURE RULES — ported VERBATIM (behaviour) from public/games/checkers/index.html,
-// inlined so the module is fully self-contained and transport-free. One canonical
-// frame:  board[r][c] = null | { color:"red"|"black", king:bool }
-//   r=0 is the top (-Z) edge; red moves UP (host, promotes on row 0), black moves
-//   DOWN (guest, promotes on row 7).
-// There is NO maximum-capture rule, and reaching the king row BY A JUMP ends the
-// chain (a man crowned mid-jump may NOT keep jumping as a king the same turn).
+// PURE RULES — American/English draughts. One canonical frame:
+//   board[r][c] = null | { color:"red"|"black", king:bool }
+//   r=0 is the top (-Z) edge; red promotes on row 0 (moves "up"), black promotes
+//   on row 7 (moves "down"). Captures are mandatory (global, no maximum-capture
+//   rule). A man crowned BY A JUMP ends the chain.
 // ===========================================================================
 export const KING_ROW = { red: 0, black: 7 };
 export const other = (c) => (c === "red" ? "black" : "red");
@@ -114,10 +87,9 @@ export function dirsFor(piece) {
   return piece.color === "red" ? [[-1, -1], [-1, 1]] : [[1, -1], [1, 1]];
 }
 
-// Recursively enumerate jump sequences for a piece on a working board. Returns
-// [{ steps:[{r,c}...], captured:[{r,c}...] }]. American rule: reaching the king
-// row by a jump promotes and ENDS the chain. A cloned board per hop prevents a
-// disc from being jumped twice in one sequence.
+// Enumerate jump sequences for a piece on a working board. Returns
+// [{ steps:[{r,c}...], captured:[{r,c}...] }]. A cloned board per hop stops a disc
+// being jumped twice. Reaching the king row by a jump promotes and ENDS the chain.
 export function jumpsFrom(r, c, piece, bd) {
   const out = [];
   for (const [dr, dc] of dirsFor(piece)) {
@@ -139,9 +111,7 @@ export function jumpsFrom(r, c, piece, bd) {
     if (cont.length === 0) {
       out.push({ steps: [land], captured: [cap] });
     } else {
-      for (const k of cont) {
-        out.push({ steps: [land, ...k.steps], captured: [cap, ...k.captured] });
-      }
+      for (const k of cont) out.push({ steps: [land, ...k.steps], captured: [cap, ...k.captured] });
     }
   }
   return out;
@@ -158,8 +128,8 @@ export function simpleMovesFrom(r, c, piece, bd) {
   return out;
 }
 
-// All legal moves for a color on a board. If ANY capture exists, captures are
-// mandatory and the only legal moves (global; no maximum-capture rule).
+// All legal moves for a colour. If ANY capture exists, captures are mandatory and
+// are the only legal moves (global; no maximum-capture rule).
 export function allMoves(bd, color) {
   const captures = [];
   const simples = [];
@@ -167,32 +137,16 @@ export function allMoves(bd, color) {
     for (let c = 0; c < 8; c++) {
       const p = bd[r][c];
       if (!p || p.color !== color) continue;
-      for (const j of jumpsFrom(r, c, p, bd)) {
-        captures.push({ from: { r, c }, steps: j.steps, captured: j.captured });
-      }
-      for (const s of simpleMovesFrom(r, c, p, bd)) {
-        simples.push({ from: { r, c }, steps: s.steps, captured: s.captured });
-      }
+      for (const j of jumpsFrom(r, c, p, bd)) captures.push({ from: { r, c }, steps: j.steps, captured: j.captured });
+      for (const s of simpleMovesFrom(r, c, p, bd)) simples.push({ from: { r, c }, steps: s.steps, captured: s.captured });
     }
   }
   return captures.length ? captures : simples;
 }
 
-// Apply a validated path to a board IN PLACE: remove captured pieces, then place
-// the (possibly promoted) mover on the final landing square.
-export function applyPath(bd, from, steps, captured) {
-  const piece = bd[from.r][from.c];
-  bd[from.r][from.c] = null;
-  for (const cap of captured) bd[cap.r][cap.c] = null;
-  const final = steps[steps.length - 1];
-  const promote = !piece.king && final.r === KING_ROW[piece.color];
-  bd[final.r][final.c] = { color: piece.color, king: piece.king || promote };
-}
-
-// Anti-cheat: accept a remote move only if some legal move for the side to move
-// shares its from-square AND its exact ordered step path. Returns the validated
-// move (with OUR trusted captured list) or null. The sender's captured list is
-// never trusted — only (from, steps).
+// Accept a remote move only if some legal move for the side to move shares its
+// from-square AND its exact ordered step path. Returns the validated move (with
+// OUR trusted captured list) or null. The sender's captured list is never trusted.
 export function matchLegalMove(bd, turn, msg) {
   if (!msg || !msg.from || !Array.isArray(msg.steps) || msg.steps.length === 0) return null;
   for (const m of allMoves(bd, turn)) {
@@ -211,31 +165,29 @@ export function countPieces(bd, color) {
 
 // ===========================================================================
 // GEOMETRY CONSTANTS (metres, in the board group's local XZ plane). The playable
-// square spans BOARD_SIZE so 8 cells map onto it exactly the way createGame.js
+// square spans BOARD_SIZE so 8 cells map onto it exactly as createGame.js
 // cellCenter()/hitToCell() expect (col -> local X, row -> local Z, row 0 at -Z).
 // ===========================================================================
-const BOARD_SIZE = FRAMEWORK_BOARD_SIZE || 0.7; // edge of the playable square
+const BOARD_SIZE = FRAMEWORK_BOARD_SIZE || 0.7;
 const HALF = BOARD_SIZE / 2;
 const N = 8;
 const STEP = BOARD_SIZE / N;          // one cell ~ 0.0875 m
 
-const PLANK_H = 0.022;                // solid board plank thickness
-const FRAME_W = 0.030;                // beveled wooden frame width around the field
-const FRAME_H = 0.012;                // how proud the frame stands above the plank top
-const TILE_T = 0.004;                 // inlaid tile thickness (sits proud of the plank)
+const PLANK_H = 0.024;                // solid board plank thickness
+const FRAME_W = 0.030;                // wooden frame width around the field
+const FRAME_H = 0.016;                // how proud the frame stands above the plank top
+const WELL_D = 0.003;                 // how deep each square well is sunk into the top
 const PLANK_TOP = PLANK_H;            // local Y of the plank top face
-const TILE_TOP = PLANK_TOP + TILE_T;  // local Y of the tile top (where discs rest)
+const WELL_FLOOR = PLANK_TOP - WELL_D;// local Y of a well floor (where a disc seats)
 
-const DISC_R = STEP * 0.40;           // ~76% across the cell (matches the 2D piece)
-const DISC_T = 0.016;                 // single disc thickness
-const REST_Y = TILE_TOP + DISC_T / 2; // resting centre height of a man
-const HOP_Y = STEP * 0.6;             // peak extra height of a jump parabola
-const LIFT_Y = STEP * 0.07;           // hover lift for a selectable / selected chip
+const DISC_R = STEP * 0.40;
+const DISC_T = 0.016;
+const REST_Y = WELL_FLOOR + DISC_T / 2; // resting centre height of a man
+const HOP_Y = STEP * 0.62;            // peak extra height of a jump parabola
+const LIFT_Y = STEP * 0.08;           // hover lift for a selectable / selected disc
 
-const TRAY_DROP = -DISC_T * 0.2;      // captured discs sit a touch below board level in the tray
-const TRAY_GAP = HALF + FRAME_W + STEP * 0.55; // distance from board centre to the tray lane
+const RAIL_GAP = HALF + FRAME_W + STEP * 0.55; // distance to the captured-disc rail lane
 
-// Canonical cell -> local board centre (shared mapping with createGame.js).
 function cellX(c) { return -HALF + (c + 0.5) * STEP; }
 function cellZ(r) { return -HALF + (r + 0.5) * STEP; }
 
@@ -247,84 +199,70 @@ export function createGame(ctx) {
   const group = new THREE.Group();
   group.name = "checkers";
 
-  // ---- Game state ---------------------------------------------------------
-  // `board[r][c]` holds the integer ID of the disc on that square, or 0 for empty
-  // — the id grid IS the authoritative position. The rules engine consumes a
-  // derived { color, king } grid (logicalBoard()); the ledger (`pieces`) is the
-  // bridge from id -> living mesh + colour/king/onBoard.
-  let board = emptyGrid();      // ids
+  // ---- Logical state ------------------------------------------------------
+  // board[r][c] = id of the disc on that square, or 0. The id grid is the
+  // authoritative position; logicalBoard() derives the {color,king} grid the
+  // rules consume.
+  let board = emptyGrid();
   let turn = "red";             // red always moves first
   let phase = "play";           // "play" | "over"
   let winner = null;
 
   let role = ctx.role;
   let seatRy = ctx.seatRy;
-  // Colour is fixed by role: host = red (moves first), guest = black. Spectators
-  // get null and may never move.
+  // Colour fixed by role at mount: host = red (moves first), guest = black.
+  // Spectators get null and may never move. NEVER recomputed from the wire.
   let myColor = role === "host" ? "red" : role === "guest" ? "black" : null;
 
   // ---- Orientation --------------------------------------------------------
-  // The logical board is authored in ONE canonical frame: black home on rows
-  // 0-2 (the -Z edge), red home on rows 5-7 (the +Z edge). The framework's
-  // default "flat" policy would rotate our group by orientFor(seatRy) — which
-  // brings the canonical -Z (black) edge to WHOEVER is looking, so BOTH players
-  // would see black nearest them and the +Z-home red host would face their own
-  // army across the table. Checkers (like chess on the same table) needs each
-  // player to see THEIR OWN army on the near edge. So we declare
-  // orientPolicy:"self" (board.js then does NOT rotate the group) and rotate the
-  // whole group ourselves by
-  //   orientFor(seatRy) + (myColor === "red" ? PI : 0)
-  // orientFor(seatRy) brings the -Z (black) edge to the local seat; the extra PI
-  // for red flips the board so the +Z (red) home edge comes near instead.
-  // Result: the host (red) sees red nearest, the guest (black) sees black
-  // nearest, each sees the opponent across the table, and the lit identity bar
-  // (red bar at +Z, black bar at -Z) always lands on the local player's near
-  // side. Spectators (myColor null, seatRy null) get the canonical orientation.
-  // Per-cell colliders carry their canonical {r,c} and rotate WITH the group, so
-  // clicks stay self-correcting and cross-client cell mapping is unchanged.
+  // Canonical frame: black home rows 0-2 (-Z edge), red home rows 5-7 (+Z edge).
+  // We declare orientPolicy:"self" so board.js does NOT rotate the group, and we
+  // rotate it ourselves by orientFor(seatRy) + (red ? PI : 0):
+  //   * orientFor(seatRy) brings the canonical -Z (black) edge to the local seat;
+  //   * the extra PI for red flips so the +Z (red) home edge comes near instead.
+  // Result: host (red) sees red nearest, guest (black) sees black nearest, each
+  // sees the opponent across, and each side's coloured home bar lands in front of
+  // its own player. Spectators (myColor null, seatRy null) keep the canonical
+  // orientation. Per-cell colliders carry canonical {r,c} and rotate WITH the
+  // group, so clicks stay self-correcting and cross-client cell mapping is intact.
   function applyFacing() {
     const extra = myColor === "red" ? Math.PI : 0;
     group.rotation.y = orientFor(seatRy) + extra;
   }
   applyFacing();
 
-  // ---- Selection / multi-jump click-through (seated local player only) -----
-  let selectedFrom = null;      // {r,c} of the piece being moved this turn
-  let pathSoFar = [];           // landing squares clicked so far this turn
-  let candidateSeqs = [];       // legal sequences still matching pathSoFar
+  // ---- Selection / multi-jump click-through (seated local player only) ----
+  let selectedFrom = null;
+  let pathSoFar = [];
+  let candidateSeqs = [];
 
   let busy = false;             // true while a local/remote move animates
   let disposed = false;
 
   // ===========================================================================
-  // Shared materials + geometries (created once; freed in dispose()). Each disc
-  // CLONES its base material so its own emissive (hover glow) is independent.
+  // Shared materials + geometries (created once, freed in dispose()). Discs clone
+  // their base material so each disc's emissive (hover glow) is independent.
   // ===========================================================================
   const M = {
     frame: new THREE.MeshStandardMaterial({ color: "#4a311c", roughness: 0.66, metalness: 0.06 }),
     plank: new THREE.MeshStandardMaterial({ color: "#3a281a", roughness: 0.74, metalness: 0.04 }),
     dark: new THREE.MeshStandardMaterial({ color: "#7a4a25", roughness: 0.8, metalness: 0.03 }),
     light: new THREE.MeshStandardMaterial({ color: "#e8d2ab", roughness: 0.84, metalness: 0.02 }),
-    tray: new THREE.MeshStandardMaterial({ color: "#2c1d11", roughness: 0.9, metalness: 0.03 }),
+    rail: new THREE.MeshStandardMaterial({ color: "#2c1d11", roughness: 0.9, metalness: 0.03 }),
     red: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.42, metalness: 0.12, emissive: "#000000" }),
     black: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.48, metalness: 0.12, emissive: "#000000" }),
     gold: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.72, emissive: "#5a3c00", emissiveIntensity: 0.32 }),
     selRing: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.34, metalness: 0.5, emissive: "#e0a23a", emissiveIntensity: 0.5, transparent: true, opacity: 0.92 }),
     target: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.3, emissive: "#e0a23a", emissiveIntensity: 0.55, transparent: true, opacity: 0.7, depthWrite: false }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
-    // Persistent identity cues: a home-edge tint bar per side (in that side's
-    // colour) and a turn lamp per side. Each side gets its own material instance so
-    // the local player's bar/lamp can be lit independently of the opponent's.
     homeRed: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.5, metalness: 0.1, emissive: "#c4452f", emissiveIntensity: 0.0 }),
     homeBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.5, metalness: 0.1, emissive: "#6b6058", emissiveIntensity: 0.0 }),
     lampRed: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.35, metalness: 0.2, emissive: "#e7796a", emissiveIntensity: 0.0 }),
     lampBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.35, metalness: 0.2, emissive: "#6b6058", emissiveIntensity: 0.0 }),
   };
-  // Per-colour emissive accents used for the hover glow on own pieces.
   const GLOW = { red: new THREE.Color("#e7796a"), black: new THREE.Color("#6b6058") };
 
-  // Turned draught profile via LatheGeometry: a gently domed, beveled disc so the
-  // chips read as real turned wood, not a bare cylinder.
+  // Turned draught profile via LatheGeometry: a gently domed, beveled disc.
   function discProfile() {
     const r = DISC_R, h = DISC_T / 2;
     const pts = [
@@ -341,110 +279,103 @@ export function createGame(ctx) {
 
   const G = {
     disc: discProfile(),
-    cap: discProfile(),                                       // king's stacked second disc
-    crown: new THREE.TorusGeometry(DISC_R * 0.94, DISC_R * 0.12, 6, 18), // faceted gold ring (low segments)
-    tile: new THREE.BoxGeometry(STEP * 0.94, TILE_T, STEP * 0.94),
-    selRing: new THREE.TorusGeometry(DISC_R * 1.12, DISC_R * 0.1, 8, 28), // selection ring laid on the tile
-    target: new THREE.CylinderGeometry(STEP * 0.22, STEP * 0.22, STEP * 0.04, 24), // floating gold token
-    hit: new THREE.BoxGeometry(STEP * 0.98, DISC_T * 3, STEP * 0.98),    // per-square collider
-    homeBar: new THREE.BoxGeometry(BOARD_SIZE * 0.7, FRAME_H * 0.5, FRAME_W * 0.5), // identity tint bar
-    lamp: new THREE.SphereGeometry(FRAME_W * 0.32, 18, 14),              // turn lamp
+    cap: discProfile(),                                                    // king's stacked second disc
+    crown: new THREE.TorusGeometry(DISC_R * 0.94, DISC_R * 0.12, 8, 20),   // gold crown ring
+    well: new THREE.BoxGeometry(STEP * 0.92, WELL_D + 0.001, STEP * 0.92), // sunk square well floor
+    tile: new THREE.BoxGeometry(STEP, STEP * 0.6, STEP),                   // light-square filler (cosmetic, between wells)
+    selRing: new THREE.TorusGeometry(DISC_R * 1.12, DISC_R * 0.1, 8, 28),
+    target: new THREE.CylinderGeometry(STEP * 0.22, STEP * 0.22, STEP * 0.04, 24),
+    hit: new THREE.BoxGeometry(STEP * 0.98, DISC_T * 3, STEP * 0.98),      // per-square collider
+    homeBar: new THREE.BoxGeometry(BOARD_SIZE * 0.7, FRAME_H * 0.5, FRAME_W * 0.5),
+    lamp: new THREE.SphereGeometry(FRAME_W * 0.32, 18, 14),
   };
 
-  // ---- Piece ledger -------------------------------------------------------
+  // ---- Piece pool ---------------------------------------------------------
   // id -> { id, color, mesh:Group, base, baseMat, cap, capMat, crown, king, onBoard }
   const pieces = new Map();
   let nextId = 1;
-  // Per-colour captured-disc stacks (for tray layout).
-  const trayCount = { red: 0, black: 0 };
+  const railCount = { red: 0, black: 0 };
 
   // ---- Highlight objects (rebuilt each refresh) ---------------------------
-  let selRingMesh = null;       // gold ring on the selected chip's tile
-  const targets = [];           // floating gold tokens on legal next landings
-  const glowing = new Set();    // disc ids currently showing the hover glow
+  let selRingMesh = null;
+  const targets = [];
+  const glowing = new Set();
 
-  // ---- Persistent identity / turn cues (built once, never rebuilt) --------
-  // Per side: a home-edge tint bar (its own colour) on the inner frame rail, and a
-  // turn lamp beside it. The local player's OWN home edge is rendered in the
-  // canonical near-frame so the framework rotation puts it directly in front of
-  // them — an at-a-glance "this near side, in MY colour, is me". The lamp on the
-  // side-to-move glows so it's unambiguous whose turn it is (and whether it's mine).
+  // ---- Persistent identity / turn cues (built once) -----------------------
   const cue = { red: { bar: null, lamp: null }, black: { bar: null, lamp: null } };
 
-  // Static scene graph is built up front (these touch only bindings declared
-  // above). The INITIAL PAINT (setBoardFromLogical + refreshHighlights) is run at
-  // the very END of createGame instead — it reaches the animation-loop bindings
-  // (rafId/hops/crowns/startLoop), which are declared further down, so calling it
-  // here would hit a temporal-dead-zone ReferenceError.
+  // ---- Animation pools (advanced by update(dt); NO internal rAF) ----------
+  const hops = [];     // a disc gliding/hopping along a move path, segment by segment
+  const fades = [];    // a captured disc fading + sinking, then parked on a rail
+  const crowns = [];   // a king cap + ring springing in on promotion
+  let idleT = 0;       // accumulator for the steady glow/target idle motion
+
+  const easeOut = (x) => 1 - (1 - x) * (1 - x);
+  const easeInOut = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+
+  // Build static scene graph up front (touches only bindings declared above).
   buildBoard();
   buildColliders();
   buildIdentityCues();
   mintPieces();
 
   // -------------------------------------------------------------------------
-  // Static board geometry: a solid plank, a proud beveled frame, 64 inlaid tiles
-  // proud of the plank top, and two recessed capture trays along the side edges.
+  // Static board geometry: solid plank, raised frame, 64 sunk wells, two rails.
   // -------------------------------------------------------------------------
   function buildBoard() {
     const outer = BOARD_SIZE + FRAME_W * 2;
 
-    // Solid plank body (everything under the tiles).
     const plank = new THREE.Mesh(new THREE.BoxGeometry(outer, PLANK_H, outer), M.plank);
     plank.position.y = PLANK_H / 2;
     plank.castShadow = true;
     plank.receiveShadow = true;
     group.add(plank);
 
-    // Proud beveled frame: four rails standing above the plank top, framing the
-    // field (the 2D "wooden frame border"). Tapered (top narrower) for a chamfer.
+    // Raised frame rails framing the field.
     const frameY = PLANK_TOP + FRAME_H / 2;
     const longGeo = new THREE.BoxGeometry(outer, FRAME_H, FRAME_W);
     const sideGeo = new THREE.BoxGeometry(FRAME_W, FRAME_H, outer - FRAME_W * 2);
     const off = HALF + FRAME_W / 2;
-    for (const [geo, x, z] of [
-      [longGeo, 0, -off],
-      [longGeo, 0, off],
-      [sideGeo, -off, 0],
-      [sideGeo, off, 0],
-    ]) {
+    for (const [geo, x, z] of [[longGeo, 0, -off], [longGeo, 0, off], [sideGeo, -off, 0], [sideGeo, off, 0]]) {
       const rail = new THREE.Mesh(geo, M.frame);
       rail.position.set(x, frameY, z);
-      rail.scale.set(0.96, 1, 0.96); // subtle chamfer feel at the top edge
       rail.castShadow = true;
       rail.receiveShadow = true;
       group.add(rail);
     }
 
-    // 64 inlaid tiles sitting proud of the plank; dark tiles are the playable
-    // squares ((r+c)%2===1), matching the 2D board.
+    // 64 squares. Dark playable squares are sunk wells (a disc seats in the well);
+    // light squares are flush filler so the chequer reads cleanly.
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
-        const isDark = playable(r, c);
-        const tile = new THREE.Mesh(G.tile, isDark ? M.dark : M.light);
-        tile.position.set(cellX(c), PLANK_TOP + TILE_T / 2, cellZ(r));
-        tile.receiveShadow = true;
-        group.add(tile);
+        if (playable(r, c)) {
+          const well = new THREE.Mesh(G.well, M.dark);
+          well.position.set(cellX(c), WELL_FLOOR + (WELL_D + 0.001) / 2, cellZ(r));
+          well.receiveShadow = true;
+          group.add(well);
+        } else {
+          const tile = new THREE.Mesh(G.tile, M.light);
+          tile.position.set(cellX(c), PLANK_TOP - (STEP * 0.6) / 2 + 0.0005, cellZ(r));
+          tile.receiveShadow = true;
+          group.add(tile);
+        }
       }
     }
 
-    // Two capture trays: shallow recessed lanes outside the frame on the -X and +X
-    // sides. Captured black discs stack on +X (red's tray); captured red on -X.
-    // They are decorative beds the captured discs slide onto.
+    // Two captured-disc rails along the -X / +X frame edges. Captured black discs
+    // park on +X (red's rail), captured red on -X.
     for (const sx of [-1, 1]) {
-      const tray = new THREE.Mesh(
-        new THREE.BoxGeometry(STEP * 0.9, 0.006, BOARD_SIZE * 0.92),
-        M.tray
-      );
-      tray.position.set(sx * TRAY_GAP, PLANK_TOP - 0.001, 0);
-      tray.receiveShadow = true;
-      group.add(tray);
+      const railMesh = new THREE.Mesh(new THREE.BoxGeometry(STEP * 0.9, 0.006, BOARD_SIZE * 0.92), M.rail);
+      railMesh.position.set(sx * RAIL_GAP, PLANK_TOP - 0.001, 0);
+      railMesh.receiveShadow = true;
+      group.add(railMesh);
     }
   }
 
   // One invisible collider over every playable square, tagged with its cell so the
-  // framework's cell resolver can walk up to userData.cell — empty dark squares are
-  // reliably clickable even with no disc on them. A click on a disc resolves via
-  // the same geometric map (or this box under it), so they always agree.
+  // framework's cell resolver walks up to userData.cell — empty dark squares stay
+  // reliably clickable. A click on a disc resolves via the same geometric map (or
+  // this box beneath it), so they always agree.
   function buildColliders() {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
@@ -457,35 +388,24 @@ export function createGame(ctx) {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Persistent identity / turn cues. Each side gets a coloured home-edge tint bar
-  // laid on top of its home frame rail, plus a turn lamp beside it. Built ONCE in
-  // the canonical frame (red home on the +Z edge, black home on the -Z edge,
-  // matching KING_ROW / piece layout). applyFacing() rotates the whole group by
-  // orientFor(seatRy) + (red ? PI : 0), so the local player's OWN home edge — and their lit lamp on
-  // their turn — sit directly in front of them. updateIdentityCues() then drives
-  // the emissive: the local player's bar reads brightest (identity), and the
-  // side-to-move's lamp glows (whose turn).
+  // Persistent identity / turn cues, built ONCE in the canonical frame (red home on
+  // the +Z edge, black home on the -Z edge). applyFacing() rotates the group so the
+  // local player's own home bar (and lit lamp on their turn) sit in front of them.
   function buildIdentityCues() {
-    const barGeo = G.homeBar;
-    const lampGeo = G.lamp;
-    const railTop = PLANK_TOP + FRAME_H;            // top of the proud frame rail
-    const edge = HALF + FRAME_W / 2;                // centre of a long frame rail
-    // red home = +Z edge (rows 5-7 promote on row 0 going up); black home = -Z.
+    const railTop = PLANK_TOP + FRAME_H;
+    const edge = HALF + FRAME_W / 2;
     const sides = [
       { color: "red", z: edge, barMat: M.homeRed, lampMat: M.lampRed },
       { color: "black", z: -edge, barMat: M.homeBlack, lampMat: M.lampBlack },
     ];
     for (const s of sides) {
-      const bar = new THREE.Mesh(barGeo, s.barMat);
+      const bar = new THREE.Mesh(G.homeBar, s.barMat);
       bar.position.set(0, railTop + FRAME_H * 0.26, s.z);
-      bar.castShadow = false;
       bar.receiveShadow = true;
       group.add(bar);
 
-      const lamp = new THREE.Mesh(lampGeo, s.lampMat);
+      const lamp = new THREE.Mesh(G.lamp, s.lampMat);
       lamp.position.set(BOARD_SIZE * 0.42, railTop + FRAME_W * 0.32, s.z);
-      lamp.castShadow = false;
       group.add(lamp);
 
       cue[s.color].bar = bar;
@@ -493,29 +413,24 @@ export function createGame(ctx) {
     }
   }
 
-  // Drive the identity/turn cue emissives. Called on every state/role/turn/seat
-  // change. NEVER reads colour from the wire — purely from local `myColor`/`turn`.
-  //   * Home bar: the LOCAL player's own colour bar glows steadily (that's me);
-  //     the opponent's bar stays matte. Spectators: both matte (read-only).
-  //   * Turn lamp: only the side-to-move's lamp glows, and brighter still when
-  //     that side is the local player (it's MY turn). Off when the game is over.
+  // Drive the identity/turn cue emissives. NEVER reads colour from the wire —
+  // purely from local `myColor`/`turn`.
+  //   * Home bar: the LOCAL player's own colour bar glows; others matte.
+  //   * Turn lamp: only the side-to-move's lamp glows, brighter on the local turn.
   function updateIdentityCues() {
     for (const color of ["red", "black"]) {
       const c = cue[color];
       if (!c.bar || !c.lamp) continue;
       const isMine = myColor != null && color === myColor;
       const isTurn = phase === "play" && turn === color;
-      // Identity: own home bar lit; others matte.
       c.bar.material.emissiveIntensity = isMine ? 0.6 : 0.0;
-      // Whose-turn: side-to-move lamp glows; extra bright if it's the local turn.
       c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.45) : 0.0;
     }
   }
 
   // -------------------------------------------------------------------------
-  // Ledger: mint exactly 24 discs (12 red, 12 black) up front. They live for the
-  // whole instance; capture retires them to the tray, never destroys them, so the
-  // mesh set is stable and reconcile never deletes+recreates.
+  // Pool: mint exactly 24 discs (12 red, 12 black) up front; they live for the
+  // whole instance. Capture parks them on a rail, never destroys them.
   // -------------------------------------------------------------------------
   function makeDisc(color) {
     const g = new THREE.Group();
@@ -527,7 +442,6 @@ export function createGame(ctx) {
     base.receiveShadow = true;
     g.add(base);
 
-    // King's stacked second disc (hidden until promotion).
     const capMat = src.clone();
     const cap = new THREE.Mesh(G.cap, capMat);
     cap.position.y = DISC_T * 0.9;
@@ -535,7 +449,6 @@ export function createGame(ctx) {
     cap.visible = false;
     g.add(cap);
 
-    // Faceted gold crown ring at the seam (hidden until promotion).
     const crown = new THREE.Mesh(G.crown, M.gold);
     crown.rotation.x = Math.PI / 2;
     crown.position.y = DISC_T * 0.45;
@@ -558,7 +471,7 @@ export function createGame(ctx) {
   }
 
   // -------------------------------------------------------------------------
-  // Ledger helpers
+  // Pool / grid helpers
   // -------------------------------------------------------------------------
   function emptyGrid() {
     return Array.from({ length: 8 }, () => new Array(8).fill(0));
@@ -568,8 +481,6 @@ export function createGame(ctx) {
     const id = board[r][c];
     return id ? pieces.get(id) : null;
   }
-  // The logical { color, king } grid the rules engine consumes, derived on demand
-  // from the id grid + ledger. This is the single bridge from meshes -> rules.
   function logicalBoard() {
     const out = Array.from({ length: 8 }, () => new Array(8).fill(null));
     for (let r = 0; r < 8; r++) {
@@ -594,7 +505,6 @@ export function createGame(ctx) {
       rec.cap.scale.setScalar(0.001);
       rec.crown.scale.setScalar(0.001);
       crowns.push({ rec, t: 0, dur: 0.4 });
-      startLoop();
     } else if (king) {
       rec.cap.scale.setScalar(1);
       rec.crown.scale.setScalar(1);
@@ -602,7 +512,7 @@ export function createGame(ctx) {
     }
   }
 
-  // Toggle the hover glow on an own selectable chip (our turn only).
+  // Toggle the hover glow on an own selectable disc (our turn only).
   function setGlow(rec, on) {
     if (on) {
       glowing.add(rec.id);
@@ -610,83 +520,53 @@ export function createGame(ctx) {
       glowing.delete(rec.id);
       rec.baseMat.emissive.set("#000000");
       rec.baseMat.emissiveIntensity = 1;
-      rec.mesh.position.y = REST_Y;
+      if (rec.onBoard && !isHopping(rec.id)) rec.mesh.position.y = REST_Y;
     }
   }
 
-  // Snap a captured disc straight to its tray slot (used by a snapshot rebuild,
-  // where surplus chips are placed without the cosmetic slide animation).
-  function retireToTray(rec) {
-    setGlow(rec, false);
-    rec.onBoard = false;
-    const dest = trayDest(rec.color);
-    rec.mesh.scale.set(1, 1, 1);
-    rec.mesh.rotation.set(0, 0, 0);
-    rec.mesh.position.set(dest.x, dest.y, dest.z);
-    rec.mesh.visible = true;
-  }
-
-  // Next free slot in a colour's tray lane (advances trayCount). Captured red
-  // discs stack on the -X lane, captured black on the +X lane, two columns deep
-  // so 12 fit comfortably.
-  function trayDest(color) {
+  // Next free slot on a colour's capture rail. Captured red park on the -X lane,
+  // captured black on +X, two columns deep so 12 fit comfortably.
+  function railDest(color) {
     const sx = color === "red" ? -1 : 1;
-    const slot = trayCount[color]++;
-    const lane = sx * TRAY_GAP;
+    const slot = railCount[color]++;
+    const lane = sx * RAIL_GAP;
     const col = slot % 2;
     const rowN = Math.floor(slot / 2);
     return {
       x: lane + (col === 0 ? -DISC_R * 0.55 : DISC_R * 0.55),
-      y: PLANK_TOP + TRAY_DROP + DISC_T / 2,
+      y: PLANK_TOP + DISC_T / 2,
       z: -BOARD_SIZE * 0.4 + rowN * (DISC_T * 1.2 + STEP * 0.18),
     };
   }
 
-  // Reset every tray lane (used by a fresh snapshot rebuild).
-  function clearTrays() {
-    trayCount.red = 0;
-    trayCount.black = 0;
+  // Snap a captured disc straight to its rail slot (snapshot rebuild path).
+  function parkOnRail(rec) {
+    setGlow(rec, false);
+    rec.onBoard = false;
+    const dest = railDest(rec.color);
+    rec.mesh.scale.set(1, 1, 1);
+    rec.mesh.rotation.set(0, 0, 0);
+    rec.mesh.position.set(dest.x, dest.y, dest.z);
+    rec.baseMat.opacity = 1;
+    rec.baseMat.transparent = false;
+    rec.mesh.visible = true;
+  }
+
+  function clearRails() {
+    railCount.red = 0;
+    railCount.black = 0;
   }
 
   // ===========================================================================
-  // Animation loop (internal rAF; runs only while something is animating OR the
-  // hover glow / target tokens need their idle motion). Pools:
-  //   hops   : a disc gliding/hopping along its move path, segment by segment
-  //   slides : a captured disc sinking + sliding into the tray
-  //   crowns : a king cap + ring springing in on promotion
-  // plus a steady glow pulse for selectable chips and a bob for the target tokens.
-  // The LOGICAL MODEL is always already up to date (mutated synchronously in
-  // performMove); everything here is purely cosmetic and may safely trail.
+  // update(dt) — the ONLY animation driver. InWorldBoard pumps this every frame
+  // (and the ambient mount drives it too). The logical model is always already
+  // current; everything here is purely cosmetic and may safely trail.
   // ===========================================================================
-  const hops = [];
-  const slides = [];
-  const crowns = [];
-  let rafId = null;
-  let lastT = 0;
-  let idleT = 0;
-  const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
-  const raf = (fn) => (typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(fn) : setTimeout(() => fn(nowMs()), 16));
-  const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
-  const easeOut = (x) => 1 - (1 - x) * (1 - x);
-  const easeInOut = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  function update(dt) {
+    if (disposed) return;
+    if (!(dt > 0)) dt = 0.016;
+    if (dt > 0.05) dt = 0.05;
 
-  function loopActive() {
-    return hops.length > 0 || slides.length > 0 || crowns.length > 0 ||
-      glowing.size > 0 || targets.length > 0;
-  }
-  function startLoop() {
-    if (rafId != null || disposed) return;
-    lastT = nowMs();
-    const tick = (t) => {
-      const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
-      lastT = t;
-      stepAnim(dt);
-      rafId = loopActive() && !disposed ? raf(tick) : null;
-    };
-    rafId = raf(tick);
-  }
-
-  function stepAnim(dt) {
     // Gliding / hopping discs along a move path.
     for (let i = hops.length - 1; i >= 0; i--) {
       const a = hops[i];
@@ -698,17 +578,16 @@ export function createGame(ctx) {
       gp.x = seg.fromX + (seg.toX - seg.fromX) * e;
       gp.z = seg.fromZ + (seg.toZ - seg.fromZ) * e;
       if (seg.jump) {
-        // Clean parabola over the captured man; small settle near the landing.
         gp.y = REST_Y + Math.sin(k * Math.PI) * HOP_Y;
         const sq = k > 0.85 ? Math.sin((k - 0.85) / 0.15 * Math.PI) * 0.1 : 0;
         a.rec.mesh.scale.set(1 + sq, 1 - sq, 1 + sq);
       } else {
         gp.y = REST_Y;
       }
-      // Peel the captured disc into the tray as the hopper clears it.
+      // Peel the captured disc onto its rail as the hopper clears it.
       if (seg.capRec && !seg.captureFired && k >= 0.55) {
         seg.captureFired = true;
-        slideCapture(seg.capRec);
+        fadeCapture(seg.capRec);
       }
       if (k >= 1) {
         gp.set(seg.toX, REST_Y, seg.toZ);
@@ -717,28 +596,30 @@ export function createGame(ctx) {
         a.t = 0;
         if (a.i >= a.segs.length) {
           hops.splice(i, 1);
-          // Spring the crown in once the chip has settled on its final square.
           if (a.promotes) setKing(a.rec, true, false);
           if (a.onDone) a.onDone();
         }
       }
     }
-    // Captured discs: sink a hair, then slide out to their tray slot.
-    for (let i = slides.length - 1; i >= 0; i--) {
-      const s = slides[i];
-      s.t += dt;
-      const k = Math.min(1, s.t / s.dur);
+
+    // Captured discs: fade + sink in place, then snap to their rail slot.
+    for (let i = fades.length - 1; i >= 0; i--) {
+      const f = fades[i];
+      f.t += dt;
+      const k = Math.min(1, f.t / f.dur);
       const e = easeInOut(k);
-      const gp = s.rec.mesh.position;
-      gp.x = s.x0 + (s.tx - s.x0) * e;
-      gp.z = s.z0 + (s.tz - s.z0) * e;
-      // Dip down at mid-slide, settle at the tray height.
-      gp.y = s.y0 + (s.ty - s.y0) * e - Math.sin(k * Math.PI) * DISC_T * 0.6;
+      const gp = f.rec.mesh.position;
+      gp.y = f.y0 - e * DISC_T * 1.2;
+      const sc = 1 - e * 0.4;
+      f.rec.mesh.scale.set(sc, sc, sc);
+      f.rec.baseMat.opacity = 1 - e;
+      f.rec.capMat.opacity = 1 - e;
       if (k >= 1) {
-        gp.set(s.tx, s.ty, s.tz);
-        slides.splice(i, 1);
+        fades.splice(i, 1);
+        parkOnRail(f.rec); // restores opacity/scale and places on the rail
       }
     }
+
     // King cap + ring springing in on promotion (overshoot then settle).
     for (let i = crowns.length - 1; i >= 0; i--) {
       const cr = crowns[i];
@@ -756,7 +637,8 @@ export function createGame(ctx) {
         crowns.splice(i, 1);
       }
     }
-    // Idle motion: glow + lift the selectable chips, bob/spin the target tokens.
+
+    // Idle motion: glow + lift selectable discs, bob/spin the target tokens.
     if (glowing.size > 0 || targets.length > 0) {
       idleT += dt;
       const pulse = 0.3 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4.2));
@@ -766,7 +648,6 @@ export function createGame(ctx) {
         if (!rec) continue;
         rec.baseMat.emissive.copy(GLOW[rec.color]);
         rec.baseMat.emissiveIntensity = pulse;
-        // Don't fight an in-flight hop: only lift a settled chip.
         if (!isHopping(rec.id)) rec.mesh.position.y = REST_Y + lift;
       }
       const bob = Math.sin(idleT * 3.0) * STEP * 0.045;
@@ -782,31 +663,23 @@ export function createGame(ctx) {
     return false;
   }
 
-  // Slide a captured disc off the field into its tray. The chip was already
-  // removed from the id grid synchronously by performMove; this is purely the
-  // cosmetic peel-off, so we animate the record directly.
-  function slideCapture(rec) {
+  // Fade a captured disc out (model already removed it from the id grid).
+  function fadeCapture(rec) {
     if (!rec) return;
     rec.onBoard = false;
     setGlow(rec, false);
-    const x0 = rec.mesh.position.x, z0 = rec.mesh.position.z, y0 = rec.mesh.position.y;
-    const dest = trayDest(rec.color);
-    slides.push({ rec, t: 0, dur: 0.46, x0, z0, y0, tx: dest.x, tz: dest.z, ty: dest.y });
-    startLoop();
+    rec.baseMat.transparent = true;
+    rec.capMat.transparent = true;
+    fades.push({ rec, t: 0, dur: 0.4, y0: rec.mesh.position.y });
   }
 
   // -------------------------------------------------------------------------
-  // Build the per-segment glide/hop visual for a moving chip. The MODEL (id grid,
-  // king flag, captured removal) is already mutated synchronously by performMove;
-  // this function is purely cosmetic — meshes trail the authoritative state.
-  // `capRecs[i]` is the captured chip record peeled off during segment i (or null).
+  // Build the per-segment glide/hop visual. The MODEL is already mutated by
+  // performMove; this is purely cosmetic. capRecs[i] is the captured disc peeled
+  // off during segment i (or null).
   // -------------------------------------------------------------------------
   function animateMove(rec, from, steps, capRecs, promotes, onDone) {
-    if (!rec) {
-      // No mesh to move (snapshot drift): just call back; caller reconciles.
-      if (onDone) onDone();
-      return;
-    }
+    if (!rec) { if (onDone) onDone(); return; }
     const pts = [{ r: from.r, c: from.c }, ...steps];
     const segs = [];
     for (let i = 1; i < pts.length; i++) {
@@ -819,16 +692,13 @@ export function createGame(ctx) {
       });
     }
     hops.push({ rec, segs, i: 0, t: 0, dur: 0.32, promotes, onDone });
-    startLoop();
   }
 
   // -------------------------------------------------------------------------
-  // Apply a validated move. The LOGICAL MODEL is the source of truth and is
-  // mutated SYNCHRONOUSLY here (re-home the disc id, clear captured ids, set the
-  // mover's king flag), so afterMove()'s rules/turn computation is correct
-  // regardless of animation timing. The meshes then TRAIL via animateMove():
-  // captured chips slide to the tray and a promotion springs its crown in, but the
-  // board's truth never waits on a frame.
+  // Apply a validated move. The LOGICAL MODEL is the source of truth and is mutated
+  // SYNCHRONOUSLY here (re-home the disc id, clear captured ids, set the king flag)
+  // so afterMove()'s rules/turn computation is correct regardless of animation
+  // timing. The meshes then TRAIL via animateMove().
   // -------------------------------------------------------------------------
   function performMove(from, steps, captured) {
     const id = idAt(from.r, from.c);
@@ -836,16 +706,12 @@ export function createGame(ctx) {
     const final = steps[steps.length - 1];
     const promotes = !!rec && !rec.king && final.r === KING_ROW[rec.color];
 
-    // --- Synchronous model mutation (authoritative) ---
     if (rec) {
       board[from.r][from.c] = 0;
       board[final.r][final.c] = id;
-      if (promotes) rec.king = true; // logical king flag now; crown mesh springs in below
+      if (promotes) rec.king = true; // logical flag now; crown mesh springs in on land
     }
-    // Map each captured square to its chip record and clear it from the id grid at
-    // once, then index those records by hop segment so the visual can peel them off
-    // as the hopper passes. A captured chip stays in `pieces` (we never delete a
-    // minted chip) but leaves the id grid, so logicalBoard() no longer sees it.
+
     const pts = [{ r: from.r, c: from.c }, ...steps];
     const capRecs = [];
     for (let i = 1; i < pts.length; i++) {
@@ -853,7 +719,6 @@ export function createGame(ctx) {
       let capRec = null;
       if (Math.abs(b.r - a.r) === 2) {
         const mr = (a.r + b.r) / 2, mc = (a.c + b.c) / 2;
-        // Only treat it as a capture if the trusted captured list includes it.
         if (captured.some((cp) => cp.r === mr && cp.c === mc)) {
           const cid = board[mr][mc];
           capRec = cid ? pieces.get(cid) : null;
@@ -863,27 +728,24 @@ export function createGame(ctx) {
       capRecs.push(capRec);
     }
 
-    // --- Trailing visuals ---
     busy = true;
-    animateMove(rec, from, steps, capRecs, promotes, () => {
-      busy = false;
-    });
+    animateMove(rec, from, steps, capRecs, promotes, () => { busy = false; });
     if (!rec) busy = false; // nothing to animate (drift) — don't get stuck busy
   }
 
   // -------------------------------------------------------------------------
   // Turn resolution: flip the turn, detect loss-by-no-moves (the side to move with
-  // NO legal moves loses — covers an empty side AND a fully-blocked side; no draw
-  // rule), then refresh highlights.
+  // NO legal moves loses — covers an empty side AND a fully-blocked side), then
+  // refresh highlights.
   // -------------------------------------------------------------------------
   function afterMove() {
     turn = other(turn);
     if (allMoves(logicalBoard(), turn).length === 0) {
       phase = "over";
-      winner = other(turn); // the side that cannot move loses
+      winner = other(turn);
       clearSelection();
       clearHighlights();
-      updateIdentityCues();   // game over: turn lamps go dark, home bar stays
+      updateIdentityCues();
       try { ctx.onGameOver({ winner, reason: "no-moves" }); } catch { /* framework optional */ }
       return;
     }
@@ -891,9 +753,9 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Highlights — a gold selection ring on the picked chip's tile, bobbing gold
-  // target tokens on legal next landings, and a hover glow/lift on each selectable
-  // chip. ONLY for the seated player on their turn; spectators / off-turn see none.
+  // Highlights — gold selection ring on the picked disc's well, bobbing gold
+  // targets on legal landings, hover glow/lift on each selectable disc. ONLY for
+  // the seated player on their turn; spectators / off-turn see none.
   // ===========================================================================
   function myTurnNow() {
     const gate = typeof ctx.isLocalTurnAllowed === "function" ? ctx.isLocalTurnAllowed() : (turn === myColor);
@@ -902,28 +764,25 @@ export function createGame(ctx) {
 
   function refreshHighlights() {
     clearHighlights();
-    updateIdentityCues();   // persistent identity/turn cue tracks every refresh
+    updateIdentityCues();
     if (!myTurnNow()) return;
     const moves = allMoves(logicalBoard(), myColor);
 
     if (!selectedFrom) {
-      // No piece picked yet: glow every selectable chip.
       const selectable = new Set(moves.map((m) => m.from.r * 8 + m.from.c));
       for (const idx of selectable) {
         const rec = pieceAt(Math.floor(idx / 8), idx % 8);
         if (rec) setGlow(rec, true);
       }
-      startLoop();
       return;
     }
 
-    // A piece is selected: glow it, ring its tile, mark next landings.
     const selRec = pieceAt(selectedFrom.r, selectedFrom.c);
     if (selRec) setGlow(selRec, true);
 
     selRingMesh = new THREE.Mesh(G.selRing, M.selRing);
     selRingMesh.rotation.x = Math.PI / 2;
-    selRingMesh.position.set(cellX(selectedFrom.c), TILE_TOP + 0.0016, cellZ(selectedFrom.r));
+    selRingMesh.position.set(cellX(selectedFrom.c), PLANK_TOP + 0.0016, cellZ(selectedFrom.r));
     selRingMesh.renderOrder = 2;
     group.add(selRingMesh);
 
@@ -936,7 +795,6 @@ export function createGame(ctx) {
       seen.add(k);
       addTarget(next.r, next.c);
     }
-    startLoop();
   }
 
   function addTarget(r, c) {
@@ -971,9 +829,9 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // onPointer — the seated player clicked a resolved board cell. Mirrors the 2D
-  // onCellClick: select a movable piece, click a target to advance/commit a
-  // (possibly multi-jump) move, click elsewhere to cancel/reselect.
+  // onPointer — the seated player clicked a resolved board cell. Select a movable
+  // piece, click a target to advance/commit a (possibly multi-jump) move, click
+  // elsewhere to cancel/reselect.
   // ===========================================================================
   function onPointer(hit) {
     const gate = typeof ctx.isLocalTurnAllowed === "function" ? ctx.isLocalTurnAllowed() : (turn === myColor);
@@ -985,7 +843,6 @@ export function createGame(ctx) {
     const { r, c } = cell;
     if (!inBounds(r, c) || !playable(r, c)) { resetSelection(); return; }
 
-    // With a piece selected, a click on a highlighted target advances the move.
     if (selectedFrom) {
       const next = candidateSeqs
         .map((s) => s.steps[pathSoFar.length])
@@ -999,7 +856,6 @@ export function createGame(ctx) {
         const finished = matching.find((s) => s.steps.length === pathSoFar.length);
         const continuing = matching.filter((s) => s.steps.length > pathSoFar.length);
         if (continuing.length > 0) {
-          // Forced multi-jump continues — keep the selection, advance the targets.
           candidateSeqs = continuing;
           refreshHighlights();
         } else if (finished) {
@@ -1007,11 +863,9 @@ export function createGame(ctx) {
         }
         return;
       }
-      // Clicked off the legal targets — cancel and fall through to reselect.
       clearSelection();
     }
 
-    // Selecting one of your movable pieces.
     const seqs = movesForPiece(r, c);
     if (seqs.length === 0) { resetSelection(); return; }
     selectedFrom = { r, c };
@@ -1026,8 +880,7 @@ export function createGame(ctx) {
   }
 
   // Commit a fully-chosen LOCAL move: mutate + animate, relay the trusted identity
-  // (from+steps only), advance the turn, then (host) push an authoritative snapshot
-  // so late joiners and spectators paint the exact post-move position.
+  // (from+steps only), advance the turn, then (host) push an authoritative snapshot.
   function commitMove(from, steps, captured) {
     clearSelection();
     clearHighlights();
@@ -1039,12 +892,10 @@ export function createGame(ctx) {
 
   // ===========================================================================
   // applyMove — apply ONE relayed opponent/host move. Trust only (from, steps);
-  // recompute captures via matchLegalMove. On mismatch THROW GameDesync (the
-  // contract's explicit resync signal) so the framework requests an authoritative
-  // snapshot rather than trusting a bad delta. A malformed packet never reaches
-  // applyPath.
+  // recompute captures via matchLegalMove. On mismatch THROW GameDesync so the
+  // framework requests an authoritative snapshot.
   // ===========================================================================
-  function applyMove(move, byRole) {
+  function applyMove(move) {
     if (phase !== "play") throw new GameDesync("checkers: move while not in play");
     if (!move || move.type !== "move") return false;
     const legal = matchLegalMove(logicalBoard(), turn, move);
@@ -1058,14 +909,12 @@ export function createGame(ctx) {
 
   // ===========================================================================
   // applyState — render an AUTHORITATIVE FULL snapshot. Idempotent. Reconciles the
-  // ledger to the target board by MOVING existing chips into place and retiring or
-  // reviving surplus, rather than rebuilding meshes, so a catch-up that mostly
-  // matches doesn't strobe. state === null => fresh game.
+  // pool by MOVING existing discs into place and parking surplus, never rebuilding
+  // meshes. state === null => fresh game. NEVER recomputes local colour from wire.
   // ===========================================================================
   function applyState(state) {
-    // Cancel in-flight animations: a snapshot is the source of truth now.
     hops.length = 0;
-    slides.length = 0;
+    fades.length = 0;
     crowns.length = 0;
     busy = false;
     clearSelection();
@@ -1089,52 +938,47 @@ export function createGame(ctx) {
     refreshHighlights();
   }
 
-  // Reconcile the ledger to a logical { color, king } target with minimal churn:
-  //   * gather the available chips per colour (every minted chip lives forever);
-  //   * for each wanted square, consume an available chip of that colour, snap it
-  //     home, set its king flag;
-  //   * any leftover chips of a colour are captured -> retired to the tray.
-  // `instant` skips spring-ins (always true for a snapshot). This is the single
-  // entry both first-paint and catch-up flow through.
+  // Reconcile the pool to a logical target with minimal churn: gather available
+  // discs per colour, consume one per wanted square (snap home + set king flag),
+  // park the leftovers. `instant` skips spring-ins (always true for a snapshot).
   function setBoardFromLogical(logical, newTurn, newPhase, newWinner, instant) {
     board = emptyGrid();
-    clearTrays();
+    clearRails();
 
-    // Available chips per colour.
     const avail = { red: [], black: [] };
     for (const rec of pieces.values()) avail[rec.color].push(rec);
 
-    // Place wanted pieces, consuming from the colour pool.
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
         const want = logical[r][c];
         if (!want) continue;
         const rec = avail[want.color].pop();
-        if (!rec) continue; // more pieces than minted (impossible with valid state)
+        if (!rec) continue;
         rec.onBoard = true;
         rec.mesh.visible = true;
         rec.mesh.scale.set(1, 1, 1);
         rec.mesh.rotation.set(0, 0, 0);
         rec.baseMat.emissive.set("#000000");
         rec.baseMat.emissiveIntensity = 1;
+        rec.baseMat.opacity = 1;
+        rec.baseMat.transparent = false;
+        rec.capMat.opacity = 1;
+        rec.capMat.transparent = false;
         setKing(rec, !!want.king, instant);
         placeMesh(rec, r, c, REST_Y);
         board[r][c] = rec.id;
       }
     }
 
-    // Whatever's left over of each colour is captured — park it in the tray.
-    for (const rec of avail.red) retireToTray(rec);
-    for (const rec of avail.black) retireToTray(rec);
+    for (const rec of avail.red) parkOnRail(rec);
+    for (const rec of avail.black) parkOnRail(rec);
 
     turn = newTurn;
     phase = newPhase;
     winner = newWinner;
   }
 
-  // Decode a logical board from a structured 2D array OR a compact 64-char string
-  // ("." empty, r/R red man/king, b/B black man/king) so host snapshots, spectators
-  // and newcomers all round-trip regardless of which shape arrives.
+  // Decode a logical board from a structured 2D array OR a compact 64-char string.
   function decodeBoard(incoming) {
     const out = Array.from({ length: 8 }, () => new Array(8).fill(null));
     const src = incoming.board;
@@ -1168,9 +1012,8 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Snapshots — full-information game, so the public state IS the full state. We
-  // encode BOTH a structured board and a compact `cells` string so any consumer
-  // decodes regardless of preference.
+  // Snapshots — full-information game, so public state IS the full state. Encode
+  // BOTH a structured board and a compact `cells` string.
   // ===========================================================================
   function snapshot() {
     const logical = logicalBoard();
@@ -1199,31 +1042,29 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Role / seat changes — switch in place (spectator -> player on sitting). We
-  // own our facing (orientPolicy:"self"), so we re-run applyFacing() to re-derive
-  // the per-seat/per-colour rotation, then re-gate the local-only highlights.
+  // Role / seat changes — switch in place. We own our facing (orientPolicy:"self"),
+  // so re-run applyFacing(), then re-gate the local-only highlights.
   // ===========================================================================
   function setRole(newRole) {
     role = newRole || "spectator";
     myColor = role === "host" ? "red" : role === "guest" ? "black" : null;
-    applyFacing();              // colour may have changed -> re-derive the half-turn
+    applyFacing();
     clearSelection();
     refreshHighlights();
   }
   function setSeatRy(ry) {
     seatRy = ry;
-    applyFacing();              // re-face the board for the new seat ourselves
+    applyFacing();
     refreshHighlights();
   }
 
   // ===========================================================================
-  // dispose — stop the loop, free GPU resources, drop the group.
+  // dispose — free GPU resources, drop the group. No internal loop to stop.
   // ===========================================================================
   function dispose() {
     disposed = true;
-    if (rafId != null) { caf(rafId); rafId = null; }
     hops.length = 0;
-    slides.length = 0;
+    fades.length = 0;
     crowns.length = 0;
     clearHighlights();
     for (const rec of pieces.values()) {
@@ -1237,8 +1078,7 @@ export function createGame(ctx) {
   }
 
   // Initial paint: route the starting position through the SAME reconciler a
-  // snapshot uses, so first-paint and catch-up share one code path. Run here (not
-  // up top) so every animation-loop binding it touches is already initialized.
+  // snapshot uses, so first-paint and catch-up share one code path.
   setBoardFromLogical(initialBoard(), "red", "play", null, true);
   refreshHighlights();
 
@@ -1251,6 +1091,7 @@ export function createGame(ctx) {
     applyState,
     applyMove,
     onPointer,
+    update,
     publicState,
     setRole,
     setSeatRy,
