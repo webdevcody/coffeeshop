@@ -26,6 +26,13 @@ export class Voice {
     this.knownIds = new Set();
     /** Ids the local player has chosen to mute (works even before a peer exists). */
     this.muted = new Set();
+    /**
+     * Who is seated at which game table (id -> tableId), kept in sync via the
+     * server's `seat-update` broadcasts. Drives table-scoped voice: once you're
+     * at a table you only hear — and are heard by — people at the same table.
+     * @type {Map<string, string>}
+     */
+    this.tableOf = new Map();
     this.onStatus = null;
     // Fires whenever your listening state changes (deafen toggled, or someone
     // muted/unmuted) so the app can tell the server who you can no longer hear.
@@ -40,16 +47,29 @@ export class Voice {
 
     network.on("welcome", (m) => {
       this.myId = m.id;
-      for (const p of m.players) this.knownIds.add(p.id);
+      if (m.you?.gameTable) this.tableOf.set(m.id, m.you.gameTable);
+      for (const p of m.players) {
+        this.knownIds.add(p.id);
+        if (p.gameTable) this.tableOf.set(p.id, p.gameTable);
+      }
     });
     network.on("player-joined", (m) => {
       this.knownIds.add(m.player.id);
+      if (m.player.gameTable) this.tableOf.set(m.player.id, m.player.gameTable);
       if (this.enabled) this._hello(m.player.id);
     });
     network.on("player-left", (m) => {
       this.knownIds.delete(m.id);
       this.muted.delete(m.id);
+      this.tableOf.delete(m.id);
       this._closePeer(m.id);
+    });
+    // Live table membership: who sat down at / got up from a game table. We mute
+    // across table boundaries in updateVolumes(), so this only needs to stay
+    // current — no per-peer action here.
+    network.on("seat-update", (m) => {
+      if (m.table) this.tableOf.set(m.id, m.table);
+      else this.tableOf.delete(m.id);
     });
     network.on("signal", (m) => this._onSignal(m.from, m.data));
   }
@@ -253,9 +273,13 @@ export class Voice {
   }
 
   // Called each frame: fade each remote voice by distance to the local player.
+  // Sitting at a game table overrides distance: voice is scoped to that table,
+  // so you hear table-mates clearly and everyone else not at your table is
+  // silenced (and vice-versa).
   updateVolumes() {
     if (this.peers.size === 0) return;
     const me = this.positions.local();
+    const myTable = this.tableOf.get(this.myId) || null;
     for (const [id, peer] of this.peers) {
       if (!peer.ready) continue;
       if (this.deafened || this.muted.has(id)) {
@@ -263,6 +287,15 @@ export class Voice {
         continue;
       }
       peer.audio.muted = false;
+      // Table scoping: if either of you is seated at a game table, the
+      // conversation is private to that table. Same table → heard clearly;
+      // different tables, or only one of you seated → silent. People not at any
+      // table fall back to proximity below.
+      const theirTable = this.tableOf.get(id) || null;
+      if (myTable || theirTable) {
+        peer.audio.volume = myTable && myTable === theirTable ? 1 : 0;
+        continue;
+      }
       const rp = this.positions.remote(id);
       if (!rp) {
         peer.audio.volume = 0;

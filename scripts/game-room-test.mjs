@@ -230,6 +230,91 @@ try {
   const eGame2 = await e.take("game-assign");
   ok(eGame2.roomId !== dGame.roomId, "reset table-2 has a fresh roomId");
 
+  // --- Multi-seat rooms (table-9) -------------------------------------------
+  // A game can ask for more than two players. The host plus up to capacity-1
+  // guests share one room; early sitters who became spectators (because the
+  // capacity wasn't known before the host picked) are promoted into open seats.
+  const m1 = client();
+  const m2 = client();
+  const m3 = client();
+  const m4 = client();
+  await join(m1, "M1");
+  await join(m2, "M2");
+  await join(m3, "M3");
+  await join(m4, "M4");
+
+  m1.send({ type: "sit-game", table: "table-9" });
+  ok((await m1.take("game-assign")).role === "host", "M1 hosts table-9");
+  // M2 + M3 sit BEFORE the host picks: capacity is still unknown (2), so M2 is a
+  // guest and M3 (third seat) waits as a spectator.
+  m2.send({ type: "sit-game", table: "table-9" });
+  ok((await m2.take("game-assign")).role === "guest", "M2 is guest before the pick");
+  m3.send({ type: "sit-game", table: "table-9" });
+  ok((await m3.take("game-assign")).role === "spectator", "M3 waits as spectator before the pick (capacity unknown)");
+
+  // Host picks a 4-player game → M3 is promoted into a player seat.
+  m1.send({ type: "choose-game", table: "table-9", gameId: "ludo", capacity: 4 });
+  const m1Game = await m1.take("game-assign");
+  ok(m1Game.role === "host" && m1Game.gameId === "ludo", "M1 opens ludo as host");
+  await m2.take("game-assign"); // guest's locked-in assign
+  const m3Game = await m3.take("game-assign");
+  ok(
+    m3Game.role === "guest" && m3Game.roomId === m1Game.roomId,
+    "M3 is promoted from spectator to guest in the same room for a 4-player game"
+  );
+
+  // M4 joins as the fourth player; a fifth sitter overflows to spectator.
+  m4.send({ type: "sit-game", table: "table-9" });
+  const m4Game = await m4.take("game-assign");
+  ok(
+    m4Game.role === "guest" && m4Game.gameId === "ludo" && m4Game.roomId === m1Game.roomId,
+    "M4 is the 4th player (guest) in the same room"
+  );
+  const m5 = client();
+  await join(m5, "M5");
+  m5.send({ type: "sit-game", table: "table-9" });
+  ok((await m5.take("game-assign")).role === "spectator", "a 5th sitter at a full 4-player table spectates");
+
+  // A guest leaving a 4-player match frees their seat but does NOT end the game.
+  m4.send({ type: "leave-game" });
+  ok(await m1.expectNone("game-end"), "host keeps playing when a guest leaves a 4-player game");
+  // The host leaving ends it for the remaining guests.
+  m1.send({ type: "leave-game" });
+  ok((await m2.take("game-end")).reason === "opponent-left", "host leaving a 4-player game ends it for the guests");
+
+  m1.ws.close();
+  m2.ws.close();
+  m3.ws.close();
+  m4.ws.close();
+  m5.ws.close();
+  await sleep(100);
+
+  // --- Voice scoping: table membership is broadcast (seat-update) -----------
+  // Sitting / standing at a game table tells every client who is at which table
+  // so the client can scope proximity voice to table-mates.
+  const va = client();
+  const vb = client();
+  await va.open();
+  va.send({ type: "join", name: "Va" });
+  const vaWelcome = await va.take("welcome");
+  const vaId = vaWelcome.id;
+  await vb.open();
+  vb.send({ type: "join", name: "Vb" });
+  await vb.take("welcome");
+
+  va.send({ type: "sit-game", table: "table-7" });
+  await va.take("game-assign");
+  const vbSeat = await vb.take("seat-update");
+  ok(vbSeat.id === vaId && vbSeat.table === "table-7", "sitting broadcasts table membership to others");
+
+  va.send({ type: "leave-game" });
+  const vbSeat2 = await vb.take("seat-update");
+  ok(vbSeat2.id === vaId && vbSeat2.table === null, "standing broadcasts table:null to others");
+
+  va.ws.close();
+  vb.ws.close();
+  await sleep(100);
+
   a.ws.close();
   b.ws.close();
   cc.ws.close();
