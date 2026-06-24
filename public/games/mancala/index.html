@@ -389,8 +389,16 @@
       }
 
       function applyRemoteMove(pit) {
-        // Never trust a remote packet: only sow a pit the side to move actually
-        // owns and that holds stones, so a malformed message can't desync.
+        // Never trust a remote packet. A move may only arrive while it is the
+        // OPPONENT's turn — an honest peer never plays during your turn, so a
+        // packet that lands when turn === mySide is a desync, not a legal move
+        // (this guards your own pits from being sown for you; matches siblings).
+        if (turn === mySide) {
+          handleDesync();
+          return;
+        }
+        // Only sow a pit the side to move actually owns and that holds stones,
+        // so a malformed message can't desync.
         if (!Number.isInteger(pit) || !ownsPit(turn, pit) || board[pit] <= 0) {
           handleDesync();
           return;
