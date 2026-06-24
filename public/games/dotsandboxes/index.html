@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2b1d12" />
+    <title>Dots and Boxes · The Daily Grind</title>
+    <meta name="description" content="Two-player online dots and boxes — sit at a café table and play a friend." />
+    <style>
+      :root {
+        --bg: #2b1d12;
+        --panel: #3a281a;
+        --ink: #f3e9dc;
+        --muted: #c9b6a0;
+        --board-bg: #efe2cf;
+        --dot: #5a3f26;
+        --line-empty: rgba(90, 63, 38, 0.12);
+        --line-hover: rgba(224, 162, 58, 0.55);
+        --red: #d65a4a;
+        --red-soft: rgba(214, 90, 74, 0.32);
+        --blue: #4a85d6;
+        --blue-soft: rgba(74, 133, 214, 0.32);
+        --accent: #e0a23a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a281a, #1c130b 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 14px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: 0.5px; }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.again { color: #8fd18f; font-weight: 700; }
+      #status.win { color: #8fd18f; font-weight: 700; }
+      #status.lose { color: #e7796a; font-weight: 700; }
+
+      .scorebar {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        font-size: 15px;
+      }
+      .score {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: var(--panel);
+        border: 1px solid #5a3f26;
+      }
+      .score.active { outline: 2px solid var(--accent); }
+      .swatch { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+      .swatch.red { background: var(--red); }
+      .swatch.blue { background: var(--blue); }
+
+      #board {
+        --size: min(86vw, 60vh);
+        width: var(--size);
+        height: var(--size);
+        display: grid;
+        background: var(--board-bg);
+        border: 10px solid #4a311c;
+        border-radius: 12px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+        padding: 10px;
+        touch-action: manipulation;
+      }
+      .cell { position: relative; display: flex; align-items: center; justify-content: center; }
+      .dot {
+        width: 60%;
+        height: 60%;
+        max-width: 12px;
+        max-height: 12px;
+        border-radius: 50%;
+        background: var(--dot);
+      }
+      .line { position: absolute; border-radius: 3px; background: var(--line-empty); }
+      .line.h { left: 4%; right: 4%; top: 50%; height: 30%; transform: translateY(-50%); }
+      .line.v { top: 4%; bottom: 4%; left: 50%; width: 30%; transform: translateX(-50%); }
+      .line.drawn.red { background: var(--red); }
+      .line.drawn.blue { background: var(--blue); }
+      #board.interactive .line:not(.drawn) { cursor: pointer; }
+      #board.interactive .line:not(.drawn):hover { background: var(--line-hover); }
+
+      .box { position: absolute; inset: 8%; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 60%; color: rgba(0,0,0,0.5); }
+      .box.red { background: var(--red-soft); }
+      .box.blue { background: var(--blue-soft); }
+
+      footer { display: flex; gap: 16px; align-items: center; }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid #5a3f26;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #4a331f; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>▦ Dots and Boxes</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div class="scorebar">
+        <span class="score" id="scoreRed"><span class="swatch red"></span> Red <strong id="redScore">0</strong></span>
+        <span class="score" id="scoreBlue"><span class="swatch blue"></span> Blue <strong id="blueScore">0</strong></span>
+      </div>
+      <div id="board" aria-label="Dots and Boxes board"></div>
+      <footer>
+        <span class="tag">You: <strong id="myColorLabel">—</strong></span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // ----------------------------------------------------------------------
+      // Connection contract (mirrors checkers / connect4 so the café's Arcade
+      // overlay drives it the same way):
+      //   #host=<CODE>     -> host: register a PeerJS peer for the room (Red)
+      //   #join=<CODE>     -> guest: connect to the host's peer (Blue)
+      //   #spectate=<CODE> -> read-only onlooker; receives a board snapshot
+      // Host and guest each keep full game state and apply the same validated
+      // moves, so they stay in sync without snapshots; spectators get snapshots.
+      // ----------------------------------------------------------------------
+      const PEER_PREFIX = "coffeeshop-dotsandboxes-";
+
+      // Board size: DOTS×DOTS dots -> (DOTS-1)×(DOTS-1) boxes. Change DOTS to
+      // resize the game (e.g. 6 -> a 5×5 grid of boxes).
+      const DOTS = 6;
+      const BOXN = DOTS - 1;
+      const TOTAL_LINES = DOTS * BOXN + BOXN * DOTS;
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const redScoreEl = document.getElementById("redScore");
+      const blueScoreEl = document.getElementById("blueScore");
+      const scoreRedEl = document.getElementById("scoreRed");
+      const scoreBlueEl = document.getElementById("scoreBlue");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      const other = (c) => (c === "red" ? "blue" : "red");
+
+      // ---- Game state ------------------------------------------------------
+      // h[r][c]: horizontal segment in dot-row r (0..DOTS-1), between dot-cols c
+      //          and c+1 (c in 0..BOXN-1). Value = owner color | null.
+      // v[r][c]: vertical segment between dot-rows r and r+1 (r in 0..BOXN-1) at
+      //          dot-col c (0..DOTS-1). Value = owner color | null.
+      // boxes[r][c]: claimed box owner | null (r,c in 0..BOXN-1).
+      let h, v, boxes, turn, scores, phase;
+      let myColor = null; // "red" (host) | "blue" (guest) | null (spectator)
+      let conn = null;
+      let isSpectator = false;
+      const spectators = [];
+
+      function initState() {
+        h = Array.from({ length: DOTS }, () => Array(BOXN).fill(null));
+        v = Array.from({ length: BOXN }, () => Array(DOTS).fill(null));
+        boxes = Array.from({ length: BOXN }, () => Array(BOXN).fill(null));
+        turn = "red"; // host moves first
+        scores = { red: 0, blue: 0 };
+      }
+
+      const validLine = (o, r, c) =>
+        o === "h" ? r >= 0 && r < DOTS && c >= 0 && c < BOXN
+                  : r >= 0 && r < BOXN && c >= 0 && c < DOTS;
+      const lineOwner = (o, r, c) => (o === "h" ? h[r][c] : v[r][c]);
+
+      function boxComplete(br, bc) {
+        return h[br][bc] && h[br + 1][bc] && v[br][bc] && v[br][bc + 1];
+      }
+
+      // Apply a (validated, undrawn) line for the side to move. Claims any boxes
+      // it completes; the mover keeps the turn iff they claimed at least one.
+      // Returns the number of boxes claimed.
+      function applyLine(o, r, c) {
+        const color = turn;
+        if (o === "h") h[r][c] = color; else v[r][c] = color;
+        let claimed = 0;
+        const affected = o === "h" ? [[r - 1, c], [r, c]] : [[r, c - 1], [r, c]];
+        for (const [br, bc] of affected) {
+          if (br < 0 || bc < 0 || br >= BOXN || bc >= BOXN) continue;
+          if (!boxes[br][bc] && boxComplete(br, bc)) { boxes[br][bc] = color; scores[color]++; claimed++; }
+        }
+        if (claimed === 0) turn = other(turn);
+        return claimed;
+      }
+
+      function drawnCount() {
+        let n = 0;
+        for (const row of h) for (const x of row) if (x) n++;
+        for (const row of v) for (const x of row) if (x) n++;
+        return n;
+      }
+
+      function turnIsMine() { return !isSpectator && turn === myColor; }
+
+      // ---- Rendering -------------------------------------------------------
+      // Grid is (2*DOTS-1) square: even/even = dot, even/odd = h-line,
+      // odd/even = v-line, odd/odd = box. Dot tracks are fixed, the rest flex.
+      function buildGridTemplate() {
+        const tracks = [];
+        for (let i = 0; i < 2 * DOTS - 1; i++) tracks.push(i % 2 === 0 ? "16px" : "1fr");
+        const t = tracks.join(" ");
+        boardEl.style.gridTemplateColumns = t;
+        boardEl.style.gridTemplateRows = t;
+      }
+
+      function render() {
+        boardEl.innerHTML = "";
+        boardEl.classList.toggle("interactive", phase === "play" && turnIsMine());
+        const N = 2 * DOTS - 1;
+        for (let gr = 0; gr < N; gr++) {
+          for (let gc = 0; gc < N; gc++) {
+            const cell = document.createElement("div");
+            cell.className = "cell";
+            const evenR = gr % 2 === 0, evenC = gc % 2 === 0;
+            if (evenR && evenC) {
+              const d = document.createElement("div");
+              d.className = "dot";
+              cell.appendChild(d);
+            } else if (evenR && !evenC) {
+              const r = gr / 2, c = (gc - 1) / 2; // h-line
+              cell.appendChild(makeLine("h", r, c));
+            } else if (!evenR && evenC) {
+              const r = (gr - 1) / 2, c = gc / 2; // v-line
+              cell.appendChild(makeLine("v", r, c));
+            } else {
+              const r = (gr - 1) / 2, c = (gc - 1) / 2; // box
+              const owner = boxes[r][c];
+              if (owner) {
+                const b = document.createElement("div");
+                b.className = "box " + owner;
+                b.textContent = owner === "red" ? "R" : "B";
+                cell.appendChild(b);
+              }
+            }
+            boardEl.appendChild(cell);
+          }
+        }
+        redScoreEl.textContent = scores.red;
+        blueScoreEl.textContent = scores.blue;
+        scoreRedEl.classList.toggle("active", phase === "play" && turn === "red");
+        scoreBlueEl.classList.toggle("active", phase === "play" && turn === "blue");
+      }
+
+      function makeLine(o, r, c) {
+        const el = document.createElement("div");
+        const owner = lineOwner(o, r, c);
+        el.className = "line " + o + (owner ? " drawn " + owner : "");
+        el.addEventListener("click", () => onLineClick(o, r, c));
+        return el;
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onLineClick(o, r, c) {
+        if (phase !== "play" || !turnIsMine()) return;
+        if (!validLine(o, r, c) || lineOwner(o, r, c)) return; // already drawn / invalid
+        commitMove(o, r, c);
+      }
+
+      function commitMove(o, r, c) {
+        const claimed = applyLine(o, r, c);
+        send({ type: "move", o, r, c });
+        afterMove(claimed);
+      }
+
+      function applyRemoteMove(msg) {
+        // Never trust a remote packet: ignore anything that isn't a legal,
+        // undrawn line for the side whose turn it currently is.
+        if (!msg || (msg.o !== "h" && msg.o !== "v") || !Number.isInteger(msg.r) || !Number.isInteger(msg.c)) { handleDesync(); return; }
+        if (!validLine(msg.o, msg.r, msg.c) || lineOwner(msg.o, msg.r, msg.c)) { handleDesync(); return; }
+        if (turn === myColor) { handleDesync(); return; } // not the opponent's turn
+        const claimed = applyLine(msg.o, msg.r, msg.c);
+        afterMove(claimed);
+      }
+
+      function afterMove(claimed) {
+        render();
+        broadcastState();
+        if (drawnCount() >= TOTAL_LINES) {
+          phase = "over";
+          announceResult();
+          if (!isSpectator) newGameBtn.classList.remove("hidden");
+          broadcastState();
+          return;
+        }
+        updateTurnStatus(claimed > 0);
+      }
+
+      function announceResult() {
+        const { red, blue } = scores;
+        if (red === blue) { setStatus(`It's a tie — ${red}–${blue}.`, ""); return; }
+        const winner = red > blue ? "red" : "blue";
+        if (isSpectator) {
+          setStatus(`${winner === "red" ? "Red" : "Blue"} wins ${Math.max(red, blue)}–${Math.min(red, blue)}.`, "");
+        } else {
+          const iWon = winner === myColor;
+          setStatus(iWon ? `You win ${Math.max(red, blue)}–${Math.min(red, blue)}! 🎉` : `You lose ${Math.min(red, blue)}–${Math.max(red, blue)}.`, iWon ? "win" : "lose");
+        }
+      }
+
+      function updateTurnStatus(justClaimed) {
+        if (phase !== "play") return;
+        if (turnIsMine()) setStatus(justClaimed ? "Box! Go again." : "Your move.", justClaimed ? "again" : "turn");
+        else setStatus("Opponent's move…", "");
+      }
+
+      function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+      // ---- New game / restart ---------------------------------------------
+      function resetGame(broadcast) {
+        initState();
+        phase = "play";
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        broadcastState();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) { if (conn && conn.open) conn.send(msg); }
+
+      function snapshot() { return { type: "state", h, v, boxes, turn, scores, phase }; }
+      function sendSnapshot(c) { if (c && c.open) c.send(snapshot()); }
+      function broadcastState() { for (const c of spectators) sendSnapshot(c); }
+      function addSpectator(c) {
+        c.on("open", () => { spectators.push(c); sendSnapshot(c); });
+        c.on("data", () => {});
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) { const i = spectators.indexOf(c); if (i >= 0) spectators.splice(i, 1); }
+
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.h) || !Array.isArray(s.v) || !Array.isArray(s.boxes)) return;
+        h = s.h; v = s.v; boxes = s.boxes; turn = s.turn; scores = s.scores || { red: 0, blue: 0 };
+        phase = s.phase;
+        newGameBtn.classList.add("hidden");
+        if (phase === "over") announceResult();
+        else setStatus(phase === "lobby" ? "👁 Waiting for the match to start…" : "👁 Spectating — " + (turn === "red" ? "Red" : "Blue") + "'s move.", "");
+        render();
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
+      function startMatch() {
+        myColorLabelEl.textContent = myColor === "red" ? "Red (first)" : "Blue";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        if (isSpectator) { if (msg.type === "state") applySpectatorState(msg); return; }
+        switch (msg.type) {
+          case "hello": if (phase === "lobby") startMatch(); break;
+          case "move": applyRemoteMove(msg); break;
+          case "restart": resetGame(false); break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => { send({ type: "hello" }); if (phase === "lobby") startMatch(); });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() { if (phase === "over") return; phase = "over"; setStatus("The match ended.", ""); }
+
+      function parseHash() {
+        const hs = (location.hash || "").replace(/^#/, "");
+        if (hs.startsWith("host=")) return { role: "host", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("join=")) return { role: "guest", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("spectate=")) return { role: "spectator", code: hs.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") { setStatus("Failed to load networking library.", "lose"); return; }
+        buildGridTemplate();
+        initState();
+        phase = "lobby";
+        render();
+        const info = parseHash();
+        if (!info) { setStatus("Open this game from a café table to start a match.", ""); return; }
+
+        if (info.role === "host") {
+          myColor = "red";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+          peer.on("connection", (c) => {
+            if (c.metadata && c.metadata.spectator) { addSpectator(c); return; }
+            if (conn && conn.open) { c.close(); return; }
+            wireConnection(c);
+          });
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          myColor = null;
+          myColorLabelEl.textContent = "Spectator";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          myColor = "blue";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>
