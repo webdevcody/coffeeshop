@@ -440,8 +440,49 @@
         afterMove();
       }
 
+      function sameSquare(a, b) {
+        return !!a && !!b && a.r === b.r && a.c === b.c;
+      }
+
+      // Find the legal move for the side to move that matches the remote
+      // payload's from-square and step path. Returns the validated move (with
+      // our own trusted captured list) or null if the payload doesn't
+      // correspond to a currently-legal move.
+      function matchLegalMove(msg) {
+        if (!msg || !msg.from || !Array.isArray(msg.steps) || msg.steps.length === 0) return null;
+        for (const m of allMoves(turn)) {
+          if (!sameSquare(m.from, msg.from)) continue;
+          if (m.steps.length !== msg.steps.length) continue;
+          if (m.steps.every((s, i) => sameSquare(s, msg.steps[i]))) return m;
+        }
+        return null;
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        clearSelection();
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
       function applyRemoteMove(msg) {
-        applyPath(msg.from, msg.steps, msg.captured);
+        // Never trust a remote packet: a malformed, duplicated, or out-of-order
+        // message must not throw inside applyPath and brick the match. Only
+        // apply moves that are legal for the current turn, using our own
+        // validated captured list rather than the payload's.
+        const legal = matchLegalMove(msg);
+        if (!legal) {
+          handleDesync();
+          return;
+        }
+        try {
+          applyPath(legal.from, legal.steps, legal.captured);
+        } catch (err) {
+          handleDesync();
+          return;
+        }
         clearSelection();
         turn = other(turn);
         afterMove();
