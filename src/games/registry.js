@@ -34,10 +34,14 @@ export const GAMES = {
     name: "Checkers",
     // Two players per match (host = red and moves first, guest = black).
     capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
     // Same room contract as battleship: the host registers the room's PeerJS
-    // peer (`#host=<CODE>`) and the guest connects to it (`#join=<CODE>`).
+    // peer (`#host=<CODE>`), the guest connects to it (`#join=<CODE>`), and
+    // spectators connect read-only (`#spectate=<CODE>`).
     url(roomId, role) {
-      const verb = role === "host" ? "host" : "join";
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
       return `/games/checkers/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
@@ -49,9 +53,13 @@ export const GAMES = {
     icon: "🔴",
     // Host plays red and drops first; guest plays yellow.
     capacity: 2,
-    // Same room contract as battleship (#host=<CODE> / #join=<CODE>).
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as battleship (#host=<CODE> / #join=<CODE>), plus a
+    // read-only spectator connection (#spectate=<CODE>).
     url(roomId, role) {
-      const verb = role === "host" ? "host" : "join";
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
       return `/games/connect4/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },

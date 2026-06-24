@@ -209,6 +209,8 @@
       let phase = "lobby"; // lobby | play | over
       let conn = null;
       let winCells = [];
+      let isSpectator = false; // true when watching read-only via #spectate
+      const spectators = []; // host-side: open read-only data channels to onlookers
 
       const other = (c) => (c === "red" ? "yellow" : "red");
 
@@ -275,6 +277,7 @@
           setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose");
           newGameBtn.classList.remove("hidden");
           render();
+          broadcastState();
           return;
         }
         if (isFull(board)) {
@@ -282,11 +285,13 @@
           setStatus("It's a draw.", "draw");
           newGameBtn.classList.remove("hidden");
           render();
+          broadcastState();
           return;
         }
         turn = other(turn);
         updateTurnStatus();
         render();
+        broadcastState();
       }
 
       function updateTurnStatus() {
@@ -309,6 +314,7 @@
         newGameBtn.classList.add("hidden");
         updateTurnStatus();
         render();
+        broadcastState();
         if (broadcast) send({ type: "restart" });
       }
       newGameBtn.addEventListener("click", () => resetGame(true));
@@ -316,6 +322,51 @@
       // ---- Networking ------------------------------------------------------
       function send(msg) {
         if (conn && conn.open) conn.send(msg);
+      }
+
+      // ---- Spectators ------------------------------------------------------
+      // The host owns the room's fixed peer id, so onlookers connect to it. We
+      // keep their read-only channels here and push a full board snapshot after
+      // every change (and on connect) so a late joiner sees the live position.
+      function snapshot() {
+        return { type: "state", board, turn, phase, winCells };
+      }
+      function sendSnapshot(c) {
+        if (c && c.open) c.send(snapshot());
+      }
+      function broadcastState() {
+        for (const c of spectators) sendSnapshot(c);
+      }
+      function addSpectator(c) {
+        c.on("open", () => {
+          spectators.push(c);
+          sendSnapshot(c);
+        });
+        c.on("data", () => {}); // spectators are read-only
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) {
+        const i = spectators.indexOf(c);
+        if (i >= 0) spectators.splice(i, 1);
+      }
+      // Spectator-side: adopt the host's snapshot and render read-only.
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.board)) return;
+        board = s.board;
+        turn = s.turn;
+        phase = s.phase;
+        winCells = Array.isArray(s.winCells) ? s.winCells : [];
+        newGameBtn.classList.add("hidden");
+        setStatus(
+          phase === "over"
+            ? "👁 Spectating — game over."
+            : phase === "lobby"
+              ? "👁 Waiting for the match to start…"
+              : "👁 Spectating — " + (turn === "red" ? "Red" : "Yellow") + "'s turn.",
+          ""
+        );
+        render();
       }
 
       function startMatch() {
@@ -326,6 +377,11 @@
 
       function handleData(msg) {
         if (!msg || typeof msg !== "object") return;
+        // Spectators only ever consume read-only state snapshots from the host.
+        if (isSpectator) {
+          if (msg.type === "state") applySpectatorState(msg);
+          return;
+        }
         switch (msg.type) {
           case "hello":
             if (phase === "lobby") startMatch();
@@ -366,10 +422,25 @@
         newGameBtn.classList.add("hidden");
       }
 
+      // Spectator-side: the host's peer went away (match ended / host left).
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("The match ended.", "");
+      }
+
       function parseHash() {
         const h = (location.hash || "").replace(/^#/, "");
         if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
         if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("spectate=")) return { role: "spectator", code: h.slice(9).toUpperCase() };
         return null;
       }
 
@@ -389,6 +460,12 @@
           setStatus("Waiting for an opponent…", "");
           const peer = new Peer(PEER_PREFIX + info.code);
           peer.on("connection", (c) => {
+            // Onlookers connect with spectator metadata — wire them read-only
+            // instead of treating them as the opponent.
+            if (c.metadata && c.metadata.spectator) {
+              addSpectator(c);
+              return;
+            }
             // Ignore late reconnects / stray clients that know the room code so
             // they can't clobber an in-progress match.
             if (conn && conn.open) {
@@ -397,6 +474,17 @@
             }
             wireConnection(c);
           });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          myColor = null;
+          myColorLabelEl.textContent = "Spectator";
+          myDotEl.className = "dot";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () =>
+            wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } }))
+          );
           peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
         } else {
           myColor = "yellow";

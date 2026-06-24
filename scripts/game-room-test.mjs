@@ -101,11 +101,12 @@ try {
   ok(bAssign.gameId === "connect4", "B joins the host's chosen game");
   ok(bAssign.roomId === aGame.roomId, "B joins A's room (" + bAssign.roomId + ")");
 
-  // C sits third → full.
+  // C sits third → spectator of the in-progress match (same game + room).
   cc.send({ type: "sit-game", table: "table-0" });
   const cAssign = await cc.take("game-assign");
-  ok(cAssign.role === "full", "C is told the table is full");
-  ok(cAssign.roomId === null, "C gets no roomId");
+  ok(cAssign.role === "spectator", "C spectates the full table");
+  ok(cAssign.gameId === "connect4", "C spectates the host's chosen game");
+  ok(cAssign.roomId === aGame.roomId, "C watches A's room (" + cAssign.roomId + ")");
 
   // A non-host's choose-game is ignored.
   b.send({ type: "choose-game", table: "table-0", gameId: "battleship", capacity: 2 });
@@ -141,6 +142,65 @@ try {
   );
   f.ws.close();
   g.ws.close();
+  await sleep(100);
+
+  // --- Spectators (table-4) -------------------------------------------------
+  // Once both player seats are taken, extra sitters become spectators of the
+  // running match: they receive the same game + room, sitting before or after
+  // the host picks, and leaving never disturbs the players.
+  const sh = client(); // host
+  const sg = client(); // guest
+  const s1 = client(); // spectator who sits before the host picks
+  const s2 = client(); // spectator who sits after the match is running
+  await join(sh, "Sam");
+  await join(sg, "Gus");
+  await join(s1, "Spec1");
+  await join(s2, "Spec2");
+
+  sh.send({ type: "sit-game", table: "table-4" });
+  await sh.take("game-assign"); // host (no game yet)
+  sg.send({ type: "sit-game", table: "table-4" });
+  await sg.take("game-assign"); // guest (no game yet)
+
+  // A third sitter before the host picks is a spectator with no game yet.
+  s1.send({ type: "sit-game", table: "table-4" });
+  const s1Sit = await s1.take("game-assign");
+  ok(s1Sit.role === "spectator" && s1Sit.gameId === null, "early spectator waits (no game yet)");
+
+  // Host picks → the spectator is pushed the game, just like a waiting guest.
+  sh.send({ type: "choose-game", table: "table-4", gameId: "checkers", capacity: 2 });
+  await sh.take("game-assign"); // host's locked-in assign
+  await sg.take("game-assign"); // guest's locked-in assign
+  const s1Game = await s1.take("game-assign");
+  ok(
+    s1Game.role === "spectator" && s1Game.gameId === "checkers" && typeof s1Game.roomId === "string",
+    "early spectator is pushed the host's game once chosen"
+  );
+
+  // A late sitter joins straight into spectating the running match.
+  s2.send({ type: "sit-game", table: "table-4" });
+  const s2Game = await s2.take("game-assign");
+  ok(
+    s2Game.role === "spectator" && s2Game.gameId === "checkers" && s2Game.roomId === s1Game.roomId,
+    "late spectator watches the same running match"
+  );
+
+  // A spectator leaving does NOT end the match for anyone else.
+  s1.send({ type: "leave-game" });
+  ok(await sh.expectNone("game-end"), "host keeps playing after a spectator leaves");
+  ok(await s2.expectNone("game-end"), "other spectator keeps watching after one leaves");
+
+  // The host leaving ends the match for the guest AND the remaining spectator.
+  sh.send({ type: "leave-game" });
+  const sgEnd = await sg.take("game-end");
+  const s2End = await s2.take("game-end");
+  ok(sgEnd.reason === "opponent-left", "guest is told the match ended when the host leaves");
+  ok(s2End.reason === "opponent-left", "remaining spectator is told the match ended when the host leaves");
+
+  sh.ws.close();
+  sg.ws.close();
+  s1.ws.close();
+  s2.ws.close();
   await sleep(100);
 
   // Fresh pair on table-2: D hosts + picks, E guests, D leaves → E gets game-end.
