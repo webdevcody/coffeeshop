@@ -388,7 +388,15 @@
           myColor = "red";
           setStatus("Waiting for an opponent…", "");
           const peer = new Peer(PEER_PREFIX + info.code);
-          peer.on("connection", (c) => wireConnection(c));
+          peer.on("connection", (c) => {
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
           peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
         } else {
           myColor = "yellow";
