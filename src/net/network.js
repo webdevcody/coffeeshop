@@ -122,6 +122,48 @@ export class Network {
     this._send({ type: "leave-game" });
   }
 
+  // --- In-world game relay (additive) --------------------------------------
+  // The server derives the sender's table + role from the connection (trusted),
+  // so these never carry a roomId — a client can't spoof another table.
+
+  // A player committed a move. Relayed to the other seated member(s); also to
+  // spectators for full-info games (server gates hidden-info via PUBLIC_RELAY).
+  sendMove(move) {
+    this._send({ type: "game-move", move });
+  }
+
+  // HOST-ONLY authoritative snapshot. `full` reaches seated members; `pub`
+  // reaches spectators (never `full` for hidden-info games).
+  sendGameState(full, pub) {
+    this._send({ type: "game-state", full, pub });
+  }
+
+  // Real-time guest steering (pong paddle / tron turn). Relayed ONLY to the host.
+  sendGameInput(input) {
+    this._send({ type: "game-input", input });
+  }
+
+  // Either player hit "new game".
+  sendGameReset() {
+    this._send({ type: "game-reset" });
+  }
+
+  // A non-seated client starts/stops watching a table (proximity spectating).
+  watchTable(table) {
+    this._send({ type: "watch", table });
+  }
+  unwatchTable(table) {
+    this._send({ type: "unwatch", table });
+  }
+
+  // Catch-up / desync recovery: ask the server to (re)send the cached
+  // authoritative state for the sender's table. The server answers from its
+  // cache — `full` to a seated guest, `pub` to a spectator — so a late or
+  // desynced joiner can converge without waiting for the host's next move.
+  requestState() {
+    this._send({ type: "request-state" });
+  }
+
   _send(obj) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(obj));

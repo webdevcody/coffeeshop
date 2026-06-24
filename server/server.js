@@ -122,8 +122,59 @@ let nextId = 1;
 // they stand up. Whether a game can actually be watched is a client/registry
 // concern — the server stays game-agnostic and just hands out the role.
 //
-/** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>}>} */
+/** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>, full: object|null, pub: object|null}>} */
 const tables = new Map();
+
+// Per-gameId flag: may the host's full snapshot / raw moves reach spectators?
+// Full-info + real-time games can mirror everything; hidden-info games expose
+// ONLY their pub snapshot (no raw moves, no full) — enforced server-side so a
+// leak is structural, not by client convention.
+const PUBLIC_RELAY = {
+  checkers: true, connect4: true, reversi: true, gomoku: true,
+  dotsandboxes: true, ultimatettt: true, mancala: true,
+  pong: true, tron: true, ludo: true,
+  battleship: false, memory: false,
+};
+function publicRelay(gameId) {
+  return PUBLIC_RELAY[gameId] !== false; // default permissive for unknown ids
+}
+
+// Resolve the sender's table + role from the connection (trusted, unspoofable).
+// Never trust a client-sent roomId/table for the relay.
+function senderTable(id) {
+  const c = clients.get(id);
+  if (!c) return null;
+  const tid = c.player.gameTable;
+  if (!tid) return null;
+  const t = tables.get(tid);
+  if (!t) return null;
+  return { tid, t, role: c.player.gameRole, c };
+}
+
+// Lightweight per-connection token bucket for real-time game-input. The host is
+// the authority for pong/tron, but the relay should still bound how fast (and how
+// large) a single guest can drive the shared sim so one client can't flood/DoS or
+// desync it. ~60 inputs/sec sustained with a small burst is ample for paddle/turn
+// steering; over-budget packets are dropped silently.
+const INPUT_RATE = 60; // tokens refilled per second
+const INPUT_BURST = 20; // bucket capacity
+function allowInput(c) {
+  const now = Date.now();
+  if (c._ib == null) { c._ib = INPUT_BURST; c._ibAt = now; }
+  const elapsed = (now - c._ibAt) / 1000;
+  c._ibAt = now;
+  c._ib = Math.min(INPUT_BURST, c._ib + elapsed * INPUT_RATE);
+  if (c._ib < 1) return false;
+  c._ib -= 1;
+  return true;
+}
+// A real-time input payload must be a small plain object (paddle dir / turn). Reject
+// anything else so a large blob can't be relayed verbatim each call.
+function saneInput(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  if (Object.keys(input).length > 6) return false;
+  return true;
+}
 
 // How many onlookers a single table will accept once both player seats are
 // taken. Tables have four chairs, so two spectators covers the physical seating;
@@ -162,7 +213,7 @@ function assignSeat(id, msg) {
     // Capacity defaults to 2 until the host picks a game; this keeps the common
     // (two-player) case seating exactly host + one guest. A game that wants more
     // players raises the capacity at pick time and early spectators get promoted.
-    t = { roomId: null, gameId: null, capacity: 2, seats: [], spectators: new Set() };
+    t = { roomId: null, gameId: null, capacity: 2, seats: [], spectators: new Set(), full: null, pub: null };
     tables.set(tableId, t);
   }
 
@@ -190,13 +241,25 @@ function assignSeat(id, msg) {
   if (c) {
     c.player.gameTable = role === "full" ? null : tableId;
     c.player.gameRole = role === "full" ? null : role;
+    const seatIndex = role === "guest" || role === "host" ? t.seats.indexOf(id) : null;
     send(c.ws, {
       type: "game-assign",
       table: tableId,
       gameId: role === "full" ? null : t.gameId, // null until the host picks
       roomId: role === "full" ? null : t.roomId,
       role,
+      seatIndex,
+      seatCount: t.capacity,
     });
+    // Catch-up: a guest sitting mid-game gets the cached full snapshot so it
+    // paints the live position; a spectator gets the pub snapshot. Fixes the
+    // documented "no snapshot on join" desync.
+    if (role === "guest" && t.full != null) {
+      send(c.ws, { type: "game-state", table: tableId, role: "guest", full: t.full });
+    } else if (role === "spectator" && t.pub != null) {
+      // pub is always spectator-safe; PUBLIC_RELAY gates only full + raw moves.
+      send(c.ws, { type: "game-state", table: tableId, role: "spectator", pub: t.pub });
+    }
     // Announce this player's table so every client can scope voice to it. A
     // "full" sitter has no table (gameTable stays null) — they're not in the
     // table's voice group.
@@ -219,6 +282,8 @@ function chooseSeatGame(id, msg) {
   t.gameId = gameId;
   t.capacity = capacity;
   t.roomId = genRoomId();
+  t.full = null; // fresh match: no stale snapshot
+  t.pub = null;
 
   // The chosen game may want more than two players. Promote early spectators —
   // who only became spectators because the capacity wasn't known yet — into the
@@ -231,14 +296,17 @@ function chooseSeatGame(id, msg) {
     if (pc) pc.player.gameRole = "guest";
   }
 
-  const announce = (pid, role) => {
+  const announce = (pid, role, seatIndex) => {
     const c = clients.get(pid);
     if (c) {
-      send(c.ws, { type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role });
+      send(c.ws, {
+        type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role,
+        seatIndex: role === "spectator" ? null : seatIndex, seatCount: t.capacity,
+      });
     }
   };
-  t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest"));
-  for (const sid of t.spectators) announce(sid, "spectator"); // onlookers who sat before the pick
+  t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest", i));
+  for (const sid of t.spectators) announce(sid, "spectator", null); // onlookers who sat before the pick
 }
 
 // A player stands up / disconnects. Ends the match for both players and frees
@@ -461,6 +529,130 @@ wss.on("connection", (ws) => {
         releaseSeat(id);
         break;
       }
+
+      // --- In-world game relay (additive; server stays a pure relay) --------
+      case "game-move": {
+        // A player committed a move. Relay verbatim to every OTHER seated member
+        // (covers 4-player ludo, not just one opponent); for full-info games also
+        // fan to spectators. Hidden-info games never relay raw moves to onlookers.
+        const st = senderTable(id);
+        if (!st || (st.role !== "host" && st.role !== "guest")) break;
+        const out = { type: "game-move", table: st.tid, byRole: st.role, byId: id, move: msg.move };
+        for (const pid of st.t.seats) {
+          if (pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, out);
+        }
+        if (publicRelay(st.t.gameId)) {
+          for (const sid of st.t.spectators) {
+            const sc = clients.get(sid);
+            if (sc) send(sc.ws, out);
+          }
+        }
+        break;
+      }
+      case "game-state": {
+        // HOST-ONLY authoritative snapshot. Cache it, fan `full` to seated
+        // members and `pub` to spectators (never `full` to spectators).
+        const st = senderTable(id);
+        if (!st || st.t.seats[0] !== id) break; // only the host (seat 0)
+        st.t.full = msg.full ?? null;
+        st.t.pub = msg.pub ?? msg.full ?? null;
+        for (const pid of st.t.seats) {
+          if (pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
+        }
+        // Spectators ALWAYS get pub — it is opponent/spectator-safe by
+        // construction (hidden-info modules exclude private data from pub). The
+        // PUBLIC_RELAY flag only blocks `full` and raw moves, never pub.
+        if (st.t.pub != null) {
+          for (const sid of st.t.spectators) {
+            const sc = clients.get(sid);
+            if (sc) send(sc.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+          }
+        }
+        break;
+      }
+      case "game-input": {
+        // Real-time guest steering → host ONLY. Never cached, never to spectators.
+        // Rate-limited + shape-checked so one guest can't flood/teleport/DoS the
+        // host-side sim.
+        const st = senderTable(id);
+        if (!st || st.role !== "guest") break;
+        if (!saneInput(msg.input)) break;
+        if (!allowInput(st.c)) break; // over budget: drop silently
+        const hostId = st.t.seats[0];
+        const hc = clients.get(hostId);
+        if (hc) send(hc.ws, { type: "game-input", table: st.tid, byRole: "guest", byId: id, input: msg.input });
+        break;
+      }
+      case "game-reset": {
+        const st = senderTable(id);
+        if (!st || (st.role !== "host" && st.role !== "guest")) break;
+        st.t.full = null;
+        st.t.pub = null;
+        const out = { type: "game-reset", table: st.tid };
+        for (const pid of st.t.seats) {
+          if (pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, out);
+        }
+        for (const sid of st.t.spectators) {
+          const sc = clients.get(sid);
+          if (sc) send(sc.ws, out);
+        }
+        break;
+      }
+      case "watch": {
+        // A non-seated client starts spectating a table (proximity). Add to the
+        // spectator set (deduped) and ALWAYS replay the cached pub so the board
+        // paints — this is the mount-time convergence path, so it must answer with
+        // the current pub even when the id is already a spectator (e.g. it became
+        // one by sitting, then watchTable() runs from board.mount()). Without the
+        // replay-on-dedupe, every spectator relies on the racy assignSeat pub and
+        // never converges.
+        const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
+        if (!tableId) break;
+        const t = tables.get(tableId);
+        const c = clients.get(id);
+        if (!t || !c) break;
+        // A seated player is already on the seat relay; nothing to do.
+        if (t.seats.includes(id)) break;
+        // Add to the spectator set if there's room; a duplicate add is a no-op but
+        // we still fall through to replay the current pub below.
+        if (!t.spectators.has(id) && t.spectators.size < SPECTATOR_LIMIT) {
+          t.spectators.add(id);
+        }
+        if (t.spectators.has(id) && t.pub != null) {
+          // pub is always safe to mirror; full/raw-moves are what PUBLIC_RELAY gates.
+          send(c.ws, { type: "game-state", table: tableId, role: "spectator", pub: t.pub });
+        }
+        break;
+      }
+      case "request-state": {
+        // Catch-up / desync recovery for the sender's own table. Answer from the
+        // cache: a seated guest gets `full`, a spectator gets `pub`. The host is
+        // authoritative locally and never needs this. Trusted table/role lookup —
+        // a client can't request another table's state.
+        const st = senderTable(id);
+        if (!st) break;
+        const c = clients.get(id);
+        if (!c) break;
+        if (st.role === "guest" && st.t.full != null) {
+          send(c.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
+        } else if (st.role === "spectator" && st.t.pub != null) {
+          send(c.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+        }
+        break;
+      }
+      case "unwatch": {
+        const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
+        if (!tableId) break;
+        const t = tables.get(tableId);
+        if (t) t.spectators.delete(id);
+        break;
+      }
       default:
         break;
     }
@@ -468,6 +660,9 @@ wss.on("connection", (ws) => {
 
   const cleanup = () => {
     releaseSeat(id); // end any in-progress match before dropping the client
+    // Drop any proximity-watch subscriptions this client held (they don't set
+    // gameTable, so releaseSeat doesn't cover them).
+    for (const t of tables.values()) t.spectators.delete(id);
     if (clients.delete(id)) {
       broadcast({ type: "player-left", id });
     }

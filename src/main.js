@@ -14,18 +14,37 @@ import { Voice } from "./net/voice.js";
 import { ScreenShare } from "./net/screenShare.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
+import { InWorldBoard } from "./games/inworld/board.js";
 import { getGame, listGames } from "./games/registry.js";
 import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
-const { colliders, seats, bar, ground, spawn, update: updateWorld } = buildCoffeeshop(scene);
+const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
 const network = new Network();
 const arcade = new Arcade();
+
+// The in-world game engine: mounts a game module onto the real café table mesh,
+// routes pointer clicks, relays moves/snapshots, and pumps real-time sims. It
+// replaces the iframe gameplay stage; arcade keeps only the host picker / guest
+// waiting DOM.
+const inWorld = new InWorldBoard({
+  scene,
+  camera,
+  getCanvas: () => canvas,
+  controls,
+  network,
+  tables,
+  getLocal: () => local,
+  getGameMeta: (id) => getGame(id),
+  onStatus: (text) => arcade.open && arcade.setStatus(text),
+});
+// Host receives real-time guest steering through the same bus.
+network.on("game-input", (m) => inWorld.onGameInput(m));
 
 let local = null;
 let joined = false;
@@ -137,23 +156,26 @@ network.on("game-assign", (m) => {
   // Spectators watch a match already in progress (or wait for it to begin).
   if (m.role === "spectator") {
     if (!m.gameId) {
+      if (inWorld.open) inWorld.unmount();
       arcade.showWaiting(label, "Table's full — you'll spectate once the game begins…");
       return;
     }
     const game = getGame(m.gameId);
     if (!game) return;
     if (!game.spectatable) {
-      // Game can't be watched (e.g. battleship) — free the seat and bow out.
+      // Game opted out of spectating — free the seat and bow out.
       hud.toast(`${game.name} is full and can't be spectated.`);
       local?.standUp();
       return;
     }
-    arcade.show(m.gameId, m.roomId, "spectator", label);
+    if (arcade.open) arcade.hide();
+    mountInWorld(m, null);
     return;
   }
 
   // No game chosen yet: the host picks from the menu, the guest waits.
   if (!m.gameId) {
+    if (inWorld.open) inWorld.unmount();
     if (m.role === "host") {
       arcade.showMenu(label, listGames(), (gameId) => {
         if (!local?.sitting || local.seat?.table !== m.table) return;
@@ -165,21 +187,64 @@ network.on("game-assign", (m) => {
     return;
   }
 
-  // A game is locked in — open it.
+  // A game is locked in — mount it in-world on the real table.
   if (!getGame(m.gameId)) return;
-  arcade.show(m.gameId, m.roomId, m.role, label);
+  if (arcade.open) arcade.hide();
+  mountInWorld(m, local.seat?.ry ?? null);
+});
+
+// Mount the in-world board for this game-assign. `seatRy` is null for spectators.
+function mountInWorld(m, seatRy) {
+  inWorld.mount({
+    gameId: m.gameId,
+    tableId: m.table,
+    roomId: m.roomId,
+    role: m.role,
+    seatRy,
+    seatIndex: m.seatIndex,
+    seatCount: m.seatCount,
+  });
+}
+
+// --- Reconnect handling ----------------------------------------------------
+// A dropped socket reconnects with a brand-new server id, so the old seat is
+// torn down server-side (releaseSeat → game-end to others / table freed). To
+// avoid leaving a now-dead board interactive, we unmount on close; and once the
+// socket re-opens and re-joins, if we believed we were seated at a table we
+// re-issue requestGame so the server re-seats us into a (fresh) match. A brief
+// blip no longer silently kills the local board.
+let _wasConnected = false;
+network.on("open", () => {
+  if (_wasConnected && local?.sitting && local.seat?.table && local.seat?.gameTable) {
+    // Re-sit at the same table; the server replies with a new game-assign that
+    // re-mounts the board (host picks again / guest waits / mid-join catch-up).
+    network.requestGame(local.seat.table);
+  }
+  _wasConnected = true;
+});
+network.on("close", () => {
+  // The board's role/seat is now stale (the server dropped our old id). Tear it
+  // down so we don't leave a dead, interactive board mounted; a successful
+  // reconnect + re-sit will re-mount it fresh.
+  if (inWorld.open) inWorld.unmount();
 });
 
 network.on("game-end", () => {
-  if (!arcade.open) return;
-  arcade.setStatus(
+  // Opponent left / match ended. Surface a status; the board (if mounted) stays
+  // until the local player stands up.
+  hud.toast(
     currentRole === "spectator"
-      ? "The match ended — leave to head back."
-      : "Opponent left — game over. Leave to head back."
+      ? "The match ended."
+      : "Opponent left — game over. Stand up to head back."
   );
+  if (arcade.open) {
+    arcade.setStatus(
+      currentRole === "spectator" ? "The match ended — leave to head back." : "Opponent left — leave to head back."
+    );
+  }
 });
 
-// The overlay's "Leave game" button: stand up, which closes everything below.
+// The picker overlay's "Leave game" button: stand up, which closes everything.
 arcade.onLeave = () => local?.standUp();
 
 // True when the local player is standing in the order zone in front of the bar.
@@ -197,6 +262,7 @@ function tableLabel(table) {
 // Called whenever the local player stands up (button, keyboard, or walking off).
 function onLocalStood() {
   if (arcade.open) arcade.hide();
+  if (inWorld.open) inWorld.unmount();
   controls.setLocked(false);
   currentRole = null;
   network.leaveGame();
@@ -289,6 +355,9 @@ function frame() {
     camera.lookAt(0, 1.3, 0);
   }
 
+  // Pump real-time game sims (pong/tron host tick, ludo, etc.) on the shared loop.
+  inWorld.update(dt);
+
   remotes.update(dt);
   voice.updateVolumes();
   voice.updateSpeaking(dt);
@@ -325,5 +394,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld };
 window.__coffeeReady = true;
