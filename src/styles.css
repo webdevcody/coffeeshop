@@ -507,18 +507,34 @@ body {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ---------- Arcade game overlay (iframe host) ---------- */
+/* ---------- Arcade game modal (iframe host) ---------- */
+/* A centered modal over a dimmed-but-see-through backdrop, so the coffeeshop
+   (and who's in it) stays visible while you play. Clicking the backdrop closes
+   the modal, which leaves the game. */
 .arcade {
   position: fixed;
   inset: 0;
   z-index: 40;
   display: flex;
-  flex-direction: column;
-  background: #0a1622; /* matches battleship's theme while it boots */
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 5, 3, 0.45);
   pointer-events: auto; /* re-enable hit-testing inside #ui (which is none) */
 }
 .arcade.hidden {
   display: none;
+}
+.arcade-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1000px, 100%);
+  height: min(720px, 100%);
+  background: #0a1622; /* matches battleship's theme while it boots */
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 16px;
+  overflow: hidden; /* clip the iframe/bar to the rounded corners */
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 .arcade-bar {
   flex: none;

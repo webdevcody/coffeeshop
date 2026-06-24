@@ -1,8 +1,11 @@
-// Arcade — manages the full-viewport overlay shown when you sit at a table.
+// Arcade — manages the centered modal shown when you sit at a table.
 // It has three states:
 //   - menu:    the host picks which game to spin up (showMenu)
 //   - waiting: the guest waits for the host to pick a game (showWaiting)
 //   - game:    the chosen game runs in an <iframe> (show)
+// The modal floats over a dimmed-but-see-through backdrop so you keep context
+// of the coffeeshop (and who's in it) while you play. Closing the modal — via
+// the Leave button, a backdrop click, or Escape — kicks you out of the game.
 // It is deliberately game-agnostic: it just loads whatever URL the registry
 // hands it. The server decides the room id and your role (host/guest).
 
@@ -21,23 +24,92 @@ export class Arcade {
     const el = document.createElement("div");
     el.className = "arcade hidden";
     el.innerHTML = `
-      <div class="arcade-bar">
-        <span class="arcade-title" id="arcade-title">Game</span>
-        <span class="arcade-status" id="arcade-status"></span>
-        <button class="arcade-leave" id="arcade-leave" type="button">✕ Leave game</button>
-      </div>
-      <div class="arcade-stage" id="arcade-stage"></div>`;
+      <div class="arcade-modal" role="dialog" aria-modal="true" aria-label="Table game" tabindex="-1">
+        <div class="arcade-bar">
+          <span class="arcade-title" id="arcade-title">Game</span>
+          <span class="arcade-status" id="arcade-status"></span>
+          <button class="arcade-leave" id="arcade-leave" type="button"
+                  title="Close — leaves the game">✕ Leave game</button>
+        </div>
+        <div class="arcade-stage" id="arcade-stage"></div>
+      </div>`;
     this.root.appendChild(el);
     this.el = el;
+    this.modal = el.querySelector(".arcade-modal");
     this.titleEl = el.querySelector("#arcade-title");
     this.statusEl = el.querySelector("#arcade-status");
     this.stage = el.querySelector("#arcade-stage");
     el.querySelector("#arcade-leave").addEventListener("click", () => this.onLeave?.());
+
+    // Closing the modal kicks you out of the game. A click on the dimmed
+    // backdrop (outside the modal) counts as closing — but only when the press
+    // both starts and ends on the backdrop. Tracking both endpoints keeps it
+    // symmetric: neither a drag out of the game (down inside, up on backdrop)
+    // nor a drag into it (down on backdrop, up inside) accidentally closes,
+    // since click's target is the common ancestor and can't be trusted alone.
+    let downOnBackdrop = false;
+    let upOnBackdrop = false;
+    el.addEventListener("mousedown", (e) => {
+      downOnBackdrop = e.target === el;
+    });
+    el.addEventListener("mouseup", (e) => {
+      upOnBackdrop = e.target === el;
+    });
+    el.addEventListener("click", () => {
+      if (downOnBackdrop && upOnBackdrop) this.onLeave?.();
+    });
+
+    // Escape closes too (best-effort — a focused game iframe may swallow it).
+    window.addEventListener("keydown", (e) => {
+      if (!this.open || e.key !== "Escape") return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      this.onLeave?.();
+    });
+
+    // Focus trap: keep Tab/Shift+Tab cycling within the modal while it's open,
+    // so keyboard/screen-reader users can't tab out to the page behind the
+    // aria-modal dialog. Best-effort once focus is inside a game iframe, which
+    // captures its own key events.
+    this.modal.addEventListener("keydown", (e) => {
+      if (!this.open || e.key !== "Tab") return;
+      const f = this._focusables();
+      if (f.length === 0) {
+        e.preventDefault();
+        this.modal.focus();
+        return;
+      }
+      const first = f[0];
+      const last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  // The tabbable controls inside the modal, in DOM order. Used to seed focus on
+  // open and to wrap focus at the ends for the Tab trap.
+  _focusables() {
+    return Array.from(
+      this.modal.querySelectorAll(
+        'button, [href], input, select, textarea, iframe, [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((el) => !el.disabled);
   }
 
   _reveal() {
+    // Remember what had focus so hide() can restore it when the modal closes.
+    this._lastFocus = document.activeElement;
     this.el.classList.remove("hidden");
     this.open = true;
+    // Move focus into the modal: the first interactive control (e.g. a menu
+    // card or the Leave button), falling back to the modal container itself.
+    const focusables = this._focusables();
+    (focusables[0] || this.modal).focus();
   }
 
   // Host view: choose a game to spin up. `games` is the registry catalog
@@ -120,5 +192,10 @@ export class Arcade {
     // Drop the iframe / menu so the game tears down its PeerJS connection / audio.
     this.stage.textContent = "";
     this.frame = null;
+    // Restore focus to whatever held it before the modal opened.
+    if (this._lastFocus && typeof this._lastFocus.focus === "function") {
+      this._lastFocus.focus();
+    }
+    this._lastFocus = null;
   }
 }
