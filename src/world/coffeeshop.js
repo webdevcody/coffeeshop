@@ -20,11 +20,11 @@ import {
   makeWindow,
 } from "./props.js";
 
-// Maps a table index to the game it hosts (a key in games/registry.js). Today
-// every table runs Battleship; to give a table a different game later, return a
-// different registry id here (e.g. `return i === 0 ? "checkers" : "battleship"`).
-function TABLE_GAME(_i) {
-  return "battleship";
+// Maps a table index to the game it hosts (a key in games/registry.js). Tables
+// alternate between Checkers and Battleship so both are reachable in the café;
+// change the mapping here to mix games differently per table.
+function TABLE_GAME(i) {
+  return i % 2 === 0 ? "checkers" : "battleship";
 }
 
 export function buildCoffeeshop(scene) {

@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#2b1d12" />
+    <title>Checkers · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online checkers — sit at a café table and play a friend."
+    />
+    <style>
+      :root {
+        --bg: #2b1d12;
+        --panel: #3a281a;
+        --ink: #f3e9dc;
+        --muted: #c9b6a0;
+        --light-sq: #e8d2ab;
+        --dark-sq: #7a4a25;
+        --accent: #e0a23a;
+        --red: #c4452f;
+        --red-hi: #e7796a;
+        --black: #2a2320;
+        --black-hi: #6b6058;
+        --move-dot: rgba(224, 162, 58, 0.85);
+        --sel: rgba(224, 162, 58, 0.55);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a281a, #1c130b 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 14px;
+      }
+      header {
+        text-align: center;
+        line-height: 1.25;
+      }
+      header h1 {
+        margin: 0;
+        font-size: clamp(18px, 4vw, 26px);
+        letter-spacing: 0.5px;
+      }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fd18f; font-weight: 700; }
+      #status.lose { color: var(--red-hi); font-weight: 700; }
+
+      #board {
+        --size: min(86vw, 64vh);
+        width: var(--size);
+        height: var(--size);
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        grid-template-rows: repeat(8, 1fr);
+        border: 6px solid #4a311c;
+        border-radius: 10px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+        overflow: hidden;
+        touch-action: manipulation;
+      }
+      .cell {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .cell.light { background: var(--light-sq); }
+      .cell.dark { background: var(--dark-sq); }
+      .cell.playable { cursor: default; }
+      .cell.selectable { cursor: pointer; }
+      .cell.sel::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: var(--sel);
+      }
+      .cell.target { cursor: pointer; }
+      .cell.target::before {
+        content: "";
+        position: absolute;
+        width: 34%;
+        height: 34%;
+        border-radius: 50%;
+        background: var(--move-dot);
+        box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.15) inset;
+        z-index: 2;
+      }
+      .piece {
+        width: 76%;
+        height: 76%;
+        border-radius: 50%;
+        position: relative;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.45),
+          inset 0 -4px 6px rgba(0, 0, 0, 0.35),
+          inset 0 4px 6px rgba(255, 255, 255, 0.18);
+      }
+      .piece.red {
+        background: radial-gradient(circle at 35% 30%, var(--red-hi), var(--red) 70%);
+      }
+      .piece.black {
+        background: radial-gradient(circle at 35% 30%, var(--black-hi), var(--black) 70%);
+      }
+      .piece.king::after {
+        content: "♛";
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 60%;
+        color: var(--accent);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .dot.red { background: var(--red); }
+      .dot.black { background: var(--black); border: 1px solid #555; }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid #5a3f26;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #4a331f; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>♟ Checkers</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="board" aria-label="Checkers board"></div>
+      <footer>
+        <span class="tag">You: <span class="dot" id="myDot"></span><span id="myColorLabel">—</span></span>
+        <span class="tag">Red: <strong id="redCount">12</strong></span>
+        <span class="tag">Black: <strong id="blackCount">12</strong></span>
+        <button id="newGameBtn" class="hidden">New game</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // ----------------------------------------------------------------------
+      // Connection contract (mirrors the battleship game so the café's Arcade
+      // overlay can drive it the same way):
+      //   #host=<CODE>  -> become the host, register a PeerJS peer for the room
+      //   #join=<CODE>  -> become the guest, connect to the host's peer
+      // The registry (src/games/registry.js) builds these URLs per table room.
+      // Peer ids are namespaced ("coffeeshop-checkers-<CODE>") so they never
+      // collide with other games sharing the public PeerJS cloud.
+      // ----------------------------------------------------------------------
+      const PEER_PREFIX = "coffeeshop-checkers-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const myDotEl = document.getElementById("myDot");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const redCountEl = document.getElementById("redCount");
+      const blackCountEl = document.getElementById("blackCount");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ---- Game state ------------------------------------------------------
+      let board = []; // board[r][c] = null | { color: "red"|"black", king: bool }
+      let turn = "red"; // whose move it is (red always moves first)
+      let myColor = null; // "red" (host) | "black" (guest)
+      let phase = "lobby"; // lobby | play | over
+      let conn = null; // PeerJS DataConnection
+
+      // selection / multi-jump click-through
+      let selectedFrom = null; // {r,c}
+      let pathSoFar = []; // landing squares clicked so far this turn
+      let candidateSeqs = []; // legal move sequences still matching pathSoFar
+
+      const KING_ROW = { red: 0, black: 7 }; // red moves up, black moves down
+      const other = (c) => (c === "red" ? "black" : "red");
+      const inBounds = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
+      const playable = (r, c) => (r + c) % 2 === 1;
+      const eq = (a, b) => a.r === b.r && a.c === b.c;
+
+      function initialBoard() {
+        const b = Array.from({ length: 8 }, () => Array(8).fill(null));
+        for (let r = 0; r < 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            if (!playable(r, c)) continue;
+            if (r < 3) b[r][c] = { color: "black", king: false };
+            else if (r > 4) b[r][c] = { color: "red", king: false };
+          }
+        }
+        return b;
+      }
+
+      function cloneBoard(b) {
+        return b.map((row) => row.map((cell) => (cell ? { ...cell } : null)));
+      }
+
+      function dirsFor(piece) {
+        if (piece.king) return [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+        return piece.color === "red" ? [[-1, -1], [-1, 1]] : [[1, -1], [1, 1]];
+      }
+
+      // Recursively enumerate jump sequences for a piece, on a working board.
+      // Returns [{ steps: [{r,c}...], captured: [{r,c}...] }]. American rules:
+      // reaching the king row by a jump promotes and ends the chain.
+      function jumpsFrom(r, c, piece, bd) {
+        const out = [];
+        for (const [dr, dc] of dirsFor(piece)) {
+          const mr = r + dr, mc = c + dc; // jumped-over square
+          const lr = r + 2 * dr, lc = c + 2 * dc; // landing square
+          if (!inBounds(lr, lc) || !playable(lr, lc)) continue;
+          const mid = bd[mr] && bd[mr][mc];
+          if (!mid || mid.color === piece.color) continue;
+          if (bd[lr][lc]) continue; // landing must be empty
+          const promotes = !piece.king && lr === KING_ROW[piece.color];
+          const moved = { color: piece.color, king: piece.king || promotes };
+          const nb = cloneBoard(bd);
+          nb[r][c] = null;
+          nb[mr][mc] = null;
+          nb[lr][lc] = moved;
+          const land = { r: lr, c: lc };
+          const cap = { r: mr, c: mc };
+          const cont = promotes ? [] : jumpsFrom(lr, lc, moved, nb);
+          if (cont.length === 0) {
+            out.push({ steps: [land], captured: [cap] });
+          } else {
+            for (const k of cont) {
+              out.push({ steps: [land, ...k.steps], captured: [cap, ...k.captured] });
+            }
+          }
+        }
+        return out;
+      }
+
+      function simpleMovesFrom(r, c, piece) {
+        const out = [];
+        for (const [dr, dc] of dirsFor(piece)) {
+          const tr = r + dr, tc = c + dc;
+          if (inBounds(tr, tc) && playable(tr, tc) && !board[tr][tc]) {
+            out.push({ steps: [{ r: tr, c: tc }], captured: [] });
+          }
+        }
+        return out;
+      }
+
+      // All legal moves for a color. If any capture exists, captures are
+      // mandatory and the only legal moves.
+      function allMoves(color) {
+        const captures = [];
+        const simples = [];
+        for (let r = 0; r < 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            const p = board[r][c];
+            if (!p || p.color !== color) continue;
+            for (const j of jumpsFrom(r, c, p, board)) {
+              captures.push({ from: { r, c }, steps: j.steps, captured: j.captured });
+            }
+            for (const s of simpleMovesFrom(r, c, p)) {
+              simples.push({ from: { r, c }, steps: s.steps, captured: s.captured });
+            }
+          }
+        }
+        return captures.length ? captures : simples;
+      }
+
+      function movesForPiece(r, c) {
+        return allMoves(turn).filter((m) => m.from.r === r && m.from.c === c);
+      }
+
+      function applyPath(from, steps, captured, bd) {
+        const b = bd || board;
+        const piece = b[from.r][from.c];
+        b[from.r][from.c] = null;
+        for (const cap of captured) b[cap.r][cap.c] = null;
+        const final = steps[steps.length - 1];
+        const promote = !piece.king && final.r === KING_ROW[piece.color];
+        b[final.r][final.c] = { color: piece.color, king: piece.king || promote };
+      }
+
+      function countPieces(color) {
+        let n = 0;
+        for (const row of board) for (const cell of row) if (cell && cell.color === color) n++;
+        return n;
+      }
+
+      // ---- Rendering -------------------------------------------------------
+      // Each player sees their own pieces at the bottom. Host (red) uses the
+      // canonical orientation; guest (black) views it rotated 180°.
+      function toCanonical(dr, dc) {
+        return myColor === "black" ? { r: 7 - dr, c: 7 - dc } : { r: dr, c: dc };
+      }
+
+      function render(overrideBoard) {
+        const b = overrideBoard || board;
+        boardEl.innerHTML = "";
+        const myMoves = phase === "play" && turn === myColor ? allMoves(myColor) : [];
+        const selectablePieces = new Set(myMoves.map((m) => m.from.r + "," + m.from.c));
+
+        // Highlight targets for the current selection (next click-through step).
+        const targets = new Set();
+        if (selectedFrom) {
+          for (const seq of candidateSeqs) {
+            const next = seq.steps[pathSoFar.length];
+            if (next) targets.add(next.r + "," + next.c);
+          }
+        }
+
+        for (let dr = 0; dr < 8; dr++) {
+          for (let dc = 0; dc < 8; dc++) {
+            const { r, c } = toCanonical(dr, dc);
+            const cell = document.createElement("div");
+            cell.className = "cell " + (playable(r, c) ? "dark playable" : "light");
+            const key = r + "," + c;
+
+            if (selectedFrom && eq(selectedFrom, { r, c })) cell.classList.add("sel");
+            if (targets.has(key)) cell.classList.add("target");
+            if (selectablePieces.has(key) && !selectedFrom) cell.classList.add("selectable");
+
+            const piece = b[r][c];
+            if (piece) {
+              const el = document.createElement("div");
+              el.className = "piece " + piece.color + (piece.king ? " king" : "");
+              cell.appendChild(el);
+            }
+
+            cell.addEventListener("click", () => onCellClick(r, c));
+            boardEl.appendChild(cell);
+          }
+        }
+
+        redCountEl.textContent = countPieces("red");
+        blackCountEl.textContent = countPieces("black");
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function clearSelection() {
+        selectedFrom = null;
+        pathSoFar = [];
+        candidateSeqs = [];
+      }
+
+      function onCellClick(r, c) {
+        if (phase !== "play" || turn !== myColor) return;
+
+        // Clicking a highlighted target advances/completes the move.
+        if (selectedFrom) {
+          const step = candidateSeqs
+            .map((s) => s.steps[pathSoFar.length])
+            .find((s) => s && s.r === r && s.c === c);
+          if (step) {
+            pathSoFar.push({ r, c });
+            const matching = candidateSeqs.filter((s) => {
+              if (s.steps.length < pathSoFar.length) return false;
+              return pathSoFar.every((p, i) => eq(p, s.steps[i]));
+            });
+            const finished = matching.find((s) => s.steps.length === pathSoFar.length);
+            const continuing = matching.filter((s) => s.steps.length > pathSoFar.length);
+
+            if (continuing.length > 0) {
+              // Forced multi-jump continues; show progress on a temp board.
+              candidateSeqs = continuing;
+              const partial = cloneBoard(board);
+              applyPath(
+                selectedFrom,
+                pathSoFar,
+                matching[0].captured.slice(0, pathSoFar.length),
+                partial
+              );
+              setStatus("Keep jumping…", "turn");
+              render(partial);
+            } else if (finished) {
+              commitMove(selectedFrom, finished.steps, finished.captured);
+            }
+            return;
+          }
+          // Clicked elsewhere — reselect or cancel.
+          clearSelection();
+        }
+
+        // Selecting one of your movable pieces.
+        const seqs = movesForPiece(r, c);
+        if (seqs.length === 0) {
+          clearSelection();
+          render();
+          return;
+        }
+        selectedFrom = { r, c };
+        pathSoFar = [];
+        candidateSeqs = seqs;
+        render();
+      }
+
+      function commitMove(from, steps, captured) {
+        applyPath(from, steps, captured);
+        send({ type: "move", from, steps, captured });
+        clearSelection();
+        turn = other(turn);
+        afterMove();
+      }
+
+      function applyRemoteMove(msg) {
+        applyPath(msg.from, msg.steps, msg.captured);
+        clearSelection();
+        turn = other(turn);
+        afterMove();
+      }
+
+      function afterMove() {
+        // The player to move with no legal moves (no pieces or all blocked) loses.
+        if (allMoves(turn).length === 0) {
+          phase = "over";
+          const iWon = turn !== myColor;
+          setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose");
+          newGameBtn.classList.remove("hidden");
+          render();
+          return;
+        }
+        updateTurnStatus();
+        render();
+      }
+
+      function updateTurnStatus() {
+        if (phase !== "play") return;
+        if (turn === myColor) setStatus("Your move.", "turn");
+        else setStatus("Opponent's move…", "");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      // ---- New game / restart ---------------------------------------------
+      function resetGame(broadcast) {
+        board = initialBoard();
+        turn = "red";
+        phase = "play";
+        clearSelection();
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        if (broadcast) send({ type: "restart" });
+      }
+
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      function startMatch() {
+        myDotEl.className = "dot " + myColor;
+        myColorLabelEl.textContent = myColor === "red" ? "Red (first)" : "Black";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        switch (msg.type) {
+          case "hello":
+            // Both sides confirm the link; the host starts the clock.
+            if (phase === "lobby") startMatch();
+            break;
+          case "move":
+            applyRemoteMove(msg);
+            break;
+          case "restart":
+            resetGame(false);
+            break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => {
+          send({ type: "hello" });
+          if (phase === "lobby") startMatch();
+        });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") {
+          setStatus("Failed to load networking library.", "lose");
+          return;
+        }
+        const info = parseHash();
+        board = initialBoard();
+        render();
+
+        if (!info) {
+          setStatus("Open this game from a café table to start a match.", "");
+          return;
+        }
+
+        if (info.role === "host") {
+          myColor = "red";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("error", (e) => {
+            setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose");
+          });
+          peer.on("connection", (c) => wireConnection(c));
+        } else {
+          myColor = "black";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => {
+            wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true }));
+          });
+          peer.on("error", (e) => {
+            setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose");
+          });
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>

@@ -27,6 +27,19 @@ export const GAMES = {
       return `/games/battleship/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
+  checkers: {
+    id: "checkers",
+    name: "Checkers",
+    // Two players per match (host = red and moves first, guest = black).
+    capacity: 2,
+    // Same room contract as battleship: the host registers the room's PeerJS
+    // peer (`#host=<CODE>`) and the guest connects to it (`#join=<CODE>`).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : "join";
+      return `/games/checkers/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
 };
 
 export function getGame(id) {
