@@ -40,7 +40,7 @@ re-downloads what actually changed.
 - **Drag** — orbit the camera (mouse, or right side on touch)
 - **Mouse wheel** — zoom
 - **Enter** — focus chat · **Esc** — leave chat
-- **🎙️ Enable voice** — proximity voice chat. Once on: **🎤 Mic** mutes/unmutes your own microphone, **🔊 Audio** silences everyone in the room at once.
+- **🎙️ Enable voice** — proximity voice chat: the closer you stand, the louder you are. **Sitting at a game table scopes your voice to that table** — you only hear, and are heard by, the people seated there (players and spectators), so each table is its own private conversation. Once on: **🎤 Mic** mutes/unmutes your own microphone, **🔊 Audio** silences everyone at once.
 - On touch devices, a virtual joystick appears on the left.
 
 ## Project layout

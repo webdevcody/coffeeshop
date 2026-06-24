@@ -230,6 +230,32 @@ try {
   const eGame2 = await e.take("game-assign");
   ok(eGame2.roomId !== dGame.roomId, "reset table-2 has a fresh roomId");
 
+  // --- Voice scoping: table membership is broadcast (seat-update) -----------
+  // Sitting / standing at a game table tells every client who is at which table
+  // so the client can scope proximity voice to table-mates.
+  const va = client();
+  const vb = client();
+  await va.open();
+  va.send({ type: "join", name: "Va" });
+  const vaWelcome = await va.take("welcome");
+  const vaId = vaWelcome.id;
+  await vb.open();
+  vb.send({ type: "join", name: "Vb" });
+  await vb.take("welcome");
+
+  va.send({ type: "sit-game", table: "table-7" });
+  await va.take("game-assign");
+  const vbSeat = await vb.take("seat-update");
+  ok(vbSeat.id === vaId && vbSeat.table === "table-7", "sitting broadcasts table membership to others");
+
+  va.send({ type: "leave-game" });
+  const vbSeat2 = await vb.take("seat-update");
+  ok(vbSeat2.id === vaId && vbSeat2.table === null, "standing broadcasts table:null to others");
+
+  va.ws.close();
+  vb.ws.close();
+  await sleep(100);
+
   a.ws.close();
   b.ws.close();
   cc.ws.close();
