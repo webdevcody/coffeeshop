@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2b1d12" />
+    <title>Ultimate Tic-Tac-Toe · The Daily Grind</title>
+    <meta name="description" content="Two-player online ultimate tic-tac-toe — sit at a café table and play a friend." />
+    <style>
+      :root {
+        --bg: #2b1d12;
+        --panel: #3a281a;
+        --ink: #f3e9dc;
+        --muted: #c9b6a0;
+        --board-bg: #efe2cf;
+        --grid: #b69a78;
+        --grid-strong: #6f4d2c;
+        --x: #d65a4a;
+        --o: #4a85d6;
+        --accent: #e0a23a;
+        --legal: rgba(224, 162, 58, 0.18);
+        --legal-edge: rgba(224, 162, 58, 0.9);
+        --last: rgba(224, 162, 58, 0.35);
+        --winline: rgba(143, 209, 143, 0.4);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a281a, #1c130b 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 12px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(16px, 3.6vw, 24px); letter-spacing: 0.5px; }
+      #status { margin-top: 4px; font-size: clamp(13px, 3vw, 16px); color: var(--muted); min-height: 1.2em; }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fd18f; font-weight: 700; }
+      #status.lose { color: #e7796a; font-weight: 700; }
+
+      #big {
+        --size: min(90vw, 62vh);
+        width: var(--size);
+        height: var(--size);
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+        gap: 8px;
+        background: var(--grid-strong);
+        padding: 8px;
+        border-radius: 12px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+      }
+      .small {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+        gap: 3px;
+        background: var(--grid);
+        border-radius: 7px;
+        padding: 4px;
+      }
+      .small.legal { background: var(--legal-edge); box-shadow: 0 0 0 2px var(--legal-edge); }
+      .small.legal .cell { background: var(--legal); }
+      .small.winline { box-shadow: 0 0 0 3px #8fd18f; }
+      .cell {
+        background: var(--board-bg);
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+        font-size: calc(min(90vw, 62vh) / 9 * 0.62);
+        line-height: 1;
+      }
+      .cell.x { color: var(--x); }
+      .cell.o { color: var(--o); }
+      #big.interactive .small.legal .cell.empty { cursor: pointer; }
+      #big.interactive .small.legal .cell.empty:hover { background: rgba(224, 162, 58, 0.4); }
+      .cell.last { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+      /* Won small board: a translucent big symbol over the mini-grid. */
+      .small .claim {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: calc(min(90vw, 62vh) / 3 * 0.7);
+        font-weight: 900;
+        border-radius: 7px;
+        background: rgba(43, 29, 18, 0.34);
+        pointer-events: none;
+      }
+      .small .claim.x { color: var(--x); }
+      .small .claim.o { color: var(--o); }
+      .small .claim.draw { color: var(--muted); font-size: calc(min(90vw, 62vh) / 3 * 0.4); }
+
+      .scorebar { display: flex; gap: 16px; align-items: center; font-size: 15px; }
+      .who { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px; border-radius: 999px; background: var(--panel); border: 1px solid #5a3f26; }
+      .who.active { outline: 2px solid var(--accent); }
+      .who .sym { font-weight: 900; }
+      .who .sym.x { color: var(--x); }
+      .who .sym.o { color: var(--o); }
+
+      footer { display: flex; gap: 16px; align-items: center; }
+      button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid #5a3f26; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+      button:hover { background: #4a331f; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1># Ultimate Tic-Tac-Toe</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div class="scorebar">
+        <span class="who" id="whoX"><span class="sym x">X</span> Host</span>
+        <span class="who" id="whoO"><span class="sym o">O</span> Guest</span>
+      </div>
+      <div id="big" aria-label="Ultimate tic-tac-toe board"></div>
+      <footer>
+        <span class="tag">You: <strong id="myColorLabel">—</strong></span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // ----------------------------------------------------------------------
+      // Connection contract (mirrors checkers / connect4 so the café's Arcade
+      // overlay drives it the same way):
+      //   #host=<CODE>     -> host: register a PeerJS peer for the room (X)
+      //   #join=<CODE>     -> guest: connect to the host's peer (O)
+      //   #spectate=<CODE> -> read-only onlooker; receives a board snapshot
+      // Host and guest each keep full game state and apply the same validated
+      // moves, so they stay in sync without snapshots; spectators get snapshots.
+      // ----------------------------------------------------------------------
+      const PEER_PREFIX = "coffeeshop-ultimatettt-";
+
+      const statusEl = document.getElementById("status");
+      const bigEl = document.getElementById("big");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const whoXEl = document.getElementById("whoX");
+      const whoOEl = document.getElementById("whoO");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      const other = (s) => (s === "X" ? "O" : "X");
+      const LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+
+      // ---- Game state ------------------------------------------------------
+      // cells[B][i]: mark in small board B (0..8), cell i (0..8) -> "X"|"O"|null
+      // bigWinner[B]: "X"|"O"|"draw"|null  (result of small board B)
+      // activeBoard:  the board the side to move MUST play in, or null = any open
+      let cells, bigWinner, turn, activeBoard, phase, lastMove, winLine;
+      let myColor = null; // "X" (host) | "O" (guest) | null (spectator)
+      let conn = null;
+      let isSpectator = false;
+      const spectators = [];
+
+      function initState() {
+        cells = Array.from({ length: 9 }, () => Array(9).fill(null));
+        bigWinner = Array(9).fill(null);
+        turn = "X"; // host moves first
+        activeBoard = null; // X may open anywhere
+        lastMove = null;
+        winLine = null;
+      }
+
+      function lineWinner(arr, get) {
+        for (const [a, b, c] of LINES) {
+          const v = get(arr, a);
+          if (v && v !== "draw" && v === get(arr, b) && v === get(arr, c)) return { sym: v, line: [a, b, c] };
+        }
+        return null;
+      }
+      function smallWinner(B) {
+        const r = lineWinner(cells[B], (a, i) => a[i]);
+        return r ? r.sym : null;
+      }
+      function smallFull(B) { return cells[B].every((x) => x !== null); }
+      function bigResult() { return lineWinner(bigWinner, (a, i) => a[i]); }
+
+      function boardPlayable(B) { return bigWinner[B] === null; } // null winner => has empty cells
+      function legalBoard(B) {
+        if (!boardPlayable(B)) return false;
+        return activeBoard === null || activeBoard === B;
+      }
+      function turnIsMine() { return !isSpectator && turn === myColor; }
+
+      function applyMove(B, i) {
+        cells[B][i] = turn;
+        lastMove = { B, i };
+        const w = smallWinner(B);
+        if (w) bigWinner[B] = w;
+        else if (smallFull(B)) bigWinner[B] = "draw";
+        // The cell you played in points the opponent at the same-numbered board,
+        // unless that board is already decided — then they may play anywhere.
+        activeBoard = bigWinner[i] === null ? i : null;
+        turn = other(turn);
+      }
+
+      function gameStatus() {
+        const big = bigResult();
+        if (big) return { over: true, winner: big.sym, line: big.line };
+        if (bigWinner.every((x) => x !== null)) return { over: true, draw: true };
+        return { over: false };
+      }
+
+      // ---- Rendering -------------------------------------------------------
+      function render() {
+        bigEl.innerHTML = "";
+        bigEl.classList.toggle("interactive", phase === "play" && turnIsMine());
+        for (let B = 0; B < 9; B++) {
+          const small = document.createElement("div");
+          small.className = "small";
+          if (phase === "play" && turnIsMine() && legalBoard(B)) small.classList.add("legal");
+          if (winLine && winLine.includes(B)) small.classList.add("winline");
+          for (let i = 0; i < 9; i++) {
+            const cell = document.createElement("div");
+            const mark = cells[B][i];
+            cell.className = "cell" + (mark ? " " + mark.toLowerCase() : " empty");
+            if (mark) cell.textContent = mark;
+            if (lastMove && lastMove.B === B && lastMove.i === i) cell.classList.add("last");
+            cell.addEventListener("click", () => onCellClick(B, i));
+            small.appendChild(cell);
+          }
+          if (bigWinner[B]) {
+            const claim = document.createElement("div");
+            claim.className = "claim " + (bigWinner[B] === "draw" ? "draw" : bigWinner[B].toLowerCase());
+            claim.textContent = bigWinner[B] === "draw" ? "–" : bigWinner[B];
+            small.appendChild(claim);
+          }
+          bigEl.appendChild(small);
+        }
+        whoXEl.classList.toggle("active", phase === "play" && turn === "X");
+        whoOEl.classList.toggle("active", phase === "play" && turn === "O");
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onCellClick(B, i) {
+        if (phase !== "play" || !turnIsMine()) return;
+        if (!legalBoard(B) || cells[B][i]) return;
+        commitMove(B, i);
+      }
+
+      function commitMove(B, i) {
+        applyMove(B, i);
+        send({ type: "move", B, i });
+        afterMove();
+      }
+
+      function applyRemoteMove(msg) {
+        // Never trust a remote packet: enforce turn, the board-redirect rule,
+        // and an empty target cell before applying.
+        if (!msg || !Number.isInteger(msg.B) || !Number.isInteger(msg.i) || msg.B < 0 || msg.B > 8 || msg.i < 0 || msg.i > 8) { handleDesync(); return; }
+        if (turn === myColor) { handleDesync(); return; } // not the opponent's turn
+        if (!legalBoard(msg.B) || cells[msg.B][msg.i]) { handleDesync(); return; }
+        applyMove(msg.B, msg.i);
+        afterMove();
+      }
+
+      function afterMove() {
+        render();
+        broadcastState();
+        const s = gameStatus();
+        if (s.over) {
+          phase = "over";
+          if (s.draw) { winLine = null; setStatus("It's a draw.", ""); }
+          else {
+            winLine = s.line;
+            if (isSpectator) setStatus((s.winner === "X" ? "X (host)" : "O (guest)") + " wins!", "");
+            else { const iWon = s.winner === myColor; setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose"); }
+          }
+          if (!isSpectator) newGameBtn.classList.remove("hidden");
+          render();
+          broadcastState();
+          return;
+        }
+        updateTurnStatus();
+      }
+
+      function updateTurnStatus() {
+        if (phase !== "play") return;
+        const where = activeBoard === null ? " (any open board)" : "";
+        if (turnIsMine()) setStatus("Your move" + where + ".", "turn");
+        else setStatus("Opponent's move…", "");
+      }
+
+      function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+      // ---- New game / restart ---------------------------------------------
+      function resetGame(broadcast) {
+        initState();
+        phase = "play";
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        broadcastState();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) { if (conn && conn.open) conn.send(msg); }
+
+      function snapshot() { return { type: "state", cells, bigWinner, turn, activeBoard, phase, lastMove, winLine }; }
+      function sendSnapshot(c) { if (c && c.open) c.send(snapshot()); }
+      function broadcastState() { for (const c of spectators) sendSnapshot(c); }
+      function addSpectator(c) {
+        c.on("open", () => { spectators.push(c); sendSnapshot(c); });
+        c.on("data", () => {});
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) { const idx = spectators.indexOf(c); if (idx >= 0) spectators.splice(idx, 1); }
+
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.cells) || !Array.isArray(s.bigWinner)) return;
+        cells = s.cells; bigWinner = s.bigWinner; turn = s.turn; activeBoard = s.activeBoard;
+        phase = s.phase; lastMove = s.lastMove || null; winLine = s.winLine || null;
+        newGameBtn.classList.add("hidden");
+        if (phase === "over") {
+          const big = bigResult();
+          setStatus(big ? (big.sym === "X" ? "X (host)" : "O (guest)") + " wins!" : "It's a draw.", "");
+        } else setStatus(phase === "lobby" ? "👁 Waiting for the match to start…" : "👁 Spectating — " + turn + "'s move.", "");
+        render();
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
+      function startMatch() {
+        myColorLabelEl.textContent = myColor === "X" ? "X (first)" : "O";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        if (isSpectator) { if (msg.type === "state") applySpectatorState(msg); return; }
+        switch (msg.type) {
+          case "hello": if (phase === "lobby") startMatch(); break;
+          case "move": applyRemoteMove(msg); break;
+          case "restart": resetGame(false); break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => { send({ type: "hello" }); if (phase === "lobby") startMatch(); });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() { if (phase === "over") return; phase = "over"; setStatus("The match ended.", ""); }
+
+      function parseHash() {
+        const hs = (location.hash || "").replace(/^#/, "");
+        if (hs.startsWith("host=")) return { role: "host", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("join=")) return { role: "guest", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("spectate=")) return { role: "spectator", code: hs.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") { setStatus("Failed to load networking library.", "lose"); return; }
+        initState();
+        phase = "lobby";
+        render();
+        const info = parseHash();
+        if (!info) { setStatus("Open this game from a café table to start a match.", ""); return; }
+
+        if (info.role === "host") {
+          myColor = "X";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+          peer.on("connection", (c) => {
+            if (c.metadata && c.metadata.spectator) { addSpectator(c); return; }
+            if (conn && conn.open) { c.close(); return; }
+            wireConnection(c);
+          });
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          myColor = null;
+          myColorLabelEl.textContent = "Spectator";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          myColor = "O";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>
