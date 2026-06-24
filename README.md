@@ -88,9 +88,18 @@ How a match is coordinated:
 
 - The `ws` server is a **generic room coordinator** — it doesn't know what game a
   table runs. The first person to sit is the **host** (and gets a fresh random
-  `roomId`); the second is the **guest** (same `roomId`); anyone beyond capacity is
-  told the table is **full**. Either player leaving ends the match and frees the
-  table, so the next pair starts on a clean room.
+  `roomId`); the second is the **guest** (same `roomId`). The café games are
+  two-player, but tables seat four — so anyone who sits once both player seats are
+  taken becomes a **spectator** of the running match (same `roomId`), watching a
+  read-only board instead of being turned away. Either *player* leaving ends the
+  match and frees the table (spectators are sent back too); a spectator leaving
+  just stops watching.
+- Spectating is driven by the game itself: the host owns the room's fixed PeerJS
+  peer, so spectators connect to it read-only (`#spectate=<roomId>`) and the host
+  streams a board snapshot after every move. Whether a game supports this is a
+  `spectatable` flag in `src/games/registry.js` — Checkers and Connect 4 do;
+  Battleship (a prebuilt bundle) doesn't, so its full tables fall back to a
+  "can't be spectated" notice.
 - The game itself runs in a sandboxed `<iframe>`. **Battleship** ships under
   `public/games/battleship/` and pairs the two players over PeerJS — the host
   registers the room's peer (`#host=<roomId>`) and the guest joins it

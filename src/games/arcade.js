@@ -92,8 +92,14 @@ export class Arcade {
     const game = getGame(gameId);
     if (!game) return false;
     this.table = tableLabel || null;
-    this.titleEl.textContent = `🎮 ${game.name}${tableLabel ? ` · ${tableLabel}` : ""}`;
-    this.statusEl.textContent = role === "host" ? "Hosting — waiting for an opponent…" : "Joining the match…";
+    const watching = role === "spectator";
+    this.titleEl.textContent = `${watching ? "👁" : "🎮"} ${game.name}${tableLabel ? ` · ${tableLabel}` : ""}`;
+    this.statusEl.textContent =
+      role === "host"
+        ? "Hosting — waiting for an opponent…"
+        : watching
+          ? "👁 Spectating — watching this match."
+          : "Joining the match…";
 
     // Fresh iframe each time so the game restarts cleanly.
     this.stage.textContent = "";

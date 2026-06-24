@@ -100,9 +100,11 @@ network.on("chat", (m) => {
 // Sitting at a game table asks the server for a room + role; the reply opens the
 // game in the Arcade overlay. Standing up (or the overlay's Leave button) ends
 // the match.
+let currentRole = null;
+
 network.on("game-assign", (m) => {
   if (m.role === "full") {
-    hud.toast("This table's game is full (2 players already).");
+    hud.toast("This table is full — no seats left to play or spectate.");
     return;
   }
   // Make sure we're still sitting at the table we asked about.
@@ -110,8 +112,27 @@ network.on("game-assign", (m) => {
     network.leaveGame();
     return;
   }
+  currentRole = m.role;
   const label = tableLabel(m.table);
   controls.setLocked(true);
+
+  // Spectators watch a match already in progress (or wait for it to begin).
+  if (m.role === "spectator") {
+    if (!m.gameId) {
+      arcade.showWaiting(label, "Table's full — you'll spectate once the game begins…");
+      return;
+    }
+    const game = getGame(m.gameId);
+    if (!game) return;
+    if (!game.spectatable) {
+      // Game can't be watched (e.g. battleship) — free the seat and bow out.
+      hud.toast(`${game.name} is full and can't be spectated.`);
+      local?.standUp();
+      return;
+    }
+    arcade.show(m.gameId, m.roomId, "spectator", label);
+    return;
+  }
 
   // No game chosen yet: the host picks from the menu, the guest waits.
   if (!m.gameId) {
@@ -132,7 +153,12 @@ network.on("game-assign", (m) => {
 });
 
 network.on("game-end", () => {
-  if (arcade.open) arcade.setStatus("Opponent left — game over. Leave to head back.");
+  if (!arcade.open) return;
+  arcade.setStatus(
+    currentRole === "spectator"
+      ? "The match ended — leave to head back."
+      : "Opponent left — game over. Leave to head back."
+  );
 });
 
 // The overlay's "Leave game" button: stand up, which closes everything below.
@@ -147,6 +173,7 @@ function tableLabel(table) {
 function onLocalStood() {
   if (arcade.open) arcade.hide();
   controls.setLocked(false);
+  currentRole = null;
   network.leaveGame();
 }
 
