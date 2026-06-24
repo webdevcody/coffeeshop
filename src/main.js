@@ -83,6 +83,11 @@ network.on("player-left", (m) => {
 network.on("state", (m) => {
   remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY);
 });
+// A remote player restyled themselves (skin / hair / clothing).
+network.on("appearance", (m) => {
+  remotes.setAppearance(m.id, m);
+  refreshPeople(); // people-panel dots track clothing color
+});
 // Another player deafened or muted us: flag that they can't hear us.
 network.on("voice-status", (m) => {
   remotes.setCantHear(m.id, m.cantHear);
@@ -185,7 +190,7 @@ function colorFor(id, fallbackName) {
 
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
-  local = new LocalPlayer(scene, controls, colliders, color, name, seats, ground, spawn);
+  local = new LocalPlayer(scene, controls, colliders, { color }, name, seats, ground, spawn);
   // Sitting at a game table asks the server for a role; the reply opens the
   // game-picker menu (host) or a waiting screen (guest), then the game itself.
   local.onSit = (seat) => {
@@ -194,12 +199,25 @@ hud.onJoin = ({ name, color }) => {
   local.onStand = (seat) => {
     if (seat?.table && seat?.gameTable) onLocalStood();
   };
+  // Sync the customize panel to our resolved look (skin/hair default from name).
+  hud.setAppearance(local.getAppearance());
   joined = true;
   network.connect();
-  network.on("open", () => network.join(name, color));
+  // Send our full resolved look (clothing + skin + hair) so others render us
+  // identically, not a different per-id default.
+  const appearance = local.getAppearance();
+  network.on("open", () => network.join(name, appearance));
   // If we connected before the handler was attached (fast localhost), join now.
-  if (network.connected) network.join(name, color);
+  if (network.connected) network.join(name, appearance);
   updateCount();
+};
+
+// The customize panel changed a color — restyle locally and tell everyone.
+hud.onCustomize = (partial) => {
+  if (!local) return;
+  local.setAppearance(partial);
+  network.sendAppearance(local.getAppearance());
+  refreshPeople();
 };
 
 hud.onChat = (text) => network.sendChat(text);

@@ -67,9 +67,18 @@ export class Network {
     }, delay);
   }
 
-  join(name, color) {
-    this._join = { name, color };
-    this._send({ type: "join", name, color });
+  // `appearance` is { color, skin, hair }. Remembered so a reconnect re-joins
+  // with the same look.
+  join(name, appearance = {}) {
+    this._join = { name, color: appearance.color, skin: appearance.skin, hair: appearance.hair };
+    this._send({ type: "join", ...this._join });
+  }
+
+  // Push a live appearance change so other clients restyle this player. Also
+  // updates the remembered join payload so a reconnect keeps the new look.
+  sendAppearance(appearance = {}) {
+    if (this._join) Object.assign(this._join, appearance);
+    this._send({ type: "appearance", ...appearance });
   }
 
   sendState(x, z, ry, moving, sitting = false, seatY = 0) {

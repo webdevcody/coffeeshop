@@ -416,6 +416,57 @@ body {
 .people-panel.hidden {
   display: none;
 }
+
+/* Customize ("Look") control, pinned to the top-left corner. */
+.look-corner {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  pointer-events: none;
+}
+.look-corner .pill {
+  pointer-events: auto;
+}
+.customize-panel {
+  width: min(86vw, 250px);
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+.customize-panel.hidden {
+  display: none;
+}
+.custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 2px 0;
+}
+.custom-label {
+  flex: 0 0 58px;
+  font-size: 12px;
+  color: #d9b89a;
+  font-weight: 600;
+}
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.swatch.sm {
+  width: 22px;
+  height: 22px;
+  border-width: 2px;
+}
 .people-title {
   font-size: 12px;
   font-weight: 700;

@@ -13,7 +13,8 @@ import { PLAYER, CAMERA, WORLD, SEAT } from "../config.js";
 const FALL = { gravity: 22, respawnY: -12 };
 
 export class LocalPlayer {
-  constructor(scene, controls, colliders, color, name, seats = [], ground = null, spawn = null) {
+  // `appearance` is { color, skin, hair } (a bare color string also works).
+  constructor(scene, controls, colliders, appearance, name, seats = [], ground = null, spawn = null) {
     this.controls = controls;
     this.colliders = colliders;
     this.seats = seats;
@@ -21,7 +22,7 @@ export class LocalPlayer {
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
     this.bounds = unionBounds(this.ground);
-    this.character = new Character(color, name || "me");
+    this.character = new Character(appearance, name || "me");
     this.character.group.position.set(this.spawn.x, 0, this.spawn.z);
     this.character.group.rotation.y = Math.PI;
     scene.add(this.character.group);
@@ -62,6 +63,14 @@ export class LocalPlayer {
 
   setColor(hex) {
     this.character.setColor(hex);
+  }
+
+  setAppearance(app) {
+    this.character.setAppearance(app);
+  }
+
+  getAppearance() {
+    return this.character.getAppearance();
   }
 
   setSpeaking(on) {

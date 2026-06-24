@@ -2,7 +2,7 @@
 // voice toggle, the online-count pill, and the controls hint. Builds its own DOM
 // inside #ui and surfaces interactions through assignable callbacks.
 
-import { PALETTE } from "../config.js";
+import { PALETTE, SKIN_TONES, HAIR_TONES } from "../config.js";
 
 export class HUD {
   constructor(root) {
@@ -13,6 +13,8 @@ export class HUD {
     this.onToggleMic = null;
     this.onToggleDeafen = null;
     this.onToggleMute = null;
+    this.onCustomize = null; // ({ color?, skin?, hair? }) — a swatch was picked
+    this.appearance = { color: null, skin: null, hair: null };
     this.joined = false;
     this._buildJoin();
     this._buildGame();
@@ -76,6 +78,15 @@ export class HUD {
     const ui = document.createElement("div");
     ui.className = "game-ui hidden";
     ui.innerHTML = `
+      <div class="look-corner">
+        <button class="pill look-btn" id="look-btn">🎨 Customize</button>
+        <div class="customize-panel hidden" id="customize-panel">
+          <div class="people-title">Customize your look</div>
+          <div class="custom-row"><span class="custom-label">Skin</span><div class="swatch-row" id="skin-swatches"></div></div>
+          <div class="custom-row"><span class="custom-label">Hair</span><div class="swatch-row" id="hair-swatches"></div></div>
+          <div class="custom-row"><span class="custom-label">Clothing</span><div class="swatch-row" id="cloth-swatches"></div></div>
+        </div>
+      </div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -104,6 +115,8 @@ export class HUD {
     this.peopleBtn = ui.querySelector("#people-btn");
     this.peoplePanel = ui.querySelector("#people-panel");
     this.peopleList = ui.querySelector("#people-list");
+    this.lookBtn = ui.querySelector("#look-btn");
+    this.customizePanel = ui.querySelector("#customize-panel");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
     this.chatInput = ui.querySelector("#chat-input");
@@ -112,6 +125,18 @@ export class HUD {
     this.peopleBtn.addEventListener("click", () => {
       const open = this.peoplePanel.classList.toggle("hidden");
       this.peopleBtn.classList.toggle("active", !open);
+    });
+
+    // Customize panel: one swatch row per editable part. Picking a swatch fires
+    // onCustomize with just that field and re-highlights the active choice.
+    this._swatchRows = {
+      skin: this._buildSwatchRow(ui.querySelector("#skin-swatches"), SKIN_TONES, "skin", "Skin"),
+      hair: this._buildSwatchRow(ui.querySelector("#hair-swatches"), HAIR_TONES, "hair", "Hair"),
+      color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color", "Clothing"),
+    };
+    this.lookBtn.addEventListener("click", () => {
+      const open = this.customizePanel.classList.toggle("hidden");
+      this.lookBtn.classList.toggle("active", !open);
     });
 
     form.addEventListener("submit", (e) => {
@@ -136,6 +161,49 @@ export class HUD {
         this.chatInput.blur();
       }
     });
+  }
+
+  // Build a row of color swatches for one appearance field; clicking one fires
+  // onCustomize({ [field]: hex }). Returns the row's <button> elements so
+  // setAppearance can highlight the active one. `label` is the human field name
+  // (e.g. "Clothing") used for each swatch's accessible name, since the swatch
+  // itself is only a background colour with nothing for a screen reader to read.
+  _buildSwatchRow(container, colors, field, label) {
+    const btns = [];
+    for (const c of colors) {
+      const s = document.createElement("button");
+      s.type = "button";
+      s.className = "swatch sm";
+      s.style.background = c;
+      s.dataset.color = c.toLowerCase();
+      s.setAttribute("aria-label", `${label} ${c}`);
+      s.setAttribute("aria-pressed", "false");
+      s.addEventListener("click", () => {
+        this.appearance[field] = c;
+        this._highlightRow(field);
+        this.onCustomize?.({ [field]: c });
+      });
+      container.appendChild(s);
+      btns.push(s);
+    }
+    return btns;
+  }
+
+  _highlightRow(field) {
+    const active = (this.appearance[field] || "").toLowerCase();
+    for (const b of this._swatchRows[field]) {
+      const on = b.dataset.color === active;
+      b.classList.toggle("active", on);
+      // Expose the selected swatch to assistive tech, not just the visual outline.
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  // Sync the customize panel to the player's current look (called after join and
+  // whenever appearance changes), so the active swatches reflect reality.
+  setAppearance(app = {}) {
+    Object.assign(this.appearance, app);
+    for (const field of ["skin", "hair", "color"]) this._highlightRow(field);
   }
 
   setCount(n) {
