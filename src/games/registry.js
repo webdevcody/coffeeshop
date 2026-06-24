@@ -82,6 +82,24 @@ export const GAMES = {
     },
   },
 
+  reversi: {
+    id: "reversi",
+    name: "Reversi",
+    blurb: "Flip discs to own the board.",
+    icon: "⚫",
+    // Host plays black and moves first; guest plays white.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/reversi/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
   ultimatettt: {
     id: "ultimatettt",
     name: "Ultimate Tic-Tac-Toe",
