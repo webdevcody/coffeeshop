@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>Pong · The Daily Grind</title>
+    <meta name="description" content="Two-player online Pong — sit at a café table and play a friend." />
+    <style>
+      :root {
+        --ink: #eaf2ff;
+        --muted: #9fb2cf;
+        --accent: #e0a23a;
+        --left: #d65a4a;
+        --right: #4a85d6;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #131a30, #070a14 75%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(16px, 3.6vw, 24px); letter-spacing: 1px; }
+      #status { margin-top: 4px; font-size: clamp(13px, 3vw, 16px); color: var(--muted); min-height: 1.2em; }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fd18f; font-weight: 700; }
+      #status.lose { color: #e7796a; font-weight: 700; }
+
+      .scorebar { display: flex; gap: 26px; align-items: center; font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+      .scorebar .s.left { color: var(--left); }
+      .scorebar .s.right { color: var(--right); }
+      .scorebar .lbl { font-size: 12px; color: var(--muted); display: block; text-align: center; font-weight: 600; }
+
+      #court {
+        background: #0a1022;
+        border: 3px solid #2a3656;
+        border-radius: 10px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+        width: min(92vw, 132vh);
+        max-width: 920px;
+        aspect-ratio: 5 / 3;
+        touch-action: none;
+        display: block;
+      }
+      footer { display: flex; gap: 16px; align-items: center; font-size: 13px; color: var(--muted); }
+      button { font: inherit; color: var(--ink); background: #1b2540; border: 1px solid #33436b; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+      button:hover { background: #25325a; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🏓 PONG</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div class="scorebar">
+        <span><span class="s left" id="scoreLeft">0</span><span class="lbl">Host</span></span>
+        <span><span class="s right" id="scoreRight">0</span><span class="lbl">Guest</span></span>
+      </div>
+      <canvas id="court" width="1000" height="600" aria-label="Pong court"></canvas>
+      <footer>
+        <span>You: <strong id="sideLabel">—</strong> · move with ↑/↓, W/S, or drag</span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // ----------------------------------------------------------------------
+      // Real-time Pong. Unlike the turn-based games, a "snapshot per move" model
+      // doesn't fit, so the HOST is authoritative for physics: it simulates the
+      // ball and both paddles and streams state ~50×/s over the PeerJS data
+      // channel. The guest sends only its paddle position and renders the host's
+      // state (extrapolating the ball between packets for smoothness). Spectators
+      // subscribe to the same read-only stream.
+      //   #host=<CODE>     -> host: left paddle, runs the simulation
+      //   #join=<CODE>     -> guest: right paddle, sends input
+      //   #spectate=<CODE> -> read-only onlooker
+      // ----------------------------------------------------------------------
+      const PEER_PREFIX = "coffeeshop-pong-";
+
+      // Field is a normalized 100×60 court; the canvas scales it up.
+      const W = 100, H = 60;
+      const PADDLE_HALF = 6, PADDLE_W = 2;
+      const LEFT_X = 4, RIGHT_X = 96; // inner faces of the paddles
+      const BALL_R = 1.2;
+      const TARGET = 7;
+      const PADDLE_SPEED = 90; // units/sec for keyboard control
+      const BALL_START = 52, BALL_MAX = 130, SPEEDUP = 1.06, MAX_BOUNCE = Math.PI * 0.4;
+      const SCALE = 10; // canvas is 1000×600
+
+      const statusEl = document.getElementById("status");
+      const canvas = document.getElementById("court");
+      const ctx = canvas.getContext("2d");
+      const scoreLeftEl = document.getElementById("scoreLeft");
+      const scoreRightEl = document.getElementById("scoreRight");
+      const sideLabelEl = document.getElementById("sideLabel");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ---- Roles / connection ----------------------------------------------
+      let role = null; // "host" | "guest" | "spectator"
+      let conn = null;
+      const spectators = [];
+
+      // ---- Authoritative game state (host owns this) -----------------------
+      let ball = { x: W / 2, y: H / 2, vx: 0, vy: 0 };
+      let lp = H / 2, rp = H / 2; // left / right paddle centers
+      let sl = 0, sr = 0; // scores
+      let phase = "lobby"; // lobby | play | over
+      let winner = null; // "left" | "right"
+      let serveTimer = 0;
+
+      // My own paddle position (host=left, guest=right), driven by local input.
+      let myPaddleY = H / 2;
+      let guestY = H / 2; // host-side: latest paddle position reported by the guest
+
+      // Guest/spectator view: latest authoritative snapshot + extrapolated ball.
+      let net = null;
+      let view = { x: W / 2, y: H / 2 };
+      let lastStateAt = 0;
+
+      const clampPaddle = (y) => Math.max(PADDLE_HALF, Math.min(H - PADDLE_HALF, y));
+
+      // ---- Physics (host only) ---------------------------------------------
+      function serve(dir) {
+        ball.x = W / 2; ball.y = H / 2;
+        const angle = (Math.random() * 2 - 1) * 0.3;
+        ball.vx = (dir === "left" ? -1 : 1) * BALL_START * Math.cos(angle);
+        ball.vy = BALL_START * Math.sin(angle);
+        serveTimer = 0.7;
+      }
+
+      function deflect(paddleY, dir) {
+        const rel = Math.max(-1, Math.min(1, (ball.y - paddleY) / PADDLE_HALF));
+        const speed = Math.min(BALL_MAX, Math.hypot(ball.vx, ball.vy) * SPEEDUP);
+        const angle = rel * MAX_BOUNCE;
+        ball.vx = dir * speed * Math.cos(angle);
+        ball.vy = speed * Math.sin(angle);
+      }
+
+      function physics(dt) {
+        if (serveTimer > 0) { serveTimer -= dt; return; }
+        const prevX = ball.x;
+        ball.x += ball.vx * dt; ball.y += ball.vy * dt;
+        if (ball.y < BALL_R) { ball.y = BALL_R; ball.vy = Math.abs(ball.vy); }
+        if (ball.y > H - BALL_R) { ball.y = H - BALL_R; ball.vy = -Math.abs(ball.vy); }
+        // Swept paddle test: deflect when the ball's leading edge *crosses* the
+        // paddle plane between last frame and this one, rather than landing
+        // inside a fixed window. A near-max ball travels BALL_MAX * maxDt =
+        // 130 * 0.05 = 6.5 units in one long frame — more than any fixed band —
+        // so a window test lets it tunnel through and score. Crossing detection
+        // can't be outrun.
+        if (ball.vx < 0 && prevX - BALL_R > LEFT_X && ball.x - BALL_R <= LEFT_X) {
+          if (Math.abs(ball.y - lp) <= PADDLE_HALF + BALL_R) { ball.x = LEFT_X + BALL_R; deflect(lp, 1); }
+        }
+        if (ball.vx > 0 && prevX + BALL_R < RIGHT_X && ball.x + BALL_R >= RIGHT_X) {
+          if (Math.abs(ball.y - rp) <= PADDLE_HALF + BALL_R) { ball.x = RIGHT_X - BALL_R; deflect(rp, -1); }
+        }
+        if (ball.x < 0) score("right");
+        else if (ball.x > W) score("left");
+      }
+
+      function score(side) {
+        if (side === "right") sr++; else sl++;
+        if (sl >= TARGET || sr >= TARGET) {
+          phase = "over";
+          winner = sl > sr ? "left" : "right";
+          updateScores();
+          showOver();
+          broadcastState();
+          return;
+        }
+        updateScores();
+        serve(side === "right" ? "left" : "right"); // serve toward whoever was just scored on
+      }
+
+      // ---- Input -----------------------------------------------------------
+      const keys = { up: false, down: false };
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") { keys.up = true; e.preventDefault(); }
+        else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") { keys.down = true; e.preventDefault(); }
+      });
+      window.addEventListener("keyup", (e) => {
+        if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") keys.up = false;
+        else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") keys.down = false;
+      });
+      let dragging = false;
+      function pointerY(e) {
+        const rect = canvas.getBoundingClientRect();
+        return clampPaddle(((e.clientY - rect.top) / rect.height) * H);
+      }
+      canvas.addEventListener("pointerdown", (e) => { if (role === "spectator") return; dragging = true; myPaddleY = pointerY(e); canvas.setPointerCapture(e.pointerId); });
+      canvas.addEventListener("pointermove", (e) => { if (dragging) myPaddleY = pointerY(e); });
+      canvas.addEventListener("pointerup", () => { dragging = false; });
+      canvas.addEventListener("pointercancel", () => { dragging = false; });
+
+      function applyKeyInput(dt) {
+        if (keys.up) myPaddleY -= PADDLE_SPEED * dt;
+        if (keys.down) myPaddleY += PADDLE_SPEED * dt;
+        myPaddleY = clampPaddle(myPaddleY);
+      }
+
+      // ---- Main loop -------------------------------------------------------
+      let lastTs = 0, sendAcc = 0;
+      function loop(ts) {
+        const dt = Math.min(0.05, lastTs ? (ts - lastTs) / 1000 : 0);
+        lastTs = ts;
+        if (role === "host") {
+          applyKeyInput(dt);
+          lp = myPaddleY;
+          rp = clampPaddle(guestY);
+          if (phase === "play") physics(dt);
+          sendAcc += dt;
+          if (sendAcc >= 0.02) { sendAcc = 0; broadcastState(); }
+        } else if (role === "guest") {
+          applyKeyInput(dt);
+          sendAcc += dt;
+          if (sendAcc >= 0.03) { sendAcc = 0; send({ type: "input", y: myPaddleY }); }
+          extrapolate(dt);
+          if (net && net.phase === "play" && ts - lastStateAt > 1500) setStatus("Resyncing…", "");
+        } else if (role === "spectator") {
+          extrapolate(dt);
+        }
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function extrapolate(dt) {
+        if (!net) return;
+        if (net.phase === "play") { view.x += net.bvx * dt; view.y += net.bvy * dt; }
+        view.x = Math.max(-3, Math.min(W + 3, view.x));
+        view.y = Math.max(0, Math.min(H, view.y));
+      }
+
+      // ---- Rendering -------------------------------------------------------
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // center net
+        ctx.strokeStyle = "rgba(120, 150, 210, 0.35)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 14]);
+        ctx.beginPath();
+        ctx.moveTo(W / 2 * SCALE, 0);
+        ctx.lineTo(W / 2 * SCALE, H * SCALE);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Decide what to draw based on role: host draws its own simulation;
+        // guest/spectator draw the host's state (own paddle drawn from local
+        // input on the guest for responsiveness).
+        let bx, by, leftY, rightY;
+        if (role === "host") { bx = ball.x; by = ball.y; leftY = lp; rightY = rp; }
+        else if (net) {
+          bx = view.x; by = view.y;
+          leftY = role === "guest" ? net.lp : net.lp;
+          rightY = role === "guest" ? myPaddleY : net.rp;
+        } else { bx = W / 2; by = H / 2; leftY = lp; rightY = rp; }
+
+        drawPaddle(LEFT_X - PADDLE_W, leftY, "#d65a4a");
+        drawPaddle(RIGHT_X, rightY, "#4a85d6");
+
+        // ball
+        ctx.fillStyle = "#eaf2ff";
+        ctx.beginPath();
+        ctx.arc(bx * SCALE, by * SCALE, BALL_R * SCALE, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      function drawPaddle(x, y, color) {
+        ctx.fillStyle = color;
+        const px = x * SCALE, py = (y - PADDLE_HALF) * SCALE;
+        const pw = PADDLE_W * SCALE, ph = PADDLE_HALF * 2 * SCALE;
+        roundRect(px, py, pw, ph, 4);
+        ctx.fill();
+      }
+      function roundRect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function updateScores() {
+        const a = role === "host" ? sl : net ? net.sl : sl;
+        const b = role === "host" ? sr : net ? net.sr : sr;
+        scoreLeftEl.textContent = a;
+        scoreRightEl.textContent = b;
+      }
+
+      function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+      function showOver() {
+        const w = (role === "host" ? winner : net ? net.winner : winner);
+        if (role === "spectator") setStatus((w === "left" ? "Host" : "Guest") + " wins!", "");
+        else {
+          const mySide = role === "host" ? "left" : "right";
+          const iWon = w === mySide;
+          setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose");
+        }
+        if (role !== "spectator") newGameBtn.classList.remove("hidden");
+      }
+
+      function updatePlayStatus() {
+        if (role === "spectator") { setStatus("👁 Spectating live.", ""); return; }
+        setStatus("Game on — first to " + TARGET + "!", "turn");
+      }
+
+      // ---- New game --------------------------------------------------------
+      function resetGame() {
+        sl = 0; sr = 0; winner = null; phase = "play";
+        newGameBtn.classList.add("hidden");
+        serve(Math.random() < 0.5 ? "left" : "right");
+        updateScores();
+        updatePlayStatus();
+        broadcastState();
+      }
+      newGameBtn.addEventListener("click", () => {
+        if (role === "host") resetGame();
+        else send({ type: "playagain" });
+      });
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) { if (conn && conn.open) conn.send(msg); }
+      function snapshot() {
+        return { type: "state", bx: ball.x, by: ball.y, bvx: ball.vx, bvy: ball.vy, lp, rp, sl, sr, phase, winner };
+      }
+      function broadcastState() {
+        const s = snapshot();
+        if (conn && conn.open) conn.send(s);
+        for (const c of spectators) if (c.open) c.send(s);
+      }
+      function addSpectator(c) {
+        c.on("open", () => { spectators.push(c); c.send(snapshot()); });
+        c.on("data", () => {});
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) { const i = spectators.indexOf(c); if (i >= 0) spectators.splice(i, 1); }
+
+      // Guest/spectator: adopt a host snapshot.
+      function applyState(s) {
+        const fresh = !net;
+        net = s;
+        view.x = s.bx; view.y = s.by; net.bvx = s.bvx; net.bvy = s.bvy;
+        lastStateAt = performance.now();
+        updateScores();
+        if (s.phase === "over") { if (statusEl.className !== "win" && statusEl.className !== "lose") showOver(); }
+        else if (s.phase === "play") {
+          newGameBtn.classList.add("hidden");
+          if (fresh || statusEl.textContent === "" || statusEl.textContent.startsWith("Connecting") || statusEl.textContent.startsWith("Resyncing") || statusEl.textContent.startsWith("👁 Waiting")) updatePlayStatus();
+        }
+      }
+
+      function startMatch() {
+        sideLabelEl.textContent = role === "host" ? "Host (left)" : "Guest (right)";
+        resetGame();
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        if (role === "host") {
+          if (msg.type === "hello") { if (phase === "lobby") startMatch(); }
+          else if (msg.type === "input" && typeof msg.y === "number") guestY = msg.y;
+          else if (msg.type === "playagain") resetGame();
+        } else {
+          if (msg.type === "state") applyState(msg);
+        }
+      }
+
+      function wireGuestConn(c) {
+        conn = c;
+        conn.on("open", () => { if (phase === "lobby") startMatch(); });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+      function wireHostConn(c) {
+        conn = c;
+        sideLabelEl.textContent = "Guest (right)";
+        conn.on("open", () => send({ type: "hello" }));
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() { if (phase === "over") return; phase = "over"; setStatus("The match ended.", ""); }
+
+      function parseHash() {
+        const hs = (location.hash || "").replace(/^#/, "");
+        if (hs.startsWith("host=")) return { role: "host", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("join=")) return { role: "guest", code: hs.slice(5).toUpperCase() };
+        if (hs.startsWith("spectate=")) return { role: "spectator", code: hs.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        requestAnimationFrame(loop);
+        if (typeof Peer === "undefined") { setStatus("Failed to load networking library.", "lose"); return; }
+        const info = parseHash();
+        if (!info) { setStatus("Open this game from a café table to start a match.", ""); return; }
+
+        if (info.role === "host") {
+          role = "host";
+          sideLabelEl.textContent = "Host (left)";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+          peer.on("connection", (c) => {
+            if (c.metadata && c.metadata.spectator) { addSpectator(c); return; }
+            if (conn && conn.open) { c.close(); return; }
+            wireGuestConn(c);
+          });
+        } else if (info.role === "spectator") {
+          role = "spectator";
+          sideLabelEl.textContent = "Spectator";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          role = "guest";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireHostConn(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>

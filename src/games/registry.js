@@ -64,6 +64,133 @@ export const GAMES = {
     },
   },
 
+  chess: {
+    id: "chess",
+    name: "Chess",
+    blurb: "Checkmate the king.",
+    icon: "♟",
+    // Host plays white and moves first; guest plays black.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other board games (#host=<CODE> / #join=<CODE>),
+    // plus a read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/chess/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
+  reversi: {
+    id: "reversi",
+    name: "Reversi",
+    blurb: "Flip discs to own the board.",
+    icon: "⚫",
+    // Host plays black and moves first; guest plays white.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/reversi/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
+  ultimatettt: {
+    id: "ultimatettt",
+    name: "Ultimate Tic-Tac-Toe",
+    blurb: "Tic-tac-toe inside tic-tac-toe.",
+    icon: "#",
+    // Host plays X and moves first; guest plays O.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other board games (#host=<CODE> / #join=<CODE>),
+    // plus a read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/ultimatettt/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
+  gomoku: {
+    id: "gomoku",
+    name: "Gomoku",
+    blurb: "Get five stones in a row.",
+    icon: "⚫",
+    // Host plays black and moves first; guest plays white.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/gomoku/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
+  dotsandboxes: {
+    id: "dotsandboxes",
+    name: "Dots and Boxes",
+    blurb: "Close boxes to claim them.",
+    icon: "▦",
+    // Host plays red and moves first; guest plays blue.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other board games (#host=<CODE> / #join=<CODE>),
+    // plus a read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/dotsandboxes/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+  mancala: {
+    id: "mancala",
+    name: "Mancala",
+    blurb: "Sow seeds, fill your store.",
+    icon: "🫘",
+    // Host owns the bottom row + right store and moves first; guest owns the top
+    // row + left store.
+    capacity: 2,
+    // Extra people who sit at a full table can watch the match (#spectate=<CODE>):
+    // the host streams a read-only board snapshot to each onlooker.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/mancala/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
+  pong: {
+    id: "pong",
+    name: "Pong",
+    blurb: "Real-time paddle duel.",
+    icon: "🏓",
+    // Host is the left paddle and runs the authoritative physics; guest is the
+    // right paddle and sends input. First to 7 wins.
+    capacity: 2,
+    // The host already broadcasts authoritative state, so onlookers can
+    // subscribe to the same read-only stream (#spectate=<CODE>).
+    spectatable: true,
+    // Same room contract as the other games for pairing (#host / #join), plus a
+    // read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/pong/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
   tron: {
     id: "tron",
     name: "Light Cycles",
@@ -81,6 +208,7 @@ export const GAMES = {
       return `/games/tron/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
 };
 
 export function getGame(id) {
