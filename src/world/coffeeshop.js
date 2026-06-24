@@ -234,11 +234,15 @@ export function buildCoffeeshop(scene) {
     table.position.set(x, 0, z);
     group.add(table);
     addBox(colliders, x, z, 1.0, 1.0); // table footprint
-    // four chairs around it — each seat remembers which table (and therefore
-    // which game room) it belongs to. The game itself is chosen from a menu by
-    // whoever sits first, so seats only flag that they belong to a game table.
-    const offsets = [[0, 0.85, 0], [0, -0.85, Math.PI], [0.85, 0, -Math.PI / 2], [-0.85, 0, Math.PI / 2]];
-    for (const [ox, oz, ry] of offsets) {
+    // Four chairs around it — one per side — each facing INWARD toward the
+    // table so seated players look at the board. A chair faces +Z at yaw 0
+    // (backrest at -Z) and facing(yaw) = (sin yaw, cos yaw), so to look from a
+    // chair's offset back toward the center the yaw is atan2(-ox, -oz). Deriving
+    // it from the offset keeps every chair inward by construction. Each seat
+    // remembers which table (and therefore which game room) it belongs to.
+    const offsets = [[0, 0.85], [0, -0.85], [0.85, 0], [-0.85, 0]];
+    for (const [ox, oz] of offsets) {
+      const ry = Math.atan2(-ox, -oz); // face the table center
       const chair = makeChair();
       chair.position.set(x + ox, 0, z + oz);
       chair.rotation.y = ry;
