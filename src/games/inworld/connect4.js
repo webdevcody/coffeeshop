@@ -257,18 +257,39 @@ export function createGame(ctx) {
   group.name = "connect4";
 
   // -- solid faceplate slab with recessed sockets ----------------------------
-  // The cabinet stands UPRIGHT with its readable face toward local +Z. The
-  // framework rotates the whole `group` by orientFor(seatRy) so a flat board's
-  // near edge meets the viewer — but for a VERTICAL board that would turn the
-  // faceplate AWAY from a viewer seated opposite (ry=PI → group rotated 180°,
-  // showing them the dark back plate). So we counter-rotate slabRoot by
-  // -orientFor(seatRy): the framework's group rotation and this cancel, leaving
-  // the faceplate facing the local seat from every chair. hitToCell resolves in
-  // slabRoot-local space (below) so the column mapping follows the compensation.
+  // The cabinet stands UPRIGHT with its readable face toward local +Z. A flat
+  // board lets the framework rotate the whole `group` by orientFor(seatRy) so its
+  // near edge meets the viewer — but a vertical cabinet must turn its FACEPLATE
+  // toward the local seat instead. We declare orientPolicy:"self" (see the return
+  // object) so the framework does NOT rotate the group, and we rotate slabRoot by
+  // +orientFor(seatRy) ourselves: the faceplate (+Z) then faces the local seat
+  // from every chair — the opposite-seated player sees the readable face, not the
+  // dark back plate. Each client renders with its OWN seatRy, so both players get
+  // a readable board with naturally mirrored columns. hitToCell resolves in
+  // slabRoot-local space (below) so the visible column the user clicks maps to the
+  // same canonical column on every seat.
+  //
+  // (Previously this counter-rotated by -orientFor to cancel a framework rotation
+  // that no longer happens for orientPolicy:"self"; -orientFor froze the faceplate
+  // to canonical +Z and showed the back to the opposite seat — the bug we fix.)
   const slabRoot = new THREE.Group();
   group.add(slabRoot);
   function applyFacing() {
-    slabRoot.rotation.y = -orientFor(seatRy);
+    // The readable faceplate is the +Z face of slabRoot (slab, sockets, bezels and
+    // discs all author toward +Z). For a seated player to READ that face, its
+    // normal must point OUT of the table toward their chair. orientFor(seatRy)
+    // alone rotates +Z to point AWAY from the seat at every chair (the cabinet's
+    // dark back plate faces the reader). The extra +Math.PI flips the cabinet so
+    // the +Z faceplate points toward the local seat from all four chairs
+    // (faceNormal · seatDir = +1). Flat boards do NOT need this Pi because their
+    // canonical near edge is the OPPOSITE (-Z) face; the upright cabinet's readable
+    // surface is +Z, so it genuinely needs the half-turn.
+    //
+    // hitToCell resolves via slabRoot.worldToLocal, so it self-corrects for this
+    // rotation — column mapping and the natural left/right mirror between opposing
+    // seats stay correct. The win-lift (+local Z), rim and ghost all ride slabRoot,
+    // so they follow the same single fix.
+    slabRoot.rotation.y = orientFor(seatRy) + Math.PI;
   }
   applyFacing();
 
@@ -319,6 +340,37 @@ export function createGame(ctx) {
   lampRed.position.set(-SLAB_W / 2 - CELL * 0.18, lampY, 0.02);
   lampYellow.position.set(SLAB_W / 2 + CELL * 0.18, lampY, 0.02);
   slabRoot.add(lampRed, lampYellow);
+
+  // -- "YOU" identity marker --------------------------------------------------
+  // A persistent at-a-glance cue of WHICH side the LOCAL player is, independent
+  // of whose turn it is. A bright cyan halo rings the local player's own lamp
+  // (host → the red lamp, guest → the yellow lamp). Spectators have no side, so
+  // it stays hidden. Because host and guest derive `myColor` from their OWN role
+  // (never from the wire), host sees the ring on red and guest sees it on yellow —
+  // opposite, consistent identities. It rides slabRoot so it follows the facing
+  // compensation and reads from either chair.
+  const youRingGeo = keep(new THREE.TorusGeometry(CELL * 0.24, CELL * 0.04, 10, 24));
+  const matYouRing = keep(
+    new THREE.MeshStandardMaterial({ color: "#7fd1ff", roughness: 0.4, metalness: 0.0, emissive: "#7fd1ff", emissiveIntensity: 1.0 })
+  );
+  const youRing = mesh(youRingGeo, matYouRing, false);
+  youRing.visible = false;
+  slabRoot.add(youRing);
+  // Point the local player at their own lamp. Hidden for spectators.
+  function refreshYouMarker() {
+    if (myColor === "red") {
+      youRing.position.copy(lampRed.position);
+      youRing.position.z += 0.005;
+      youRing.visible = true;
+    } else if (myColor === "yellow") {
+      youRing.position.copy(lampYellow.position);
+      youRing.position.z += 0.005;
+      youRing.visible = true;
+    } else {
+      youRing.visible = false;
+    }
+  }
+  refreshYouMarker();
 
   // ============================================================================
   // DYNAMIC LAYERS
@@ -859,6 +911,7 @@ export function createGame(ctx) {
   function setRole(nextRole) {
     role = nextRole || "spectator";
     myColor = colorForRole(role);
+    refreshYouMarker();
     if (!canPlayLocally()) clearHover();
   }
 
@@ -898,6 +951,11 @@ export function createGame(ctx) {
 
   return {
     group,
+    // Upright cabinet: we orient the faceplate toward the local seat OURSELVES
+    // (applyFacing → slabRoot.rotation.y = orientFor(seatRy)). Tell the framework
+    // NOT to also rotate the group, or the two rotations fight and the cabinet's
+    // back faces the opposite-seated player.
+    orientPolicy: "self",
     applyState,
     applyMove,
     onPointer,

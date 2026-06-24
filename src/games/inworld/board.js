@@ -66,6 +66,101 @@ export class InWorldBoard {
     return this.active != null;
   }
 
+  // Seated board-view camera hook.
+  //
+  // Returns a small descriptor the frame loop (main.js) uses to ease the camera
+  // into a comfortable over-the-table framing whenever the LOCAL player is
+  // actively seated at THIS mount (host or guest physically on a chair at the
+  // table). Spectators — and any state where the local player isn't on the
+  // table's seat — return { active:false } so the normal follow-cam stays.
+  //
+  // Shape: {
+  //   active : boolean,            // local player seated here AND a board/menu mounted
+  //   center : { x, y, z },        // board centre in WORLD space (table XZ, surface Y)
+  //   seatRy : number|null,        // local seat ry; orients near edge to screen bottom
+  //   tableId: string,
+  // }
+  //
+  // The flip-book menu (built next) reuses the exact same hook: while the menu
+  // is the active mount for a seated host/guest, getSeatedView() already reports
+  // active:true with the table centre, so the camera frames the menu too — no
+  // extra wiring needed. A menu-only mount can call this by parenting its group
+  // to the table like a board, or main.js can synthesize the same descriptor
+  // from the seat + table directly (see notesForFixers).
+  getSeatedView() {
+    const a = this.active;
+    if (!a || !a.table) return { active: false };
+    if (!this._isLocalSeatedHere(a)) return { active: false };
+    const p = a.table.position; // table group world position (table is parented to world)
+    return {
+      active: true,
+      center: { x: p.x, y: TABLE_SURFACE_Y, z: p.z },
+      seatRy: a.seatRy,
+      tableId: a.tableId,
+    };
+  }
+
+  // True only when the local player is physically seated on a chair belonging to
+  // this mount's table AND holds a playing role (host/guest). Spectators never
+  // qualify — they orbit from wherever they stand.
+  _isLocalSeatedHere(a) {
+    if (!a || a.role === "spectator") return false;
+    const local = this.getLocal();
+    return !!(local && local.sitting && local.seat && local.seat.table === a.tableId);
+  }
+
+  // Orientation policy. A FLAT board (default) is rotated by orientFor(seatRy) so
+  // its canonical near edge meets the local viewer. An UPRIGHT cabinet (connect4)
+  // is ALSO rotated by orientFor(seatRy) — that turns the whole standing cabinet
+  // so its readable faceplate faces the LOCAL seat from whichever chair (each
+  // client renders with its own seatRy, so the opposite-seated player sees the
+  // faceplate, not the back). A module that orients ITSELF (does its own per-seat
+  // facing internally via setSeatRy) declares `orientPolicy: "self"` so the host
+  // does NOT also rotate the group and the two don't fight (which is exactly the
+  // bug that showed the cabinet's back to the opposite seat). hitToCell still
+  // resolves through group.worldToLocal, so the column mapping follows whatever
+  // rotation is applied here.
+  _orient(a) {
+    if (!a || !a.group) return;
+    const policy = a.instance && a.instance.orientPolicy;
+    if (policy === "self") return; // module owns its own facing; don't double-rotate
+    a.group.rotation.y = orientFor(a.seatRy);
+  }
+
+  // Tabletop local-Y for parenting a board to the table group. The board is added
+  // as a CHILD of `table`, so the right anchor is the tabletop's height *within
+  // the table's own local frame* — which makeTable() authors at TABLE_SURFACE_Y
+  // (the top cylinder sits at local y=0.77). The board's local frame IS the
+  // table's frame, so the parent's world position/scale is irrelevant.
+  //
+  // The previous `TABLE_SURFACE_Y - table.position.y` formula leaked the parent's
+  // world position into a CHILD offset; it only happened to work because every
+  // café table is placed at y=0. The instant a table sits under any ancestor
+  // transform (a tilted/raised room group) that subtraction is wrong. Deriving
+  // the surface directly from the tabletop mesh's local Y is transform-robust.
+  _tabletopLocalY(table) {
+    // Prefer the actual tabletop mesh's local Y (top face = mesh.position.y +
+    // half its height), so the anchor tracks the geometry even if it's re-authored.
+    let best = null;
+    try {
+      for (const child of table.children || []) {
+        const g = child.geometry;
+        const p = g && g.parameters;
+        // The round tabletop is the wide, thin cylinder near the top of the post.
+        if (p && p.radiusTop != null && p.height != null && p.radiusTop >= 0.4) {
+          const topY = child.position.y + p.height / 2;
+          if (best == null || topY > best) best = topY;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    if (Number.isFinite(best)) return best;
+    // Fallback: the authored constant (board is a child of the table group, so the
+    // surface's local Y is just TABLE_SURFACE_Y — no parent term).
+    return TABLE_SURFACE_Y;
+  }
+
   // ---- network inbound -----------------------------------------------------
   _wireNetwork() {
     const n = this.network;
@@ -82,8 +177,36 @@ export class InWorldBoard {
   _onMove(m) {
     const a = this.active;
     if (!this._sameTable(m) || !a) return;
+    // Per-seat identity of the mover. 2-player modules can keep reading the 2nd
+    // arg as `byRole`; multi-seat modules (ludo) read the 3rd arg `by` to learn
+    // WHICH seat moved (by.seatIndex) and enforce whose turn it is. by.seatIndex
+    // is the server-stamped m.bySeat. The host is the ONLY role whose seat is
+    // unambiguous without a stamp (host is always seat 0), so we may infer that.
+    //
+    // We must NOT guess a seat for a guest: guests sit at order 1,2,3 and stamping
+    // every guest as seat 1 collapses 3-4 player turn identity (e.g. ludo's yellow
+    // at seat 2 / blue at seat 3 would report seat 1, fail the turn gate, and spin
+    // a resync loop with no way to advance). When m.bySeat is absent for a guest,
+    // leave seatIndex null — multi-seat modules treat null as "cannot verify" and
+    // the server is expected to stamp m.bySeat for relayed guest moves.
+    if (!Number.isInteger(m.bySeat) && m.byRole === "guest") {
+      // A relayed guest move without a server seat stamp cannot be verified by
+      // seat. Log so a non-stamping server is caught rather than silently guessed.
+      try {
+        console.warn("[InWorldBoard] relayed guest move missing m.bySeat; seat identity unverifiable");
+      } catch {
+        /* ignore */
+      }
+    }
+    const by = {
+      role: m.byRole ?? null,
+      seatIndex: Number.isInteger(m.bySeat)
+        ? m.bySeat
+        : (m.byRole === "host" ? 0 : null),
+      id: m.byId ?? null,
+    };
     try {
-      const ok = a.instance.applyMove?.(m.move, m.byRole);
+      const ok = a.instance.applyMove?.(m.move, m.byRole, by);
       if (ok === false) this._requestResync();
     } catch (err) {
       if (err instanceof GameDesync) this._requestResync();
@@ -153,7 +276,13 @@ export class InWorldBoard {
   }
 
   // ---- mount / unmount -----------------------------------------------------
-  // opts: { gameId, tableId, roomId, role, seatRy, seatIndex, seatCount, createGame }
+  // opts: { gameId, tableId, roomId, role, seatRy, seatIndex, seatCount,
+  //         createGame, ctxExtra }
+  //   createGame : optional factory override (skips registry load) — used by the
+  //                in-world flip-book menu, which has no registry entry.
+  //   ctxExtra   : optional plain object merged into the module's ctx. The menu
+  //                receives its picker callbacks here (onPick, games) without
+  //                widening the standard game ctx for every module.
   async mount(opts) {
     this.unmount();
     const table = this.tables?.get(opts.tableId);
@@ -174,7 +303,7 @@ export class InWorldBoard {
 
     const meta = this.getGameMeta(opts.gameId) || {};
     const hidden = !!meta.hiddenInfo;
-    const anchorY = TABLE_SURFACE_Y - table.position.y;
+    const anchorY = this._tabletopLocalY(table);
     const role = opts.role || "spectator";
     const seatRy = role === "spectator" ? null : opts.seatRy ?? null;
 
@@ -194,6 +323,7 @@ export class InWorldBoard {
       lastPub: null,
       hidden,
       anchorY,
+      ctxExtra: opts.ctxExtra || null,
     };
 
     const ctx = this._makeCtx(a);
@@ -208,8 +338,8 @@ export class InWorldBoard {
     a.instance = instance;
     a.group = instance.group;
     instance.group.position.y = anchorY;
-    instance.group.rotation.y = orientFor(seatRy);
     table.add(instance.group);
+    this._orient(a);
 
     this.active = a;
     this._enablePointer(role !== "spectator");
@@ -332,6 +462,10 @@ export class InWorldBoard {
           /* ignore */
         }
       },
+      // Extra non-game context (e.g. the flip-book menu's onPick / games). Merged
+      // last so a mount can inject picker callbacks without changing the shared
+      // game ctx shape. Never set for a normal registry game.
+      ...(a.ctxExtra || {}),
     };
   }
 
@@ -379,13 +513,13 @@ export class InWorldBoard {
     a.role = role;
     if (seatRy !== undefined) a.seatRy = role === "spectator" ? null : seatRy;
     if (seatIndex !== undefined) a.seatIndex = seatIndex;
-    a.group.rotation.y = orientFor(a.seatRy);
     try {
-      a.instance.setRole?.(role);
+      a.instance.setRole?.(role, a.seatIndex);
       a.instance.setSeatRy?.(a.seatRy);
     } catch {
       /* ignore */
     }
+    this._orient(a);
     this._enablePointer(role !== "spectator");
   }
 
@@ -426,9 +560,11 @@ export class InWorldBoard {
     const moved = Math.hypot(ev.clientX - this._downX, ev.clientY - this._downY);
     if (moved > CLICK_SLOP) return; // a drag → leave it to orbit
     if (!this._turnAllowed(a)) return;
-    if (this.handlePointer(ev)) {
-      ev.stopPropagation();
-    }
+    // NOTE: do NOT stopPropagation here. controls.js clears its orbit-drag state
+    // on a window-level pointerup (bubble phase); swallowing the event in this
+    // capture-phase handler left `dragging` stuck true, so after clicking a piece
+    // or menu button the camera spun with every mouse move. Let the up bubble.
+    this.handlePointer(ev);
   }
 
   // Hover routing for modules that expose setHover (e.g. connect4's launcher

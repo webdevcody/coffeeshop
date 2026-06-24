@@ -34,6 +34,8 @@ export function createGame(ctx) {
 
   const owned = [];
   const keep = (x) => (owned.push(x), x);
+
+  const MARK_HEX = { X: "#c4452f", O: "#4a85d6" };
   const M = {
     plank: keep(standard(THREE, "#3a281a", { roughness: 0.8 })),
     frame: keep(standard(THREE, PALETTE.frame, { roughness: 0.7 })),
@@ -106,6 +108,51 @@ export function createGame(ctx) {
     return g;
   }
 
+  // ---- at-a-glance identity + turn label -----------------------------------
+  // A small placard on the LOCAL player's near edge (canonical -Z). The framework
+  // rotates the whole group by orientFor(seatRy), so -Z always faces the seated
+  // viewer — host reads it from one chair, guest from the opposite chair, and each
+  // sees a placard that names THEIR OWN mark (derived from role, never the wire).
+  const labelCv = document.createElement("canvas");
+  labelCv.width = 256;
+  labelCv.height = 64;
+  const labelTex = keep(new THREE.CanvasTexture(labelCv));
+  labelTex.colorSpace = THREE.SRGBColorSpace;
+  const labelMat = keep(new THREE.MeshBasicMaterial({ map: labelTex, transparent: true }));
+  const labelGeo = keep(new THREE.PlaneGeometry(BOARD_SIZE * 0.5, BOARD_SIZE * 0.5 * 0.25));
+  const labelMesh = meshOf(THREE, labelGeo, labelMat, false);
+  labelMesh.rotation.x = -Math.PI / 2;
+  // Lay flat just outside the near (-Z) edge so it doesn't overlap play cells.
+  labelMesh.position.set(0, TOP + 0.004, -BOARD_HALF - 0.045);
+  group.add(labelMesh);
+
+  function refreshLabel() {
+    const g = labelCv.getContext("2d");
+    g.clearRect(0, 0, 256, 64);
+    let text;
+    let color = "#f0e4cf";
+    if (!myMark) {
+      text = "Spectating";
+    } else {
+      const yours = phase === "over"
+        ? (winner === myMark ? "You win" : winner ? "You lose" : "Draw")
+        : (turn === myMark ? "Your turn" : "Opponent's turn");
+      text = `You are ${myMark} — ${yours}`;
+      color = MARK_HEX[myMark];
+    }
+    g.fillStyle = "rgba(28,20,12,0.82)";
+    g.beginPath();
+    const rr = 12;
+    g.moveTo(rr, 0); g.arcTo(256, 0, 256, 64, rr); g.arcTo(256, 64, 0, 64, rr);
+    g.arcTo(0, 64, 0, 0, rr); g.arcTo(0, 0, 256, 0, rr); g.closePath(); g.fill();
+    g.font = "bold 30px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = color;
+    g.fillText(text, 128, 34);
+    labelTex.needsUpdate = true;
+  }
+
   function setMark(B, i, mark) {
     if (marks[B][i]) {
       group.remove(marks[B][i]);
@@ -128,6 +175,7 @@ export function createGame(ctx) {
         plate.material = M.subActive;
       else plate.material = M.sub;
     }
+    refreshLabel();
   }
 
   function performMove(B, i, mark) {
@@ -137,19 +185,31 @@ export function createGame(ctx) {
     if (w && w !== "draw") bigWinner[B] = w;
     else if (w === "draw") bigWinner[B] = "draw";
     const bw = winnerOf(bigWinner.map((x) => (x === "draw" ? null : x)));
-    // End on a real meta-line OR when every sub-board is decided (meta-board full /
-    // tied). Without the draw branch the game softlocks: legal() returns false for
-    // every cell once all bigWinner[B] are set, so no move can ever advance it.
-    if ((bw && bw !== "draw") || bigWinner.every((x) => x)) {
+    // End on a real meta-line winner, OR on a DRAW when no playable cell remains and
+    // nobody has won the meta-board. Without an explicit draw end the game softlocks:
+    // legal() returns false for every cell once the board can no longer be advanced,
+    // so onGameOver would never fire and the turn would deadlock with no legal move.
+    // `noPlayableCell()` is the authoritative "board is full / unplayable" test — it
+    // covers both a literally full meta-board and the case where the only remaining
+    // empty cells sit inside already-decided sub-boards (i.e. forced to no move).
+    if (bw && bw !== "draw") {
       phase = "over";
-      winner = bw === "X" || bw === "O" ? bw : null;
+      winner = bw;
       refreshPlates();
-      try { ctx.onGameOver({ winner, reason: winner ? "line" : "draw" }); } catch { /* */ }
+      try { ctx.onGameOver({ winner, reason: "line" }); } catch { /* */ }
       return;
     }
+    // No meta-line winner: advance forced-board + turn, then re-check for a drawn board.
     // next active board = the cell index just played, unless that sub is decided.
     activeBoard = bigWinner[i] ? null : i;
     turn = other(mark);
+    if (noPlayableCell()) {
+      phase = "over";
+      winner = null;
+      refreshPlates();
+      try { ctx.onGameOver({ winner: null, reason: "draw" }); } catch { /* */ }
+      return;
+    }
     refreshPlates();
   }
 
@@ -157,6 +217,17 @@ export function createGame(ctx) {
     if (phase !== "play") return false;
     if (bigWinner[B] || cells[B][i]) return false;
     if (activeBoard !== null && activeBoard !== B) return false;
+    return true;
+  }
+
+  // True when no legal move exists anywhere on the board (respecting the forced
+  // active sub-board). Used to detect a drawn, fully-blocked board.
+  function noPlayableCell() {
+    for (let B = 0; B < 9; B++) {
+      if (bigWinner[B]) continue;
+      if (activeBoard !== null && activeBoard !== B) continue;
+      for (let i = 0; i < 9; i++) if (!cells[B][i]) return false;
+    }
     return true;
   }
 

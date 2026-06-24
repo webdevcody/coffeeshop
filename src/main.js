@@ -15,6 +15,7 @@ import { ScreenShare } from "./net/screenShare.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
 import { InWorldBoard } from "./games/inworld/board.js";
+import { createGame as createFlipbookMenu } from "./games/inworld/menu.js";
 import { getGame, listGames } from "./games/registry.js";
 import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
@@ -153,45 +154,63 @@ network.on("game-assign", (m) => {
   const label = tableLabel(m.table);
   controls.setLocked(true);
 
-  // Spectators watch a match already in progress (or wait for it to begin).
-  if (m.role === "spectator") {
-    if (!m.gameId) {
-      if (inWorld.open) inWorld.unmount();
-      arcade.showWaiting(label, "Table's full — you'll spectate once the game begins…");
-      return;
-    }
-    const game = getGame(m.gameId);
-    if (!game) return;
-    if (!game.spectatable) {
-      // Game opted out of spectating — free the seat and bow out.
-      hud.toast(`${game.name} is full and can't be spectated.`);
-      local?.standUp();
-      return;
-    }
+  // No game chosen yet: EVERYONE at the table sees the in-world FLIP-BOOK MENU,
+  // each oriented to face their own seat (per-viewer rotation is client-local).
+  // Only the host — the first person to sit — can flip pages and pick; guests and
+  // spectators watch the host browse (the open page is synced over the relay).
+  // Mounting through InWorldBoard means the seated camera frames the book and
+  // clicks route to it the same way they route to a game board.
+  if (!m.gameId) {
     if (arcade.open) arcade.hide();
-    mountInWorld(m, null);
+    mountFlipbookMenu(m);
+    hud.toast(
+      m.role === "host"
+        ? "Flip the menu and tap Play to start a game."
+        : "The host is choosing a game…"
+    );
     return;
   }
 
-  // No game chosen yet: the host picks from the menu, the guest waits.
-  if (!m.gameId) {
-    if (inWorld.open) inWorld.unmount();
-    if (m.role === "host") {
-      arcade.showMenu(label, listGames(), (gameId) => {
+  // A game is locked in.
+  const game = getGame(m.gameId);
+  if (!game) return;
+  if (m.role === "spectator" && !game.spectatable) {
+    // Game opted out of spectating — free the seat and bow out.
+    hud.toast(`${game.name} is full and can't be spectated.`);
+    local?.standUp();
+    return;
+  }
+  if (arcade.open) arcade.hide();
+  mountInWorld(m, m.role === "spectator" ? null : (local.seat?.ry ?? null));
+});
+
+// Mount the in-world FLIP-BOOK MENU (the game picker) on the table. It rides the
+// same InWorldBoard engine path as a real board, so the seated camera frames it
+// and pointer clicks resolve to it. The host's pick relays via network.chooseGame
+// (which triggers a fresh game-assign with a gameId → the menu unmounts and the
+// chosen game mounts in mountInWorld). `gameId:"__menu__"` is not a registry id;
+// passing `createGame` makes mount() skip the registry load.
+function mountFlipbookMenu(m) {
+  const seatRy = local?.seat?.ry ?? null;
+  inWorld.mount({
+    gameId: "__menu__",
+    tableId: m.table,
+    roomId: m.roomId,
+    role: m.role, // "host" → open book, "guest" → closed waiting placard
+    seatRy,
+    seatIndex: m.seatIndex,
+    seatCount: m.seatCount,
+    createGame: createFlipbookMenu,
+    ctxExtra: {
+      games: () => listGames(),
+      onPick: (gameId) => {
+        // Re-check we're still seated at this table before locking a game in.
         if (!local?.sitting || local.seat?.table !== m.table) return;
         network.chooseGame(m.table, gameId, getGame(gameId)?.capacity ?? 2);
-      });
-    } else {
-      arcade.showWaiting(label, "Waiting for the host to pick a game…");
-    }
-    return;
-  }
-
-  // A game is locked in — mount it in-world on the real table.
-  if (!getGame(m.gameId)) return;
-  if (arcade.open) arcade.hide();
-  mountInWorld(m, local.seat?.ry ?? null);
-});
+      },
+    },
+  });
+}
 
 // Mount the in-world board for this game-assign. `seatRy` is null for spectators.
 function mountInWorld(m, seatRy) {
@@ -335,13 +354,39 @@ hud.onToggleDeafen = () => hud.setDeafened(voice.toggleDeafen());
 const clock = new THREE.Clock();
 let previewAngle = 0;
 
+// Tracks the last seated-board-view state so we can flip the controls into (and
+// out of) the clamped orbit mode exactly on the transition. `getSeatedView()`
+// reports active:true whenever the local player is seated at a mounted board OR
+// flip-book menu (the menu reuses the same hook — see api/notesForFixers), so
+// the camera frames the menu too with zero extra wiring here.
+let _seatedCamOn = false;
+function syncSeatedCamera() {
+  const view = inWorld.getSeatedView ? inWorld.getSeatedView() : { active: false };
+  const active = !!(view && view.active);
+  if (active !== _seatedCamOn) {
+    _seatedCamOn = active;
+    // The camera orbits BEHIND the player: the offset baseline is seatRy+PI, so
+    // facing the board centre puts the player's near edge at the screen bottom.
+    // A null seatRy (shouldn't happen for a seated player) falls back to facing.
+    const baseYaw = (Number.isFinite(view.seatRy) ? view.seatRy : (local?.facing ?? 0)) + Math.PI;
+    controls.setSeated?.(active, baseYaw);
+  }
+  return active ? view : null;
+}
+
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   controls.update();
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
 
   if (joined && local) {
-    local.update(dt, camera);
+    const seatedView = syncSeatedCamera();
+    local.update(dt, camera, seatedView);
+    // True first-person while seated at a board: hide your OWN avatar so your body
+    // doesn't fill the screen (only affects your local view; others still see you).
+    if (local.character?.group) {
+      local.character.group.visible = !(seatedView && seatedView.active);
+    }
     hud.setSitPrompt(local.sitPromptText());
     // Open the coffee-bar menu when standing in the order zone; reflect whatever
     // you're holding (and the drop hint) the rest of the time.

@@ -3,7 +3,7 @@
 // guests send {roll} / {move,token} intents. Full-info (full === pub). Token step
 // model: 0 = yard, 1..51 = shared track, 52..57 = home column, 57 = finished.
 
-import { GameDesync } from "./createGame.js";
+import { GameDesync, orientFor } from "./createGame.js";
 import { BOARD_SIZE, BOARD_HALF, PALETTE, meshOf, standard } from "./pieces.js";
 
 const COLORS = ["red", "green", "yellow", "blue"];
@@ -74,6 +74,13 @@ function applyTokenMove(s, color, idx) {
 
 const allHome = (s, color) => s.tokens[color].every((t) => t === 57);
 const curColor = (s) => s.order[s.turn];
+// Seat index of the player whose turn it is. Seats map to colours canonically
+// (seat 0=red, 1=green, 2=yellow, 3=blue) — the same map as `myColor =
+// COLORS[seatIndex]` — so the current player's seat is the colour's index in
+// COLORS. This is the seat the engine's server-stamped `by.seatIndex` is
+// compared against to enforce turn order across the 3–4 indistinguishable
+// guest seats (byRole alone can't tell them apart).
+const curSeat = (s) => COLORS.indexOf(curColor(s));
 
 function nextTurn(s) {
   s.turn = (s.turn + 1) % s.order.length;
@@ -90,8 +97,12 @@ export function createGame(ctx) {
   let role = ctx.role;
   const isHost = role === "host";
   const seatCount = Math.max(2, Math.min(4, ctx.seatCount || 2));
-  const seatIndex = ctx.seatIndex;
-  const myColor = role === "spectator" || seatIndex == null ? null : COLORS[seatIndex];
+  // seatIndex/myColor are MUTABLE: a live re-seat (board.js → setRole) must update
+  // them so LAYOUT_BASE[myColor] (home-quadrant orientation) and the per-seat turn
+  // gate in onPointer both follow the player to their new colour/seat. Captured at
+  // mount, refreshed by setRole(role, idx).
+  let seatIndex = ctx.seatIndex;
+  let myColor = role === "spectator" || seatIndex == null ? null : COLORS[seatIndex];
 
   const order = COLORS.slice(0, seatCount);
   let s = {
@@ -127,19 +138,30 @@ export function createGame(ctx) {
   group.add(frame);
   const TOP = plankH;
 
-  // Per-seat facing: the board layout is authored with red's home quadrant at the
-  // canonical near (-Z) corner. The framework rotates the whole group by
-  // orientFor(seatRy) to put that near edge at the player's physical chair. But
-  // every seat wants THEIR OWN colour's quadrant nearest them, not red's. So we
-  // spin an inner layoutRoot by a colour-derived quarter turn that brings
-  // COLORS[seatIndex]'s quadrant onto red's near corner; the framework rotation
-  // then carries it to the seat. (Token hit-testing is by userData.cell={color,
-  // token}, independent of rotation, so picking still works.) Spectators (no
-  // colour) keep the canonical red-near layout.
+  // Per-seat facing. ludo orients ITSELF (orientPolicy: "self"), so the framework
+  // leaves group.rotation.y at 0 and never fights us. Two stacked rotations:
+  //   1) the OUTER group spins by orientFor(seatRy) — the same quarter-turn the
+  //      framework would apply for a flat board — to carry the canonical near
+  //      (-Z) edge to wherever the local player physically sits.
+  //   2) an INNER layoutRoot spins by a colour-derived quarter turn that brings
+  //      COLORS[seatIndex]'s home quadrant onto the canonical near corner, so the
+  //      local player's OWN colour ends up nearest them, not red's.
+  // Both are re-applied from ctx.seatRy / seatIndex in setSeatRy(ry) so a live
+  // re-seat (without a remount) re-orients correctly. Token hit-testing is by
+  // userData.cell={color,token}, independent of rotation, so picking still works.
+  // Spectators (no colour) keep the canonical red-near layout.
   const LAYOUT_BASE = { red: 0, green: -Math.PI / 2, yellow: Math.PI, blue: Math.PI / 2 };
   const layoutRoot = new THREE.Group();
   layoutRoot.rotation.y = myColor != null ? (LAYOUT_BASE[myColor] || 0) : 0;
   group.add(layoutRoot);
+
+  let seatRy = ctx.seatRy;
+  function applyFacing(ry) {
+    seatRy = ry;
+    group.rotation.y = orientFor(seatRy);
+    layoutRoot.rotation.y = myColor != null ? (LAYOUT_BASE[myColor] || 0) : 0;
+  }
+  applyFacing(seatRy);
 
   // grid coordinate (0..14) → local XZ
   const G = 15;
@@ -263,6 +285,11 @@ export function createGame(ctx) {
   // ---- contract ----
   function onPointer(hit) {
     if (!ctx.isLocalTurnAllowed() || myColor == null) return;
+    // Local-input gate: only the seat whose turn it is may roll/move. Check the
+    // local seat index against the current player's seat so an off-turn seat
+    // can't drive the current player from this client either (belt-and-braces
+    // with the framework's role/over gate above and the colour check below).
+    if (seatIndex !== curSeat(s)) return;
     if (s.phase !== "play" || curColor(s) !== myColor) return;
     // if die not rolled, a click rolls; else pick a legal token
     if (s.die == null) {
@@ -277,20 +304,22 @@ export function createGame(ctx) {
     else { try { ctx.net.sendMove({ type: "move", token: cell.token, color: myColor }); } catch { /* */ } }
   }
 
-  function applyMove(move, byRole) {
+  function applyMove(move, byRole, by) {
     if (role !== "host") return true; // guests render via snapshots
     if (!move) return false;
     if (s.phase !== "play") return true;
-    // The server relay only tags a sender as 'host' or 'guest' — it cannot tell
-    // the 2nd/3rd/4th seat apart (all 'guest'). So we cannot trust byRole alone in
-    // a 3-4 player game. Each intent self-declares its colour; we reject any whose
-    // colour is not the current player's, enforcing turn order per-seat. (A guest
-    // can claim a colour, but only the colour whose turn it actually is can act,
-    // and that colour is whoever is currently to move — so an out-of-turn guest is
-    // ignored.) The host's own colour is always COLORS[0]/order[0]; a host-tagged
-    // move with no colour is honoured only when the host is the current player.
-    const declared = COLORS.includes(move.color) ? move.color : (byRole === "host" ? COLORS[0] : null);
-    if (declared !== curColor(s)) return true; // ignore out-of-turn / wrong seat
+    // Per-seat turn enforcement. The server stamps the mover's seat index as
+    // `by.seatIndex` (host=0, guests 1..N in sit order); board.js passes it as the
+    // 3rd arg. byRole alone CANNOT tell the 2nd/3rd/4th seat apart (all "guest"),
+    // so seat identity is the ONLY trustworthy gate for 3–4 player turn order.
+    // Reject any move from a seat that is not the current player: returning false
+    // makes the framework call _requestResync, so the host re-pushes its
+    // authoritative snapshot and the off-turn sender re-converges. We ignore the
+    // self-declared move.color entirely (it's spoofable and redundant now).
+    const moverSeat = by && Number.isInteger(by.seatIndex)
+      ? by.seatIndex
+      : (byRole === "host" ? 0 : null); // older server fallback (host only)
+    if (moverSeat !== curSeat(s)) return false; // off-turn / wrong seat → resync
     if (move.type === "roll") {
       hostRoll();
       return true;
@@ -324,8 +353,22 @@ export function createGame(ctx) {
   }
 
   function update() { /* dice animation handled by render; host drives via intents */ }
-  function setRole(r) { role = r || "spectator"; }
-  function setSeatRy() {}
+  // Live re-seat. board.js passes the new seat index as the 2nd arg so we can
+  // refresh BOTH the home-quadrant orientation (LAYOUT_BASE[myColor]) and the
+  // per-seat turn gate (seatIndex vs curSeat) — without this, a re-seated player
+  // keeps the stale colour: the wrong quadrant faces them AND they can't take
+  // their legitimate turn. applyFacing() re-applies LAYOUT_BASE[myColor], and
+  // render() refreshes the legal-move highlights for the new colour.
+  function setRole(r, idx) {
+    role = r || "spectator";
+    if (idx !== undefined) seatIndex = idx;
+    myColor = role === "spectator" || seatIndex == null ? null : COLORS[seatIndex];
+    applyFacing(seatRy);
+    render();
+  }
+  // Live re-orient on a re-seat (board.js calls this after setRole with the new
+  // seat ry). Re-derive both rotations from ctx.seatRy/seatIndex via applyFacing.
+  function setSeatRy(ry) { applyFacing(ry); }
   function dispose() {
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
@@ -333,7 +376,9 @@ export function createGame(ctx) {
 
   render();
   if (isHost) pushState();
-  return { group, applyState, applyMove, onPointer, publicState, update, setRole, setSeatRy, dispose };
+  // orientPolicy:"self" — ludo rotates its OWN group (applyFacing/setSeatRy); the
+  // framework must NOT also rotate it, or the two quarter-turns fight.
+  return { group, applyState, applyMove, onPointer, publicState, update, setRole, setSeatRy, dispose, orientPolicy: "self" };
 }
 
 export default createGame;

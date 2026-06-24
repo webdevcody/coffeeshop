@@ -1,0 +1,23 @@
+Chess 3D Models - Credits & Attribution
+========================================
+
+Author:  Jarlan Perez
+License: Creative Commons Attribution (CC BY 3.0)
+         https://creativecommons.org/licenses/by/3.0/
+Source:  Poly Pizza (https://poly.pizza)
+
+ATTRIBUTION (required by CC BY 3.0 - display in game credits):
+  "Chess Set" and individual chess pieces by Jarlan Perez,
+  licensed under CC BY 3.0, via Poly Pizza (https://poly.pizza).
+
+Files and their source model pages:
+  chess-set.glb  - "Chess Set"   https://poly.pizza/m/00f9MZIwA1V
+  king.glb       - "Chess King"   https://poly.pizza/m/4TP6oa34Fp-
+  queen.glb      - "Chess Queen"  https://poly.pizza/m/0EE-Yj8eu2c
+  rook.glb       - "Chess Rook"   https://poly.pizza/m/417Xec_xlU0
+  bishop.glb     - "Chess Bishop" https://poly.pizza/m/7xay8UYqePI
+  knight.glb     - "Chess Knight" https://poly.pizza/m/fMIykP6ncx7
+  pawn.glb       - "Chess Pawn"   https://poly.pizza/m/0xRVhzfseb3
+
+Downloaded: 2026-06-24
+All files validated as binary glTF (GLB magic bytes "glTF").

@@ -72,6 +72,18 @@ export function createGame(ctx) {
     blue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5 })),
     boxRed: keep(standard(THREE, "#e08a7e", { roughness: 0.6, transparent: true, opacity: 0.7 })),
     boxBlue: keep(standard(THREE, "#8ab0e0", { roughness: 0.6, transparent: true, opacity: 0.7 })),
+    // Legal-move hints: an open edge gently glows in the LOCAL player's colour
+    // while it's their turn, so it's obvious which moves are theirs to make.
+    legalRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.5, emissive: PALETTE.pongLeft, emissiveIntensity: 0.0, transparent: true, opacity: 0.45, depthWrite: false })),
+    legalBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5, emissive: PALETTE.pongRight, emissiveIntensity: 0.0, transparent: true, opacity: 0.45, depthWrite: false })),
+    // Persistent identity cue: a home-edge bar in each side's colour. The local
+    // player's own bar glows steadily ("this near side is me"); the framework
+    // rotation puts it directly in front of whichever seat they're in.
+    homeRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.5, metalness: 0.1, emissive: PALETTE.pongLeft, emissiveIntensity: 0.0 })),
+    homeBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.5, metalness: 0.1, emissive: PALETTE.pongRight, emissiveIntensity: 0.0 })),
+    // Turn lamp: only the side-to-move's lamp glows (brighter if it's MY turn).
+    lampRed: keep(standard(THREE, PALETTE.pongLeft, { roughness: 0.35, metalness: 0.2, emissive: "#ff9a86", emissiveIntensity: 0.0 })),
+    lampBlue: keep(standard(THREE, PALETTE.pongRight, { roughness: 0.35, metalness: 0.2, emissive: "#9ec2ff", emissiveIntensity: 0.0 })),
   };
 
   const plankH = 0.022;
@@ -133,9 +145,98 @@ export function createGame(ctx) {
   const boxGeo = keep(new THREE.BoxGeometry(gap * 0.8, 0.004, gap * 0.8));
   const boxMeshes = Array.from({ length: BOXN }, () => Array(BOXN).fill(null));
 
+  // ---- Persistent identity / turn cues (built once, in the canonical frame) ---
+  // A home-edge bar per side + a turn lamp beside it. Authored canonically: red
+  // home on the +Z edge, blue home on -Z. The framework rotates the whole group
+  // by orientFor(seatRy), so each client sees their OWN home bar nearest them and
+  // the opponent's across the table — host and guest see opposite, consistent
+  // identities. Driven purely from local myColor/turn, never from the wire.
+  const cue = { red: { bar: null, lamp: null }, blue: { bar: null, lamp: null } };
+  {
+    const barGeo = keep(new THREE.BoxGeometry(span * 0.8, plankH * 0.5, gap * 0.12));
+    const lampGeo = keep(new THREE.SphereGeometry(gap * 0.1, 16, 12));
+    const edgeZ = span / 2 + gap * 0.32; // just outside the dot grid
+    const barY = TOP + plankH * 0.3;
+    const sides = [
+      { color: "red", z: edgeZ, barMat: M.homeRed, lampMat: M.lampRed },
+      { color: "blue", z: -edgeZ, barMat: M.homeBlue, lampMat: M.lampBlue },
+    ];
+    for (const s of sides) {
+      const bar = meshOf(THREE, barGeo, s.barMat, false);
+      bar.position.set(0, barY, s.z);
+      group.add(bar);
+      const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
+      lamp.position.set(span * 0.46, barY + gap * 0.05, s.z);
+      group.add(lamp);
+      cue[s.color].bar = bar;
+      cue[s.color].lamp = lamp;
+    }
+  }
+
+  // Open edges that the LOCAL player may legally take this turn, so the glow pulse
+  // only touches their own legal moves.
+  const legalBars = [];
+  function refreshLegal() {
+    legalBars.length = 0;
+    // Shared legal-hint materials are pulsed in update(); reset to matte so a
+    // stale glow can't linger once it's no longer the local player's turn.
+    M.legalRed.emissiveIntensity = 0;
+    M.legalBlue.emissiveIntensity = 0;
+    const allowed = typeof ctx.isLocalTurnAllowed === "function" ? ctx.isLocalTurnAllowed() : true;
+    const myTurn = phase === "play" && myColor != null && turn === myColor && allowed;
+    const legalMat = myColor === "red" ? M.legalRed : myColor === "blue" ? M.legalBlue : null;
+    for (const o of ["h", "v"]) {
+      for (const key of Object.keys(edgeBars[o])) {
+        const [r, c] = key.split(",").map(Number);
+        const bar = edgeBars[o][key];
+        const taken = o === "h" ? st.h[r][c] : st.v[r][c];
+        if (taken) continue;          // claimed edges keep their owner colour
+        if (myTurn && legalMat) {
+          bar.material = legalMat;     // hint open edge in my colour
+          legalBars.push(bar);
+        } else {
+          bar.material = M.edgeOpen;   // neutral when not my turn / spectator
+        }
+      }
+    }
+  }
+
+  // Drive the identity/turn cue emissives. Called on every state/turn/role/seat
+  // change. Reads ONLY local myColor/turn, never the wire, so a relayed snapshot
+  // can't flip which side is "me".
+  function updateIdentityCues() {
+    for (const color of ["red", "blue"]) {
+      const c = cue[color];
+      if (!c.bar || !c.lamp) continue;
+      const isMine = myColor != null && color === myColor;
+      const isTurn = phase === "play" && turn === color;
+      c.bar.material.emissiveIntensity = isMine ? 0.55 : 0.0;
+      c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
+    }
+  }
+
+  // Per-frame pulse so the "your turn" cue reads as alive: lamps + legal-edge
+  // hints breathe while it's the local player's turn.
+  let pulseT = 0;
+  function update(dt) {
+    pulseT += dt || 0.016;
+    const wave = 0.5 + 0.5 * Math.sin(pulseT * 4.0);
+    const myTurn = phase === "play" && myColor != null && turn === myColor;
+    const lamp = myColor ? cue[myColor].lamp : null;
+    if (lamp && myTurn) lamp.material.emissiveIntensity = 0.6 + 0.5 * wave;
+    const glow = myTurn ? 0.25 + 0.35 * wave : 0.0;
+    for (const bar of legalBars) bar.material.emissiveIntensity = glow;
+  }
+
   function setEdge(o, r, c, player) {
     const bar = edgeBars[o][`${r},${c}`];
     if (bar) bar.material = player === "red" ? M.red : player === "blue" ? M.blue : M.edgeOpen;
+  }
+  // Re-derive every per-turn cue from local state (legal-edge hints + home/lamp
+  // emissives). Cheap; called after any move/state/role/seat change.
+  function refreshCues() {
+    refreshLegal();
+    updateIdentityCues();
   }
   function setBox(r, c, player) {
     if (boxMeshes[r][c]) { group.remove(boxMeshes[r][c]); boxMeshes[r][c] = null; }
@@ -155,9 +256,11 @@ export function createGame(ctx) {
       const t = tally(st);
       winner = t.red === t.blue ? null : t.red > t.blue ? "red" : "blue";
       try { ctx.onGameOver({ winner, reason: "filled" }); } catch { /* */ }
+      refreshCues();
       return;
     }
     if (completed.length === 0) turn = other(player); // box claim → same player again
+    refreshCues();
   }
 
   function onPointer(hit) {
@@ -196,6 +299,7 @@ export function createGame(ctx) {
     for (let r = 0; r < DOTS; r++) for (let c = 0; c < BOXN; c++) setEdge("h", r, c, st.h[r][c]);
     for (let r = 0; r < BOXN; r++) for (let c = 0; c < DOTS; c++) setEdge("v", r, c, st.v[r][c]);
     for (let r = 0; r < BOXN; r++) for (let c = 0; c < BOXN; c++) setBox(r, c, st.boxes[r][c]);
+    refreshCues();
   }
 
   function applyState(state) {
@@ -227,16 +331,20 @@ export function createGame(ctx) {
 
   function setRole(r) {
     role = r || "spectator";
+    // Side derived from ROLE (canonical 2-player convention), never from the wire.
     myColor = role === "host" ? "red" : role === "guest" ? "blue" : null;
+    refreshCues();
   }
-  function setSeatRy() {}
+  // Flat board: the framework rotates the group by orientFor(seatRy), so the local
+  // home edge faces the seat automatically. We only refresh cues on a seat change.
+  function setSeatRy() { refreshCues(); }
   function dispose() {
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
   }
 
   paint();
-  return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, dispose };
+  return { group, applyState, applyMove, onPointer, publicState, update, setRole, setSeatRy, dispose };
 }
 
 export default createGame;

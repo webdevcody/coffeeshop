@@ -4,6 +4,7 @@
 // discrete cells render as-is. Best-of-5, WIN_SCORE=3.
 
 import { BOARD_SIZE, PALETTE, meshOf, standard } from "./pieces.js";
+import { orientFor } from "./createGame.js";
 
 const COLS = 40, ROWS = 26;
 const TICK_MS = 85;
@@ -33,6 +34,23 @@ export function createGame(ctx) {
   let role = ctx.role;
   const isHost = role === "host";
 
+  // Per-viewer seat facing. board.js rotates THIS module's group by
+  // orientFor(seatRy) (default FLAT policy — no orientPolicy declared) so the
+  // arena turns to face whoever is looking; we keep seatRy only so an in-place
+  // re-seat (setSeatRy) can re-derive the identity-cue placement. The arena is
+  // authored in the canonical frame; the framework handles the rotation.
+  let seatRy = ctx.seatRy;
+
+  // COLOR/SIDE DERIVATION (canonical convention §2). A 2-player game derives its
+  // own side from ROLE, never from a relayed snapshot: host = cycle 0 (the
+  // "moves-first"/COLOR_A side, tron0 cyan), guest = cycle 1 (COLOR_B, tron1
+  // orange), spectator = null (read-only). Computed ONCE here and NEVER
+  // recomputed inside applyState(), so a synced snapshot can't flip the local
+  // player to the wrong colour — host always knows "I am cyan", guest "I am
+  // orange", consistent and opposite across clients.
+  const mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
+  const myColorIdx = mySeat; // 0 = cyan (tron0), 1 = orange (tron1), null = spectator
+
   let grid = makeArena();
   let cycles = spawnCycles();
   let scores = [0, 0];
@@ -48,11 +66,13 @@ export function createGame(ctx) {
   let gapAcc = 0;
   const pendingTurn = [null, null];
 
-  const mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
-
-  // input
+  // input — gated to a SEATED, non-spectator local player only (§4). It's a
+  // real-time game so there's no turn alternation, but a spectator or an
+  // unseated/finished viewer must never steer a cycle. isLocalTurnAllowed()
+  // (board.js) confirms we're seated at this table and the match isn't over.
   const kd = (e) => {
     if (role === "spectator") return;
+    try { if (ctx.isLocalTurnAllowed && !ctx.isLocalTurnAllowed()) return; } catch { /* */ }
     let t = null;
     if (e.code === "ArrowLeft" || e.code === "KeyA") t = "left";
     else if (e.code === "ArrowRight" || e.code === "KeyD") t = "right";
@@ -66,13 +86,21 @@ export function createGame(ctx) {
   const owned = [];
   const keep = (x) => (owned.push(x), x);
   const COLORS = [PALETTE.tron0, PALETTE.tron1];
+  const myColor = myColorIdx != null ? COLORS[myColorIdx] : null;
   const M = {
     floor: keep(standard(THREE, "#081c2e", { roughness: 0.7 })),
     grid: keep(standard(THREE, "#0f2a40", { roughness: 0.8 })),
+    // Two CLEARLY DISTINCT side materials: cyan (tron0) vs orange (tron1), each
+    // self-lit by its own emissive so the two trails never read alike.
     t0: keep(standard(THREE, COLORS[0], { emissive: COLORS[0], emissiveIntensity: 0.5 })),
     t1: keep(standard(THREE, COLORS[1], { emissive: COLORS[1], emissiveIntensity: 0.5 })),
     head0: keep(standard(THREE, "#bff7ff", { emissive: COLORS[0], emissiveIntensity: 0.9 })),
     head1: keep(standard(THREE, "#ffe0c0", { emissive: COLORS[1], emissiveIntensity: 0.9 })),
+    // IDENTITY CUE (§4): a brighter head + a glowing halo/home pad in the LOCAL
+    // player's OWN colour, so they can tell at a glance which cycle is theirs.
+    // Spectators get none (myColor == null).
+    myHead: myColor ? keep(standard(THREE, "#ffffff", { emissive: myColor, emissiveIntensity: 1.6 })) : null,
+    mine: myColor ? keep(standard(THREE, myColor, { emissive: myColor, emissiveIntensity: 0.85, transparent: true, opacity: 0.55, depthWrite: false })) : null,
   };
 
   const AW = BOARD_SIZE * 0.94, AH = AW * (ROWS / COLS);
@@ -89,8 +117,34 @@ export function createGame(ctx) {
   const headGeo = keep(new THREE.BoxGeometry(cw * 0.95, 0.02, chh * 0.95));
   // pool of trail meshes keyed by "x,y"
   const trailMeshes = new Map();
-  const headMeshes = [meshOf(THREE, headGeo, M.head0), meshOf(THREE, headGeo, M.head1)];
+  // IDENTITY CUE (§4): give the LOCAL player's OWN head the brighter myHead
+  // material so it visibly out-glows the opponent's; the other head keeps its
+  // normal side material. Spectators (myColorIdx == null) see both normal.
+  const headMeshes = [
+    meshOf(THREE, headGeo, myColorIdx === 0 && M.myHead ? M.myHead : M.head0),
+    meshOf(THREE, headGeo, myColorIdx === 1 && M.myHead ? M.myHead : M.head1),
+  ];
   for (const h of headMeshes) { h.position.y = TOP + 0.012; group.add(h); }
+
+  // IDENTITY CUE (§4): a soft glowing halo in the local player's own colour that
+  // tracks THEIR head, plus a static home pad on their spawn cell, so the local
+  // player can instantly find "which one am I" at round start and mid-round. Both
+  // are authored in the canonical frame; board.js rotates the group so they land
+  // on the viewer's own near side. Spectators get neither.
+  let myHalo = null, myHomePad = null;
+  if (M.mine && myColorIdx != null) {
+    const haloGeo = keep(new THREE.BoxGeometry(cw * 2.4, 0.002, chh * 2.4));
+    myHalo = meshOf(THREE, haloGeo, M.mine, false);
+    myHalo.position.y = TOP + 0.005;
+    group.add(myHalo);
+    // Home pad sits under the local player's spawn cell (host=cycle0 left edge,
+    // guest=cycle1 right edge) so the player can confirm their starting side.
+    const spawn = spawnCycles()[myColorIdx];
+    const padGeo = keep(new THREE.BoxGeometry(cw * 2.0, 0.002, AH * 0.9));
+    myHomePad = meshOf(THREE, padGeo, M.mine, false);
+    myHomePad.position.set(gx(spawn.x), TOP + 0.003, gz(Math.floor(ROWS / 2)));
+    group.add(myHomePad);
+  }
 
   function clearTrails() {
     for (const m of trailMeshes.values()) group.remove(m);
@@ -124,6 +178,17 @@ export function createGame(ctx) {
       headMeshes[i].visible = !!c && c.alive && phase !== "matchover";
       if (c) headMeshes[i].position.set(gx(c.x), TOP + 0.012, gz(c.y));
     }
+    // IDENTITY CUE: keep the local player's halo glued to their own head while
+    // their cycle is alive; the home pad only marks the spawn side before the
+    // round runs (countdown), then fades so it doesn't clutter the arena.
+    if (myColorIdx != null) {
+      const me = cycles[myColorIdx];
+      if (myHalo) {
+        myHalo.visible = !!me && me.alive && phase !== "matchover";
+        if (me) myHalo.position.set(gx(me.x), TOP + 0.005, gz(me.y));
+      }
+      if (myHomePad) myHomePad.visible = phase === "countdown";
+    }
   }
 
   // ---- host sim ----
@@ -142,12 +207,16 @@ export function createGame(ctx) {
   function applyPendingTurns() {
     for (let i = 0; i < cycles.length; i++) {
       const t = pendingTurn[i];
+      // Consume the buffered turn regardless of outcome so it can never replay
+      // on a later tick.
       pendingTurn[i] = null;
       const c = cycles[i];
       if (!t || !c || !c.alive) continue;
       const nd = t === "left" ? turnLeft(c.dir) : turnRight(c.dir);
-      // A left/right turn can never be a direct 180° reversal, but guard anyway so
-      // a future input type can't drive the cycle straight back into its own neck.
+      // REJECT a 180° reversal: a single buffered left/right can't produce one
+      // from the committed dir, but check the actual resulting movement vector
+      // against the reverse of travel so no input path can drive the head back
+      // into its own neck (an instant in-place reversal / self-crash).
       if (nd === (c.dir + 2) % 4) continue;
       c.dir = nd;
     }
@@ -165,12 +234,22 @@ export function createGame(ctx) {
       if (tg.x < 0 || tg.x >= COLS || tg.y < 0 || tg.y >= ROWS) { c.alive = false; continue; }
       if (grid[tg.y][tg.x] >= 0) { c.alive = false; continue; }
     }
-    // head-on (shared target)
+    // Head-on collisions, evaluated against the PRE-move positions so the
+    // outcome is symmetric and order-independent:
+    //   (a) shared target  — both cycles aim at the same empty cell, and
+    //   (b) cell swap       — each aims at the other's current cell, so they
+    //       pass straight through one another within a single tick. The grid
+    //       wall check above misses (b) because neither target cell is filled
+    //       until trails are laid after the move, so it must be caught here.
     for (let i = 0; i < cycles.length; i++)
       for (let j = i + 1; j < cycles.length; j++) {
-        if (targets[i] && targets[j] && targets[i].x === targets[j].x && targets[i].y === targets[j].y) {
-          cycles[i].alive = false;
-          cycles[j].alive = false;
+        const a = cycles[i], b = cycles[j], ta = targets[i], tb = targets[j];
+        if (!a.alive || !b.alive || !ta || !tb) continue;
+        const sharedTarget = ta.x === tb.x && ta.y === tb.y;
+        const cellSwap = ta.x === b.x && ta.y === b.y && tb.x === a.x && tb.y === a.y;
+        if (sharedTarget || cellSwap) {
+          a.alive = false;
+          b.alive = false;
         }
       }
     // commit moves for survivors, lay trail at OLD position
@@ -201,12 +280,19 @@ export function createGame(ctx) {
     }
     if (phase === "playing") {
       tickAcc += dt * 1000;
+      // LOCKSTEP STREAMING: only advance the sim and broadcast the arena on a
+      // tick boundary (~TICK_MS / 85ms), never per render frame. Buffered
+      // steering inputs that arrived since the last tick are applied inside
+      // stepCycles() -> applyPendingTurns(), so a frame-rate-independent,
+      // deterministic snapshot is what every peer sees.
+      let stepped = false;
       while (tickAcc >= TICK_MS) {
         tickAcc -= TICK_MS;
         stepCycles();
-        if (aliveCount() <= 1) { endRound(); break; }
+        stepped = true;
+        if (aliveCount() <= 1) { endRound(); return; }
       }
-      pushState();
+      if (stepped) pushState();
       return;
     }
     if (phase === "roundover") {
@@ -308,7 +394,11 @@ export function createGame(ctx) {
 
   function onPointer() { /* keyboard only */ }
   function setRole(r) { role = r || "spectator"; }
-  function setSeatRy() {}
+  // board.js re-rotates the group by orientFor(seatRy) on an in-place seat move
+  // and calls this; the arena + cues are authored canonically so the rotation is
+  // all that's needed, but track seatRy so it stays in step. (Reference orientFor
+  // so the orientation contract is explicit in this module.)
+  function setSeatRy(ry) { seatRy = ry; void orientFor(seatRy); }
   function dispose() {
     window.removeEventListener("keydown", kd);
     clearTrails();

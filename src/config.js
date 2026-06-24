@@ -25,6 +25,34 @@ export const CAMERA = {
   orbitSpeed: 0.005,
 };
 
+// Seated "board-view" camera. When the local player is seated at a game table
+// and a board/menu is mounted, the camera eases from the walk-around follow-cam
+// to a comfortable over-the-table view framed on the board centre, oriented so
+// the player's own near edge is at the bottom of the screen. Gentle orbit + zoom
+// still apply but are clamped around the board so you can't fly away.
+export const SEATED_CAM = {
+  // TRUE first-person seated view: the camera sits at the player's eyes and
+  // looks across the table at the board (and the opponent beyond it). You should
+  // NOT see your own head — the eye is leaned a touch forward over the table.
+  eyeHeight: 0.95, // metres above the seat surface → eye ~0.65 m above the tabletop
+  eyeForward: 0.12, // lean out over the table (your own body is hidden while seated)
+  ease: 6.0, // lerp speed easing into/out of the seated view
+  // Look-around while seated: yaw glances left/right, pitch tilts the gaze
+  // between the board (down) and your opponent's face (up).
+  yawRange: 0.6, // ± radians of horizontal glance
+  minPitch: 0.15,
+  maxPitch: 1.0,
+  basePitch: 0.62, // resting gaze pitch (set on sit-down; looks down at the board)
+  lookPitchGain: 1.2, // how far pitch raises/lowers the aim point (metres per rad)
+  // Zoom dollies the eye toward the board. zoomMax (=default factor 1.0) is the
+  // NEUTRAL farthest framing with NO forced lean; scrolling in (toward zoomMin)
+  // leans the eye over the board.
+  zoomMin: 0.55, // scrolled all the way in
+  zoomMax: 1.0, // neutral / default (farthest)
+  zoomLean: 0.4, // extra forward lean at full zoom-in (metres)
+  zoomDrop: 0.16, // extra downward dip at full zoom-in (metres)
+};
+
 export const SEAT = {
   // How close (metres) you must stand to a chair/stool before you can sit on it.
   range: 1.2,

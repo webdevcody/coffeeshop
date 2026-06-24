@@ -56,6 +56,13 @@ export function createGame(ctx) {
     white: keep(standard(THREE, PALETTE.stoneWhite, { roughness: 0.45 })),
     ghost: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.4, transparent: true, opacity: 0.4, depthWrite: false })),
     win: keep(standard(THREE, "#e23b4e", { emissive: "#e23b4e", emissiveIntensity: 0.7 })),
+    // Persistent identity / turn cues, one per side. Home bar = "this near side,
+    // in MY colour, is me"; lamp = whose-turn. Emissive driven purely from local
+    // myColor/turn (never the wire) so a relayed snapshot can't flip the cue.
+    homeBlack: keep(standard(THREE, PALETTE.stoneBlack, { roughness: 0.5, emissive: "#9a9a9a", emissiveIntensity: 0 })),
+    homeWhite: keep(standard(THREE, PALETTE.stoneWhite, { roughness: 0.5, emissive: "#fbfbfb", emissiveIntensity: 0 })),
+    lampBlack: keep(standard(THREE, "#3a3a3a", { roughness: 0.35, metalness: 0.2, emissive: "#cfcfcf", emissiveIntensity: 0 })),
+    lampWhite: keep(standard(THREE, PALETTE.stoneWhite, { roughness: 0.35, metalness: 0.2, emissive: "#fbfbfb", emissiveIntensity: 0 })),
   };
 
   const plankH = 0.022;
@@ -100,6 +107,52 @@ export function createGame(ctx) {
   const stones = Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
   const ghosts = [];
 
+  // ---- Persistent identity / turn cues (built once, never rebuilt) ----------
+  // Per side: a home-edge tint bar (its own colour) just outside the field, and a
+  // turn lamp beside it. Black home = -Z edge (row 0 side, host/moves-first),
+  // white home = +Z edge. Both sides are authored in the canonical frame; the
+  // framework rotates the whole group by orientFor(seatRy) so each client's OWN
+  // home bar ends up directly in front of them — host sees the black bar near,
+  // guest sees the white bar near. That gives an at-a-glance "this near side, in
+  // MY colour, is me", and host/guest read OPPOSITE-but-consistent identities.
+  const cue = { black: { bar: null, lamp: null }, white: { bar: null, lamp: null } };
+  {
+    const barGeo = keep(new THREE.BoxGeometry(BOARD_SIZE * 0.7, 0.006, 0.012));
+    const lampGeo = keep(new THREE.SphereGeometry(0.012, 18, 14));
+    const edgeZ = BOARD_HALF + 0.028; // just outside the playing field
+    const sides = [
+      { color: "black", z: -edgeZ, barMat: M.homeBlack, lampMat: M.lampBlack },
+      { color: "white", z: edgeZ, barMat: M.homeWhite, lampMat: M.lampWhite },
+    ];
+    for (const s of sides) {
+      const bar = meshOf(THREE, barGeo, s.barMat, false);
+      bar.position.set(0, TOP + 0.004, s.z);
+      group.add(bar);
+      const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
+      lamp.position.set(BOARD_SIZE * 0.42, TOP + 0.008, s.z);
+      group.add(lamp);
+      cue[s.color].bar = bar;
+      cue[s.color].lamp = lamp;
+    }
+  }
+
+  // Drive the identity/turn cue emissives. Called on every state/role/turn/seat
+  // change. NEVER reads colour from the wire — purely from local `myColor`/`turn`.
+  //   * Home bar: the LOCAL player's own colour bar glows steadily (that's me);
+  //     the opponent's bar stays matte. Spectators: both matte (read-only).
+  //   * Turn lamp: only the side-to-move's lamp glows, and brighter when that
+  //     side is the local player (it's MY turn). Off when the game is over.
+  function updateIdentityCues() {
+    for (const color of ["black", "white"]) {
+      const c = cue[color];
+      if (!c.bar || !c.lamp) continue;
+      const isMine = myColor != null && color === myColor;
+      const isTurn = phase === "play" && turn === color;
+      c.bar.material.emissiveIntensity = isMine ? 0.7 : 0.0;
+      c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
+    }
+  }
+
   function setStone(r, c, color) {
     let s = stones[r][c];
     if (!s) {
@@ -116,6 +169,7 @@ export function createGame(ctx) {
   }
   function refreshGhost() {
     clearGhosts();
+    updateIdentityCues();
   }
 
   function highlightWin() {
@@ -140,7 +194,7 @@ export function createGame(ctx) {
         ? winningLine(board, lastDrop.r, lastDrop.c, winner) : null;
       highlightWin();
     }
-    clearGhosts();
+    refreshGhost();
   }
 
   let lastDrop = null;
@@ -154,6 +208,7 @@ export function createGame(ctx) {
       winner = color;
       phase = "over";
       highlightWin();
+      updateIdentityCues();
       try { ctx.onGameOver({ winner, reason: "five" }); } catch { /* */ }
       return;
     }
@@ -164,10 +219,12 @@ export function createGame(ctx) {
     if (full) {
       phase = "over";
       winner = null;
+      updateIdentityCues();
       try { ctx.onGameOver({ winner: null, reason: "draw" }); } catch { /* */ }
       return;
     }
     turn = other(color);
+    updateIdentityCues();
   }
 
   function onPointer(hit) {
@@ -233,7 +290,7 @@ export function createGame(ctx) {
     myColor = role === "host" ? "black" : role === "guest" ? "white" : null;
     refreshGhost();
   }
-  function setSeatRy() {}
+  function setSeatRy() { updateIdentityCues(); }
   function dispose() {
     clearGhosts();
     if (group.parent) group.parent.remove(group);

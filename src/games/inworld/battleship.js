@@ -336,10 +336,15 @@ export function createGame(ctx) {
   const targetRings = [];           // bobbing aim targets on enemy waters (my turn)
   let aimPlate = null;
   const statusChips = { host: [], guest: [] }; // fleet-status chips per enemy fleet
+  // At-a-glance identity/turn placards (canvas-textured). The OCEAN placard names
+  // "YOUR OCEAN" + your side + whose turn; the ENEMY placard names "ENEMY WATERS".
+  let oceanLabel = null;
+  let enemyLabel = null;
 
   buildStaticBoard();
   buildColliders();
   buildStatusChips();
+  buildLabels();
 
   // ===========================================================================
   // Static geometry: a base panel + two 10×10 water grids + a frame band, plus
@@ -459,6 +464,94 @@ export function createGame(ctx) {
       makeRow("host", HALF + CELL * 1.3, z0);
       makeRow("guest", -HALF - CELL * 1.3, z0);
     }
+  }
+
+  // ===========================================================================
+  // At-a-glance identity + turn placards. Two flat canvas-textured plates laid
+  // just outside each grid's far edge so they read upright toward the local seat:
+  //   • OCEAN placard ("YOUR OCEAN") — your home grid; carries your side + whose
+  //     turn it is, so the local player can ALWAYS tell which side they are and
+  //     whether it's their turn (not just when the aim rings are up).
+  //   • ENEMY placard ("ENEMY WATERS") — the grid you fire at.
+  // Authored in the canonical frame; the framework rotates the whole group by
+  // orientFor(seatRy) so each client's own ocean placard faces them. mySide is
+  // derived from ROLE only, so host and guest read OPPOSITE-but-consistent text.
+  // ===========================================================================
+  function makeLabelPlate(width) {
+    const canCreate = typeof document !== "undefined" && document.createElement;
+    const cv = canCreate ? document.createElement("canvas") : null;
+    if (cv) { cv.width = 256; cv.height = 64; }
+    const tex = cv ? new THREE.CanvasTexture(cv) : null;
+    if (tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = tex
+      ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+      : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.8, depthWrite: false });
+    const geo = new THREE.PlaneGeometry(width, width * 0.25);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = -Math.PI / 2; // lay flat on the table
+    mesh.renderOrder = 5;
+    mesh.userData.cv = cv;
+    mesh.userData.tex = tex;
+    group.add(mesh);
+    return mesh;
+  }
+
+  function buildLabels() {
+    const w = GRID_SPAN * 0.7;
+    // OCEAN placard: just outside the +Z (near) edge of your ocean grid.
+    oceanLabel = makeLabelPlate(w);
+    oceanLabel.position.set(0, SURF_Y + 0.004, OCEAN_CZ + GRID_SPAN / 2 + CELL * 0.55);
+    // ENEMY placard: just outside the −Z (far) edge of the enemy grid. Flip its
+    // texture 180° so it too reads upright toward the local seat.
+    enemyLabel = makeLabelPlate(w);
+    enemyLabel.position.set(0, SURF_Y + 0.004, ENEMY_CZ - GRID_SPAN / 2 - CELL * 0.55);
+    enemyLabel.rotation.z = Math.PI;
+    refreshLabels();
+  }
+
+  function drawLabel(mesh, text, color) {
+    const cv = mesh && mesh.userData.cv;
+    const tex = mesh && mesh.userData.tex;
+    if (!cv || !tex) return;
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, 256, 64);
+    g.fillStyle = "rgba(8,20,34,0.82)";
+    const rr = 12;
+    g.beginPath();
+    g.moveTo(rr, 0); g.arcTo(256, 0, 256, 64, rr); g.arcTo(256, 64, 0, 64, rr);
+    g.arcTo(0, 64, 0, 0, rr); g.arcTo(0, 0, 256, 0, rr); g.closePath(); g.fill();
+    g.font = "bold 26px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = color;
+    g.fillText(text, 128, 34);
+    tex.needsUpdate = true;
+  }
+
+  // Recompute placard text from ROLE-derived identity + current phase/turn. Called
+  // on every state transition (ready/start/fire/result/snapshot/role change).
+  function refreshLabels() {
+    if (!oceanLabel || !enemyLabel) return;
+    if (!mySide) {
+      // Spectator: canonical, layout-free view of both shot streams.
+      drawLabel(oceanLabel, "GUEST OCEAN", "#9fd3ff");
+      drawLabel(enemyLabel, "HOST OCEAN", "#9fd3ff");
+      return;
+    }
+    const sideName = mySide === "host" ? "Host" : "Guest";
+    let status;
+    if (phase === "over") {
+      status = winner === mySide ? "You win!" : winner ? "You lose" : "Game over";
+    } else if (phase === "placement") {
+      status = ready[mySide] ? "Waiting for opponent" : "Place your fleet";
+    } else {
+      status = myTurnNow() ? "YOUR TURN — fire!" : "Opponent's turn";
+    }
+    const youColor = phase === "over"
+      ? (winner === mySide ? "#7fffb0" : "#ff9a8a")
+      : (phase === "playing" && myTurnNow() ? "#7fd1ff" : "#dfe9f2");
+    drawLabel(oceanLabel, `YOUR OCEAN (${sideName}) — ${status}`, youColor);
+    drawLabel(enemyLabel, "ENEMY WATERS — your shots", "#ff9a8a");
   }
 
   // ===========================================================================
@@ -742,6 +835,7 @@ export function createGame(ctx) {
     ready[mySide] = true;
     clearGhost();
     refreshButtonsVisibility();
+    refreshLabels();
     try { ctx.net.sendMove({ type: "place", ready: true }); } catch { /* transport optional */ }
     maybeStart();
     pushSnapshot();
@@ -781,6 +875,7 @@ export function createGame(ctx) {
     pendingFire = { x, y };
     myTurn = false;
     clearAim();
+    refreshLabels();
     // Visual torpedo at the enemy-waters grid, launched from our near edge.
     const fromZ = ENEMY_CZ + GRID_SPAN / 2 + CELL * 0.8;
     launchShell(x, y, "enemy", fromZ, null);
@@ -850,6 +945,7 @@ export function createGame(ctx) {
 
   function refreshAim() {
     clearAim();
+    refreshLabels();
     if (!myTurnNow()) return;
     aimPlate = new THREE.Mesh(new THREE.BoxGeometry(GRID_SPAN + CELL * 0.2, 0.001, GRID_SPAN + CELL * 0.2), M.aim);
     aimPlate.position.set(0, SURF_Y + 0.0015, ENEMY_CZ);
@@ -965,6 +1061,7 @@ export function createGame(ctx) {
         const them = byRole === "host" ? "host" : byRole === "guest" ? "guest" : oppSide;
         if (them) ready[them] = true;
         refreshButtonsVisibility();
+        refreshLabels();
         maybeStart();
         pushSnapshot();
         return true;
@@ -1046,6 +1143,7 @@ export function createGame(ctx) {
       refreshButtonsVisibility();
       refreshGhost();
       refreshAim();
+      refreshLabels();
       return;
     }
 
@@ -1113,6 +1211,7 @@ export function createGame(ctx) {
     refreshButtonsVisibility();
     refreshGhost();
     refreshAim();
+    refreshLabels();
   }
 
   // ===========================================================================
@@ -1164,6 +1263,7 @@ export function createGame(ctx) {
     pendingFire = null;
     clearAim();
     refreshButtonsVisibility();
+    refreshLabels();
     ctx.onGameOver({ winner: winnerSide, reason: reason || "fleet-sunk" });
     if (role === "host") pushSnapshot();
   }
@@ -1205,11 +1305,13 @@ export function createGame(ctx) {
     refreshStatusChips();
     refreshGhost();
     refreshAim();
+    refreshLabels();
   }
   function setSeatRy(ry) {
     seatRy = ry;
     refreshAim();
     refreshGhost();
+    refreshLabels();
   }
 
   // ===========================================================================
@@ -1228,6 +1330,15 @@ export function createGame(ctx) {
       h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
     }
     hullMeshes.length = 0;
+    for (const lab of [oceanLabel, enemyLabel]) {
+      if (!lab) continue;
+      group.remove(lab);
+      lab.geometry?.dispose?.();
+      lab.userData?.tex?.dispose?.();
+      lab.material?.dispose?.();
+    }
+    oceanLabel = null;
+    enemyLabel = null;
     if (group.parent) group.parent.remove(group);
     for (const g of Object.values(G)) g && g.dispose?.();
     for (const m of Object.values(M)) m.dispose?.();
@@ -1239,6 +1350,7 @@ export function createGame(ctx) {
   refreshStatusChips();
   refreshGhost();
   refreshAim();
+  refreshLabels();
 
   return {
     group,

@@ -69,15 +69,29 @@ export function createGame(ctx) {
   let phase = "play";
   let winner = null;
 
+  // Side identity colours. Host = warm red, guest = cool blue (clearly distinct
+  // hues). The two sides' pit wells + stores are tinted in their own colour so a
+  // glance tells host's six pits + right store apart from guest's six + left
+  // store. Local identity is derived from ROLE (never the wire), so host and
+  // guest see consistent OPPOSITE identities.
+  const HOST_HEX = PALETTE.pongLeft;  // "#d65a4a" warm red — host side
+  const GUEST_HEX = PALETTE.pongRight; // "#4a85d6" cool blue — guest side
+  const SIDE_HEX = { host: HOST_HEX, guest: GUEST_HEX };
+
   const owned = [];
   const keep = (x) => (owned.push(x), x);
   const M = {
     wood: keep(standard(THREE, PALETTE.mancalaWood, { roughness: 0.8 })),
     edge: keep(standard(THREE, PALETTE.mancalaEdge, { roughness: 0.75 })),
-    pit: keep(standard(THREE, "#3f2814", { roughness: 0.9 })),
     seed: keep(standard(THREE, PALETTE.seed, { roughness: 0.6 })),
+    // Per-side pit/store tints. The local player's own side is rendered brighter
+    // (emissive) so their home reads as theirs at a glance.
+    pitHost: keep(standard(THREE, HOST_HEX, { roughness: 0.85, emissive: HOST_HEX, emissiveIntensity: 0.0 })),
+    pitGuest: keep(standard(THREE, GUEST_HEX, { roughness: 0.85, emissive: GUEST_HEX, emissiveIntensity: 0.0 })),
     glow: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.5, transparent: true, opacity: 0.5, depthWrite: false })),
   };
+
+  const sideOf = (i) => (i === HOST_STORE || HOST_PITS.includes(i) ? "host" : "guest");
 
   const plankH = 0.03;
   const W = BOARD_SIZE, D = BOARD_SIZE * 0.5;
@@ -107,14 +121,17 @@ export function createGame(ctx) {
   const invis = keep(new THREE.MeshBasicMaterial({ visible: false }));
 
   const seedGroups = {}; // pit -> THREE.Group of seed meshes
+  const wells = {}; // pit -> well mesh (so we can brighten the local side)
   const glows = [];
 
   for (let i = 0; i < 14; i++) {
     const isStore = i === HOST_STORE || i === GUEST_STORE;
     const p = pitPos[i];
-    const well = meshOf(THREE, isStore ? storeGeo : pitGeo, M.pit, false);
+    const sideMat = sideOf(i) === "host" ? M.pitHost : M.pitGuest;
+    const well = meshOf(THREE, isStore ? storeGeo : pitGeo, sideMat, false);
     well.position.set(p.x, TOP - plankH * 0.3, p.z);
     group.add(well);
+    wells[i] = well;
     // collider for selectable pits
     if (!isStore) {
       const box = new THREE.Mesh(hitGeo, invis);
@@ -126,6 +143,72 @@ export function createGame(ctx) {
     sg.position.set(p.x, TOP, p.z);
     group.add(sg);
     seedGroups[i] = sg;
+  }
+
+  // ---- at-a-glance identity + turn label -----------------------------------
+  // A small placard laid flat just outside the LOCAL player's near edge. Host's
+  // home is authored along +Z and guest's along -Z; the framework rotates the
+  // whole group by orientFor(seatRy) so the local player's OWN home edge faces
+  // them. We anchor the placard on the local side's edge (derived from ROLE,
+  // never the wire) so each client reads a placard that names THEIR side.
+  const labelCv = document.createElement("canvas");
+  labelCv.width = 256;
+  labelCv.height = 64;
+  const labelTex = keep(new THREE.CanvasTexture(labelCv));
+  labelTex.colorSpace = THREE.SRGBColorSpace;
+  const labelMat = keep(new THREE.MeshBasicMaterial({ map: labelTex, transparent: true }));
+  const labelGeo = keep(new THREE.PlaneGeometry(W * 0.55, W * 0.55 * 0.25));
+  const labelMesh = meshOf(THREE, labelGeo, labelMat, false);
+  labelMesh.rotation.x = -Math.PI / 2;
+  group.add(labelMesh);
+
+  function placeLabel() {
+    // Host pits sit on the +Z edge, guest on -Z. Spectators have no side → keep
+    // the placard on the canonical near (-Z) edge facing the fixed orientation.
+    const z = mySide === "host" ? D * 0.5 + 0.045 : -D * 0.5 - 0.045;
+    labelMesh.position.set(0, TOP + 0.004, z);
+    // Flip the text so it reads upright from the local seat on either edge.
+    labelMesh.rotation.z = mySide === "host" ? Math.PI : 0;
+  }
+
+  function refreshLabel() {
+    const g = labelCv.getContext("2d");
+    g.clearRect(0, 0, 256, 64);
+    let text;
+    let color = "#f0e4cf";
+    if (!mySide) {
+      text = "Spectating";
+    } else {
+      const sideName = mySide === "host" ? "Red" : "Blue";
+      const yours = phase === "over"
+        ? (winner === mySide ? "You win" : winner ? "You lose" : "Draw")
+        : (turn === mySide ? "Your turn" : "Opponent's turn");
+      text = `You are ${sideName} — ${yours}`;
+      color = SIDE_HEX[mySide];
+    }
+    g.fillStyle = "rgba(28,20,12,0.82)";
+    g.beginPath();
+    const rr = 12;
+    g.moveTo(rr, 0); g.arcTo(256, 0, 256, 64, rr); g.arcTo(256, 64, 0, 64, rr);
+    g.arcTo(0, 64, 0, 0, rr); g.arcTo(0, 0, 256, 0, rr); g.closePath(); g.fill();
+    g.font = "bold 28px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = color;
+    g.fillText(text, 128, 34);
+    labelTex.needsUpdate = true;
+  }
+
+  // Brighten the LOCAL player's own six pits + store (emissive lift) so their
+  // home reads as clearly theirs; the opponent's side stays matte.
+  function updateIdentity() {
+    const mine = mySide;
+    M.pitHost.emissiveIntensity = mine === "host" ? 0.32 : 0.0;
+    M.pitGuest.emissiveIntensity = mine === "guest" ? 0.32 : 0.0;
+    M.pitHost.needsUpdate = true;
+    M.pitGuest.needsUpdate = true;
+    placeLabel();
+    refreshLabel();
   }
 
   function renderSeeds() {
@@ -176,12 +259,14 @@ export function createGame(ctx) {
         : board[HOST_STORE] > board[GUEST_STORE] ? "host" : "guest";
       renderSeeds();
       clearGlows();
+      refreshLabel();
       try { ctx.onGameOver({ winner, reason: "empty" }); } catch { /* */ }
       return true;
     }
     if (!res.freeTurn) turn = side === "host" ? "guest" : "host";
     renderSeeds();
     refreshGlows();
+    refreshLabel();
     return true;
   }
 
@@ -234,11 +319,13 @@ export function createGame(ctx) {
     }
     renderSeeds();
     refreshGlows();
+    refreshLabel();
   }
 
   function setRole(r) {
     role = r || "spectator";
     mySide = role === "host" ? "host" : role === "guest" ? "guest" : null;
+    updateIdentity();
     refreshGlows();
   }
   function setSeatRy() {}
@@ -248,6 +335,7 @@ export function createGame(ctx) {
     for (const o of owned) o.dispose?.();
   }
 
+  updateIdentity();
   renderSeeds();
   refreshGlows();
   return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, dispose };

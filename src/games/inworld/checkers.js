@@ -75,7 +75,7 @@
 // way createGame.js cellCenter()/hitToCell() do (col -> local X, row -> local Z,
 // canonical row 0 at -Z) so a raycast on a disc resolves to that disc's own cell.
 
-import { GameDesync, BOARD_SIZE as FRAMEWORK_BOARD_SIZE } from "./createGame.js";
+import { GameDesync, BOARD_SIZE as FRAMEWORK_BOARD_SIZE, orientFor } from "./createGame.js";
 
 // ===========================================================================
 // PURE RULES — ported VERBATIM (behaviour) from public/games/checkers/index.html,
@@ -263,6 +263,31 @@ export function createGame(ctx) {
   // get null and may never move.
   let myColor = role === "host" ? "red" : role === "guest" ? "black" : null;
 
+  // ---- Orientation --------------------------------------------------------
+  // The logical board is authored in ONE canonical frame: black home on rows
+  // 0-2 (the -Z edge), red home on rows 5-7 (the +Z edge). The framework's
+  // default "flat" policy would rotate our group by orientFor(seatRy) — which
+  // brings the canonical -Z (black) edge to WHOEVER is looking, so BOTH players
+  // would see black nearest them and the +Z-home red host would face their own
+  // army across the table. Checkers (like chess on the same table) needs each
+  // player to see THEIR OWN army on the near edge. So we declare
+  // orientPolicy:"self" (board.js then does NOT rotate the group) and rotate the
+  // whole group ourselves by
+  //   orientFor(seatRy) + (myColor === "red" ? PI : 0)
+  // orientFor(seatRy) brings the -Z (black) edge to the local seat; the extra PI
+  // for red flips the board so the +Z (red) home edge comes near instead.
+  // Result: the host (red) sees red nearest, the guest (black) sees black
+  // nearest, each sees the opponent across the table, and the lit identity bar
+  // (red bar at +Z, black bar at -Z) always lands on the local player's near
+  // side. Spectators (myColor null, seatRy null) get the canonical orientation.
+  // Per-cell colliders carry their canonical {r,c} and rotate WITH the group, so
+  // clicks stay self-correcting and cross-client cell mapping is unchanged.
+  function applyFacing() {
+    const extra = myColor === "red" ? Math.PI : 0;
+    group.rotation.y = orientFor(seatRy) + extra;
+  }
+  applyFacing();
+
   // ---- Selection / multi-jump click-through (seated local player only) -----
   let selectedFrom = null;      // {r,c} of the piece being moved this turn
   let pathSoFar = [];           // landing squares clicked so far this turn
@@ -287,6 +312,13 @@ export function createGame(ctx) {
     selRing: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.34, metalness: 0.5, emissive: "#e0a23a", emissiveIntensity: 0.5, transparent: true, opacity: 0.92 }),
     target: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.3, emissive: "#e0a23a", emissiveIntensity: 0.55, transparent: true, opacity: 0.7, depthWrite: false }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
+    // Persistent identity cues: a home-edge tint bar per side (in that side's
+    // colour) and a turn lamp per side. Each side gets its own material instance so
+    // the local player's bar/lamp can be lit independently of the opponent's.
+    homeRed: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.5, metalness: 0.1, emissive: "#c4452f", emissiveIntensity: 0.0 }),
+    homeBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.5, metalness: 0.1, emissive: "#6b6058", emissiveIntensity: 0.0 }),
+    lampRed: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.35, metalness: 0.2, emissive: "#e7796a", emissiveIntensity: 0.0 }),
+    lampBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.35, metalness: 0.2, emissive: "#6b6058", emissiveIntensity: 0.0 }),
   };
   // Per-colour emissive accents used for the hover glow on own pieces.
   const GLOW = { red: new THREE.Color("#e7796a"), black: new THREE.Color("#6b6058") };
@@ -315,6 +347,8 @@ export function createGame(ctx) {
     selRing: new THREE.TorusGeometry(DISC_R * 1.12, DISC_R * 0.1, 8, 28), // selection ring laid on the tile
     target: new THREE.CylinderGeometry(STEP * 0.22, STEP * 0.22, STEP * 0.04, 24), // floating gold token
     hit: new THREE.BoxGeometry(STEP * 0.98, DISC_T * 3, STEP * 0.98),    // per-square collider
+    homeBar: new THREE.BoxGeometry(BOARD_SIZE * 0.7, FRAME_H * 0.5, FRAME_W * 0.5), // identity tint bar
+    lamp: new THREE.SphereGeometry(FRAME_W * 0.32, 18, 14),              // turn lamp
   };
 
   // ---- Piece ledger -------------------------------------------------------
@@ -329,6 +363,14 @@ export function createGame(ctx) {
   const targets = [];           // floating gold tokens on legal next landings
   const glowing = new Set();    // disc ids currently showing the hover glow
 
+  // ---- Persistent identity / turn cues (built once, never rebuilt) --------
+  // Per side: a home-edge tint bar (its own colour) on the inner frame rail, and a
+  // turn lamp beside it. The local player's OWN home edge is rendered in the
+  // canonical near-frame so the framework rotation puts it directly in front of
+  // them — an at-a-glance "this near side, in MY colour, is me". The lamp on the
+  // side-to-move glows so it's unambiguous whose turn it is (and whether it's mine).
+  const cue = { red: { bar: null, lamp: null }, black: { bar: null, lamp: null } };
+
   // Static scene graph is built up front (these touch only bindings declared
   // above). The INITIAL PAINT (setBoardFromLogical + refreshHighlights) is run at
   // the very END of createGame instead — it reaches the animation-loop bindings
@@ -336,6 +378,7 @@ export function createGame(ctx) {
   // here would hit a temporal-dead-zone ReferenceError.
   buildBoard();
   buildColliders();
+  buildIdentityCues();
   mintPieces();
 
   // -------------------------------------------------------------------------
@@ -411,6 +454,61 @@ export function createGame(ctx) {
         box.userData.cell = { r, c };
         group.add(box);
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Persistent identity / turn cues. Each side gets a coloured home-edge tint bar
+  // laid on top of its home frame rail, plus a turn lamp beside it. Built ONCE in
+  // the canonical frame (red home on the +Z edge, black home on the -Z edge,
+  // matching KING_ROW / piece layout). applyFacing() rotates the whole group by
+  // orientFor(seatRy) + (red ? PI : 0), so the local player's OWN home edge — and their lit lamp on
+  // their turn — sit directly in front of them. updateIdentityCues() then drives
+  // the emissive: the local player's bar reads brightest (identity), and the
+  // side-to-move's lamp glows (whose turn).
+  function buildIdentityCues() {
+    const barGeo = G.homeBar;
+    const lampGeo = G.lamp;
+    const railTop = PLANK_TOP + FRAME_H;            // top of the proud frame rail
+    const edge = HALF + FRAME_W / 2;                // centre of a long frame rail
+    // red home = +Z edge (rows 5-7 promote on row 0 going up); black home = -Z.
+    const sides = [
+      { color: "red", z: edge, barMat: M.homeRed, lampMat: M.lampRed },
+      { color: "black", z: -edge, barMat: M.homeBlack, lampMat: M.lampBlack },
+    ];
+    for (const s of sides) {
+      const bar = new THREE.Mesh(barGeo, s.barMat);
+      bar.position.set(0, railTop + FRAME_H * 0.26, s.z);
+      bar.castShadow = false;
+      bar.receiveShadow = true;
+      group.add(bar);
+
+      const lamp = new THREE.Mesh(lampGeo, s.lampMat);
+      lamp.position.set(BOARD_SIZE * 0.42, railTop + FRAME_W * 0.32, s.z);
+      lamp.castShadow = false;
+      group.add(lamp);
+
+      cue[s.color].bar = bar;
+      cue[s.color].lamp = lamp;
+    }
+  }
+
+  // Drive the identity/turn cue emissives. Called on every state/role/turn/seat
+  // change. NEVER reads colour from the wire — purely from local `myColor`/`turn`.
+  //   * Home bar: the LOCAL player's own colour bar glows steadily (that's me);
+  //     the opponent's bar stays matte. Spectators: both matte (read-only).
+  //   * Turn lamp: only the side-to-move's lamp glows, and brighter still when
+  //     that side is the local player (it's MY turn). Off when the game is over.
+  function updateIdentityCues() {
+    for (const color of ["red", "black"]) {
+      const c = cue[color];
+      if (!c.bar || !c.lamp) continue;
+      const isMine = myColor != null && color === myColor;
+      const isTurn = phase === "play" && turn === color;
+      // Identity: own home bar lit; others matte.
+      c.bar.material.emissiveIntensity = isMine ? 0.6 : 0.0;
+      // Whose-turn: side-to-move lamp glows; extra bright if it's the local turn.
+      c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.45) : 0.0;
     }
   }
 
@@ -785,6 +883,7 @@ export function createGame(ctx) {
       winner = other(turn); // the side that cannot move loses
       clearSelection();
       clearHighlights();
+      updateIdentityCues();   // game over: turn lamps go dark, home bar stays
       try { ctx.onGameOver({ winner, reason: "no-moves" }); } catch { /* framework optional */ }
       return;
     }
@@ -803,6 +902,7 @@ export function createGame(ctx) {
 
   function refreshHighlights() {
     clearHighlights();
+    updateIdentityCues();   // persistent identity/turn cue tracks every refresh
     if (!myTurnNow()) return;
     const moves = allMoves(logicalBoard(), myColor);
 
@@ -1099,18 +1199,20 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // Role / seat changes — switch in place (spectator -> player on sitting). The
-  // framework re-applies group.rotation.y; we always render in the canonical
-  // frame, so only the local-only highlights need re-gating.
+  // Role / seat changes — switch in place (spectator -> player on sitting). We
+  // own our facing (orientPolicy:"self"), so we re-run applyFacing() to re-derive
+  // the per-seat/per-colour rotation, then re-gate the local-only highlights.
   // ===========================================================================
   function setRole(newRole) {
     role = newRole || "spectator";
     myColor = role === "host" ? "red" : role === "guest" ? "black" : null;
+    applyFacing();              // colour may have changed -> re-derive the half-turn
     clearSelection();
     refreshHighlights();
   }
   function setSeatRy(ry) {
     seatRy = ry;
+    applyFacing();              // re-face the board for the new seat ourselves
     refreshHighlights();
   }
 
@@ -1142,6 +1244,10 @@ export function createGame(ctx) {
 
   return {
     group,
+    // We own our own per-seat facing (applyFacing): orientFor(seatRy) plus a PI
+    // half-turn for red so each player sees their OWN army near. board.js must NOT
+    // also rotate the group, or the two would fight.
+    orientPolicy: "self",
     applyState,
     applyMove,
     onPointer,

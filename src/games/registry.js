@@ -17,11 +17,30 @@
 // registered. (The old iframe `url()` builders and public/games/* bundles are
 // retained but unused.)
 
+// Lazy, build-tolerant lookup of every in-world module. Vite resolves this glob
+// at build time over whatever files actually exist, so referencing a module that
+// a separate fixer hasn't landed yet (e.g. chess.js) does NOT break `vite build`
+// — a missing target is simply absent from the map and its load() rejects at
+// runtime instead of failing the whole bundle. (The other entries keep their
+// direct `import()` for clarity; chess routes through this until it's stable.)
+const _inworld = import.meta.glob("./inworld/*.js");
+function loadInworld(id) {
+  const fn = _inworld[`./inworld/${id}.js`];
+  return fn
+    ? fn()
+    : Promise.reject(new Error(`in-world game module not found: ${id}`));
+}
+
 export const GAMES = {
   checkers: {
     id: "checkers", name: "Checkers", blurb: "Jump and king your way to victory.", icon: "⛀",
     capacity: 2, spectatable: true,
     load: () => import("./inworld/checkers.js"),
+  },
+  chess: {
+    id: "chess", name: "Chess", blurb: "Checkmate the enemy king.", icon: "♞",
+    capacity: 2, spectatable: true,
+    load: () => loadInworld("chess"),
   },
   connect4: {
     id: "connect4", name: "Connect 4", blurb: "Line up four in a row.", icon: "🔴",

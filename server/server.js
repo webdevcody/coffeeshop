@@ -130,7 +130,7 @@ const tables = new Map();
 // ONLY their pub snapshot (no raw moves, no full) — enforced server-side so a
 // leak is structural, not by client convention.
 const PUBLIC_RELAY = {
-  checkers: true, connect4: true, reversi: true, gomoku: true,
+  checkers: true, chess: true, connect4: true, reversi: true, gomoku: true,
   dotsandboxes: true, ultimatettt: true, mancala: true,
   pong: true, tron: true, ludo: true,
   battleship: false, memory: false,
@@ -537,7 +537,11 @@ wss.on("connection", (ws) => {
         // fan to spectators. Hidden-info games never relay raw moves to onlookers.
         const st = senderTable(id);
         if (!st || (st.role !== "host" && st.role !== "guest")) break;
-        const out = { type: "game-move", table: st.tid, byRole: st.role, byId: id, move: msg.move };
+        // bySeat: the MOVER'S seat index (0 = host, 1.. = guests in sit order).
+        // host/guest alone can't disambiguate 3–4 player ludo, where any non-host
+        // seat may legitimately be the current player — modules gate turns by seat.
+        const bySeat = st.t.seats.indexOf(id);
+        const out = { type: "game-move", table: st.tid, byRole: st.role, byId: id, bySeat, move: msg.move };
         for (const pid of st.t.seats) {
           if (pid === id) continue;
           const pc = clients.get(pid);
@@ -635,14 +639,25 @@ wss.on("connection", (ws) => {
         // cache: a seated guest gets `full`, a spectator gets `pub`. The host is
         // authoritative locally and never needs this. Trusted table/role lookup —
         // a client can't request another table's state.
-        const st = senderTable(id);
-        if (!st) break;
         const c = clients.get(id);
         if (!c) break;
-        if (st.role === "guest" && st.t.full != null) {
-          send(c.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
-        } else if (st.role === "spectator" && st.t.pub != null) {
-          send(c.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+        const st = senderTable(id);
+        if (st) {
+          if (st.role === "guest" && st.t.full != null) {
+            send(c.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
+          } else if (st.role === "spectator" && st.t.pub != null) {
+            send(c.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+          }
+          break;
+        }
+        // No seated table (a proximity-only spectator never sets gameTable). Find
+        // the table this client is actually watching and replay its pub so the
+        // board.js mount-time requestState() converges proximity spectators too.
+        for (const [tid, t] of tables) {
+          if (t.spectators.has(id) && t.pub != null) {
+            send(c.ws, { type: "game-state", table: tid, role: "spectator", pub: t.pub });
+            break;
+          }
         }
         break;
       }

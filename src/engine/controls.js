@@ -5,7 +5,7 @@
 //   controls.orbit   -> { yaw, pitch } accumulated camera angles (radians)
 //   controls.consumeJump() etc. are intentionally omitted — this is a chill space.
 
-import { CAMERA } from "../config.js";
+import { CAMERA, SEATED_CAM } from "../config.js";
 
 export function createControls(domElement) {
   const keys = new Set();
@@ -14,6 +14,10 @@ export function createControls(domElement) {
   let sitPressed = false; // edge-triggered Space, drained by consumeSit()
   let dropPressed = false; // edge-triggered G, drained by consumeDrop()
   let locked = false; // suppress movement/sit while a game overlay is open
+  // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
+  // around the seat-facing baseline and pitch to a comfy top-down-ish range so
+  // the player can nudge the view but never fly away from the board.
+  const seated = { on: false, baseYaw: 0 };
 
   // --- Keyboard ----------------------------------------------------------
   function typing() {
@@ -80,7 +84,13 @@ export function createControls(domElement) {
     lastX = e.clientX;
     lastY = e.clientY;
     orbit.yaw -= dx * CAMERA.orbitSpeed;
-    orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, CAMERA.minPitch, CAMERA.maxPitch);
+    if (seated.on) {
+      // Clamp the orbit to a gentle arc around the board so you can't spin away.
+      orbit.yaw = clamp(orbit.yaw, seated.baseYaw - SEATED_CAM.yawRange, seated.baseYaw + SEATED_CAM.yawRange);
+      orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, SEATED_CAM.minPitch, SEATED_CAM.maxPitch);
+    } else {
+      orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, CAMERA.minPitch, CAMERA.maxPitch);
+    }
   });
 
   function endPointer(e) {
@@ -151,6 +161,30 @@ export function createControls(domElement) {
     return locked ? false : pressed;
   }
 
+  // Enter/leave seated board-view orbit mode. `baseYaw` is the seat-facing yaw
+  // the gentle orbit arc centres on (the camera sits behind the player looking
+  // at the board). Entering snaps yaw/pitch into the seated clamp so the ease-in
+  // starts from a sane framing; leaving restores a comfortable walk-cam pitch.
+  function setSeated(on, baseYaw = 0) {
+    if (on && !seated.on) {
+      seated.on = true;
+      seated.baseYaw = baseYaw;
+      // Start centred on the board with a comfortable downward gaze and the
+      // neutral (farthest) zoom, so sitting down doesn't snap you in too close.
+      orbit.yaw = baseYaw;
+      orbit.pitch = SEATED_CAM.basePitch;
+      zoom.factor = SEATED_CAM.zoomMax;
+    } else if (on) {
+      // Already seated (e.g. seat/role refresh): just re-centre the yaw baseline.
+      seated.baseYaw = baseYaw;
+    } else if (seated.on) {
+      seated.on = false;
+      // Restore a normal walk-cam pitch + default zoom.
+      orbit.pitch = clamp(orbit.pitch, CAMERA.minPitch, CAMERA.maxPitch);
+      zoom.factor = 1;
+    }
+  }
+
   // Lock/unlock café input (used while a game overlay is open).
   function setLocked(v) {
     locked = !!v;
@@ -163,7 +197,7 @@ export function createControls(domElement) {
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, setLocked };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {
