@@ -38,26 +38,6 @@
 // game), public-only snapshots for spectators, strict single-shot alternation,
 // host-only start, turn derived purely from public shot counts on resync.
 //
-// SCOPE — DELIBERATE TABLETOP REINTERPRETATION, NOT AN ENVIRONMENT PORT:
-// The original DOM build renders a moody open-sea dusk: a stock three Water plane
-// (20000×20000), a stock Sky at dusk, and scene.fog = FogExp2(0x16243a, 0.0034).
-// THIS module is, BY DESIGN, a tabletop reinterpretation: two metal "console
-// platforms" carrying glassy dark-teal water inlays + glowing cyan grids, parented
-// to the shared café table. It deliberately does NOT port the original's scene-
-// level environment (Sky / Water / FogExp2 / PMREM env-map).
-//
-// This is an ARCHITECTURAL CEILING, not an oversight. The createGame(ctx) contract
-// (see ./createGame.js and board.js) exposes only { THREE, table, anchorY, role,
-// seatRy, seatIndex, seatCount, net, isLocalTurnAllowed, onGameOver, ...ctxExtra }.
-// There is NO ctx.scene, ctx.renderer, ctx.camera, or ctx.environment. The module
-// can only append geometry to a local THREE.Group parented under ctx.table; it
-// physically cannot set scene.fog, add a 20000-unit Water/Sky, or build a PMREM
-// environment map. Reproducing the original's open-sea mood would require a
-// framework change to board.js (passing scene/renderer into ctx) and is OUT OF
-// SCOPE for this module. The water-body hue (0x051a27) and grid palette are kept
-// for silhouette fidelity, but the surrounding dusk environment is intentionally
-// not reproduced. See PAL below for which constants are actually rendered.
-//
 // CANONICAL CONVENTION (createGame.js): row 0 / y 0 is the −Z edge = NEAREST the
 // local seat after orientation. YOUR OCEAN sits at −Z (near); ENEMY WATERS at +Z
 // (far). You place ships in front of you and fire across the table.
@@ -198,25 +178,15 @@ export function validLayout(layout) {
 // ===========================================================================
 // GEOMETRY CONSTANTS (metres, in the board group's local XZ plane).
 // YOUR OCEAN at −Z (near); ENEMY WATERS at +Z (far). col → X, row(=y) → Z.
-//
-// SIZING: the ORIGINAL battleship authors in big world units (CELL=10,
-// GRID_SPAN=100, two grids centre-to-centre 144 → ~244 deep × ~114 wide incl.
-// rim). We reproduce those PROPORTIONS but multiply by SCALE so the WHOLE
-// board-pair fits comfortably inside the seated café-table camera framing (the
-// inscribed BOARD_SIZE≈0.7 m square). 244 original units → ~0.62 m depth.
 // ===========================================================================
-const OCELL = 10; // original world units per cell
-const OSPAN = OCELL * GRID; // 100 — one grid span in original units
-const OGAP_C = 144; // original centre-to-centre gap between the two grids
-const ODEPTH = OGAP_C + OSPAN; // 244 — full Z footprint incl. both grids
-const SCALE = 0.62 / ODEPTH; // metres per original unit (≈0.00254)
+const PLAY = 0.66;
+const CELL = PLAY / GRID;
+const HALF = PLAY / 2;
 
-const CELL = OCELL * SCALE; // ≈0.0254 m
-const GRID_SPAN = OSPAN * SCALE; // ≈0.254 m
-const HALF = GRID_SPAN / 2; // half a single grid in X
-const GRID_GAP = (OGAP_C - OSPAN) * SCALE; // edge-to-edge open sea (≈0.112 m)
-const OCEAN_CZ = -OGAP_C * SCALE / 2; // your ocean (near, −Z)
-const ENEMY_CZ = OGAP_C * SCALE / 2; // enemy waters (far, +Z)
+const GRID_GAP = CELL * 1.1;
+const GRID_SPAN = CELL * GRID;
+const OCEAN_CZ = -(GRID_SPAN + GRID_GAP) / 2;
+const ENEMY_CZ = (GRID_SPAN + GRID_GAP) / 2;
 
 const BASE_T = 0.012;
 const TILE_T = 0.004;
@@ -225,299 +195,6 @@ const PEG_Y = SURF_Y + 0.006;
 
 const HULL_H = CELL * 0.5;
 const HULL_Y = SURF_Y + HULL_H / 2;
-
-// ===========================================================================
-// ORIGINAL PALETTE (hex) — moody dusk naval. Reproduced from the original
-// battleship source so the silhouette / colour reads identically.
-//
-// NOTE: only the constants that are ACTUALLY RENDERED by this tabletop module are
-// kept. The original's scene-level environment colours — FogExp2 0x16243a (horizon
-// haze) and the Water sunColor 0xffd9a6 (warm sunset glint) — are intentionally
-// omitted: there is no scene.fog and no three Water shader here to consume them
-// (see the SCOPE note in the file header), so listing them would imply a fidelity
-// this module does not render. PAL.water 0x051a27 is the rendered ocean-body hue.
-// ===========================================================================
-const PAL = {
-  water: 0x051a27, // very dark teal-navy ocean body (inlay .color)
-  platform: 0x163a47, // grid platform top
-  rim: 0x3f8a99, // raised platform rim
-  inlay: 0x123a4a, // glassy water inlay (play surface)
-  grid: 0x9becff, // glowing cyan grid lines
-  hover: 0x7ffcff,
-  hoverEmis: 0x36c6d6,
-  hit: 0xff5126,
-  hitEmis: 0xff3b12,
-  miss: 0xeaf6ff,
-  missEmis: 0x9fd0e8,
-};
-// Per-class jewel-tone hull liveries (matte painted steel — low metalness).
-const SHIP_PAINT = {
-  carrier: { hull: 0x21407a, deck: 0x2c3138, accent: "#e8b021", num: "72", beam: 0.5, height: 7 },
-  battleship: { hull: 0x7d2f2f, deck: 0x6a4a28, accent: "#101010", num: "61", beam: 0.5, height: 4.2 },
-  cruiser: { hull: 0x1d6f79, deck: 0x223842, accent: "#0c1316", num: "52", beam: 0.42, height: 3.8 },
-  submarine: { hull: 0x161a1e, deck: 0x202428, accent: "#0a0c0e", num: "21", beam: 0.46, height: 3.4 },
-  destroyer: { hull: 0x394f9c, deck: 0x222b3a, accent: "#0d1322", num: "51", beam: 0.4, height: 4.0 },
-};
-
-const _texCache = new Map();
-function _canvas(w, h) {
-  if (typeof document === "undefined" || !document.createElement) return null;
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  return cv;
-}
-function _lcg(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
-const _hex = (n) => "#" + n.toString(16).padStart(6, "0");
-function _shade(color, f) {
-  const r = Math.min(255, ((color >> 16) & 255) * f) | 0;
-  const g = Math.min(255, ((color >> 8) & 255) * f) | 0;
-  const b = Math.min(255, (color & 255) * f) | 0;
-  return `rgb(${r},${g},${b})`;
-}
-
-// Procedural water normal map (DataTexture, seamless tiling sum-of-sines).
-// Direct port of the original makeWaterNormals — deterministic, no asset.
-function makeWaterNormals(THREE, size = 256) {
-  const key = "waterNormals" + size;
-  if (_texCache.has(key)) return _texCache.get(key);
-  const rand = _lcg(1337);
-  const freqs = [2, 3, 4, 5, 6, 8, 11, 13];
-  const waves = freqs.map((f) => {
-    const a = rand() * Math.PI * 2;
-    return { nx: Math.round(Math.cos(a) * f), ny: Math.round(Math.sin(a) * f), amp: 1 / (f * f * 0.12 + 1), phase: rand() * Math.PI * 2 };
-  });
-  const TAU = Math.PI * 2;
-  const strength = 0.7;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const u = x / size;
-      const v = y / size;
-      let du = 0;
-      let dv = 0;
-      for (const w of waves) {
-        const p = TAU * (w.nx * u + w.ny * v) + w.phase;
-        const c = Math.cos(p) * w.amp * TAU;
-        du += c * w.nx;
-        dv += c * w.ny;
-      }
-      let nx = -du * strength;
-      let ny = -dv * strength;
-      let nz = 1;
-      const len = Math.hypot(nx, ny, nz);
-      nx /= len;
-      ny /= len;
-      nz /= len;
-      const i = (y * size + x) * 4;
-      data[i] = (nx * 0.5 + 0.5) * 255;
-      data[i + 1] = (ny * 0.5 + 0.5) * 255;
-      data[i + 2] = (nz * 0.5 + 0.5) * 255;
-      data[i + 3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  tex.generateMipmaps = true;
-  tex.needsUpdate = true;
-  _texCache.set(key, tex);
-  return tex;
-}
-
-// Cached tiling roughness/metalness map (plated steel) — port of makeMetalRough.
-function makeMetalRough(THREE) {
-  if (_texCache.has("metalRough")) return _texCache.get("metalRough");
-  const cv = _canvas(256, 256);
-  let tex;
-  if (!cv) {
-    tex = null;
-  } else {
-    const g = cv.getContext("2d");
-    const rand = _lcg(91);
-    g.fillStyle = "rgb(150,150,150)";
-    g.fillRect(0, 0, 256, 256);
-    for (let x = 9; x < 256; x += 22) {
-      const grad = g.createLinearGradient(x, 0, x + 14, 0);
-      grad.addColorStop(0, "rgba(40,40,40,0)");
-      grad.addColorStop(0.5, "rgba(40,40,40,0.45)");
-      grad.addColorStop(1, "rgba(40,40,40,0)");
-      g.fillStyle = grad;
-      g.fillRect(x, 0, 14, 256);
-    }
-    g.strokeStyle = "rgba(225,225,225,0.5)";
-    g.lineWidth = 1;
-    for (let y = 12; y < 256; y += 20) { g.beginPath(); g.moveTo(0, y); g.lineTo(256, y); g.stroke(); }
-    for (let x = 18; x < 256; x += 22) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 256); g.stroke(); }
-    for (let i = 0; i < 90; i++) {
-      const x = rand() * 256;
-      const y = rand() * 256;
-      const r = 3 + rand() * 14;
-      const bright = rand() < 0.65;
-      const rg = g.createRadialGradient(x, y, 0, x, y, r);
-      const c = bright ? "235,235,235" : "30,30,30";
-      rg.addColorStop(0, `rgba(${c},${0.1 + rand() * 0.22})`);
-      rg.addColorStop(1, "rgba(150,150,150,0)");
-      g.fillStyle = rg;
-      g.fillRect(x - r, y - r, r * 2, r * 2);
-    }
-    tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    if (THREE.NoColorSpace) tex.colorSpace = THREE.NoColorSpace;
-  }
-  _texCache.set("metalRough", tex);
-  return tex;
-}
-
-// Cached tiling panel normal map — port of panelNormal (V-channel plate grooves).
-function makePanelNormal(THREE) {
-  if (_texCache.has("panelNormal")) return _texCache.get("panelNormal");
-  const cv = _canvas(256, 256);
-  let tex;
-  if (!cv) {
-    tex = null;
-  } else {
-    const g = cv.getContext("2d");
-    const rand = _lcg(53);
-    g.fillStyle = "rgb(128,128,255)";
-    g.fillRect(0, 0, 256, 256);
-    const groove = (horiz, step, str) => {
-      g.lineWidth = 1;
-      for (let p = 12; p < 256; p += step) {
-        const lo = horiz ? `rgb(128,${128 - str},235)` : `rgb(${128 - str},128,235)`;
-        const hi = horiz ? `rgb(128,${128 + str},235)` : `rgb(${128 + str},128,235)`;
-        g.strokeStyle = lo;
-        g.beginPath();
-        if (horiz) { g.moveTo(0, p); g.lineTo(256, p); } else { g.moveTo(p, 0); g.lineTo(p, 256); }
-        g.stroke();
-        g.strokeStyle = hi;
-        g.beginPath();
-        if (horiz) { g.moveTo(0, p + 1.5); g.lineTo(256, p + 1.5); } else { g.moveTo(p + 1.5, 0); g.lineTo(p + 1.5, 256); }
-        g.stroke();
-      }
-    };
-    groove(true, 20, 34);
-    groove(false, 22, 28);
-    for (let i = 0; i < 160; i++) {
-      const x = rand() * 256;
-      const y = rand() * 256;
-      const len = 10 + rand() * 70;
-      g.strokeStyle = `rgb(${118 + (rand() * 20) | 0},128,250)`;
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(x, y);
-      g.lineTo(x, y + len);
-      g.stroke();
-    }
-    tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    if (THREE.NoColorSpace) tex.colorSpace = THREE.NoColorSpace;
-  }
-  _texCache.set("panelNormal", tex);
-  return tex;
-}
-
-// Per-class hull albedo (canvas) — gradient + plating + weathering + boot-top +
-// accent stripe + hull number. Condensed port of makeHullAlbedo.
-function makeHullAlbedo(THREE, paint) {
-  const key = "hull" + paint.hull + paint.num;
-  if (_texCache.has(key)) return _texCache.get(key);
-  const W = 1024;
-  const H = 192;
-  const cv = _canvas(W, H);
-  let tex;
-  if (!cv) {
-    tex = null;
-  } else {
-    const g = cv.getContext("2d");
-    const rand = _lcg(7 + (paint.hull & 255));
-    const grad = g.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0.0, _shade(paint.hull, 1.22));
-    grad.addColorStop(0.06, _shade(paint.hull, 1.1));
-    grad.addColorStop(0.45, _hex(paint.hull));
-    grad.addColorStop(0.8, _shade(paint.hull, 0.88));
-    grad.addColorStop(1.0, _shade(paint.hull, 0.74));
-    g.fillStyle = grad;
-    g.fillRect(0, 0, W, H);
-    // sheer line + gunwale shadow
-    g.fillStyle = "rgba(232,238,242,0.55)";
-    g.fillRect(0, 1, W, 2);
-    g.fillStyle = "rgba(8,12,16,0.3)";
-    g.fillRect(0, 4, W, 2);
-    const bootTop = H * 0.84;
-    // horizontal strakes
-    for (let y = 14; y < bootTop; y += 16) {
-      g.strokeStyle = "rgba(0,0,0,0.34)";
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(0, y);
-      g.lineTo(W, y + Math.sin(y * 0.6) * 1.2);
-      g.stroke();
-      g.strokeStyle = "rgba(255,255,255,0.1)";
-      g.beginPath();
-      g.moveTo(0, y - 1.5);
-      g.lineTo(W, y - 1.5);
-      g.stroke();
-    }
-    // vertical butt seams + rivets
-    for (let x = 32; x < W; x += 48) {
-      const xj = x + (rand() - 0.5) * 8;
-      g.strokeStyle = "rgba(0,0,0,0.22)";
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(xj, 0);
-      g.lineTo(xj, bootTop);
-      g.stroke();
-      for (let y = 20; y < bootTop; y += 14) { g.fillStyle = "rgba(0,0,0,0.3)"; g.fillRect(xj - 1, y, 2, 2); }
-    }
-    // weathering streaks
-    for (let i = 0; i < 120; i++) {
-      const x = rand() * W;
-      const high = rand() < 0.5;
-      const y0 = high ? 6 : H * 0.4;
-      const len = 14 + rand() * 90;
-      const col = high ? "18,22,26" : `${110 + (rand() * 40) | 0},${60 + (rand() * 30) | 0},${34 + (rand() * 20) | 0}`;
-      g.strokeStyle = `rgba(${col},${0.1 + rand() * 0.12})`;
-      g.lineWidth = 1 + rand() * 1.6;
-      g.beginPath();
-      g.moveTo(x, y0);
-      g.lineTo(x, y0 + len);
-      g.stroke();
-    }
-    // boot-topping + accent stripe
-    g.fillStyle = _shade(paint.hull, 0.5);
-    g.fillRect(0, bootTop + 6, W, H - bootTop - 6);
-    g.fillStyle = paint.accent;
-    g.fillRect(0, bootTop, W, 6);
-    // hull number
-    const drawNum = (x, y, size, a) => {
-      g.font = `bold ${size}px Arial`;
-      g.textAlign = "center";
-      g.textBaseline = "middle";
-      g.fillStyle = `rgba(8,12,16,${a * 0.6})`;
-      g.fillText(paint.num, x + 2, y + 2);
-      g.strokeStyle = `rgba(20,26,30,${a * 0.5})`;
-      g.lineWidth = 3;
-      g.strokeText(paint.num, x, y);
-      g.fillStyle = `rgba(238,242,244,${a})`;
-      g.fillText(paint.num, x, y);
-    };
-    drawNum(W * 0.8, H * 0.4, 64, 0.95);
-    drawNum(W * 0.05, H * 0.42, 42, 0.55);
-    tex = new THREE.CanvasTexture(cv);
-    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-  }
-  _texCache.set(key, tex);
-  return tex;
-}
 
 // ===========================================================================
 // THE MODULE
@@ -569,110 +246,42 @@ export function createGame(ctx) {
   const SIDE_COLOR = { host: "#3f7fd6", guest: "#e0962f" };
   const myHullColor = mySide ? SIDE_COLOR[mySide] : "#5a636b";
 
-  // Shared procedural maps (tiling steel + plate normal) for hulls + platforms.
-  const metalRough = makeMetalRough(THREE);
-  const panelNormal = makePanelNormal(THREE);
-
-  // Animated water normal map for the glassy inlays (scrolled each frame).
-  const waterNormals = makeWaterNormals(THREE, 256);
-
-  // A dark-teal water inlay material with the procedural normal map. Both grids
-  // use the SAME ocean body colour (the original has one sea); the frame rim +
-  // cyan grid lines distinguish your ocean from enemy waters.
-  function makeInlayMat(repeat) {
-    const m = new THREE.MeshStandardMaterial({
-      color: PAL.water,
-      roughness: 0.18,
-      metalness: 0.1,
-      envMapIntensity: 1.4,
-      transparent: true,
-      opacity: 0.92,
-    });
-    if (waterNormals) {
-      m.normalMap = waterNormals.clone();
-      m.normalMap.needsUpdate = true;
-      m.normalMap.wrapS = m.normalMap.wrapT = THREE.RepeatWrapping;
-      m.normalMap.repeat.set(repeat, repeat);
-      m.normalScale = new THREE.Vector2(0.35, 0.35);
-    }
-    return m;
-  }
-
   const M = {
-    base: new THREE.MeshStandardMaterial({ color: _hex(PAL.platform), roughness: 0.4, metalness: 0.85, envMapIntensity: 1.6 }),
-    rim: new THREE.MeshStandardMaterial({ color: _hex(PAL.rim), roughness: 0.28, metalness: 0.9, envMapIntensity: 1.6 }),
-    // your-ocean rim glows your side colour; enemy waters get the cyan-platform
-    // accent so the two grids read apart at a glance.
-    frameOcean: new THREE.MeshStandardMaterial({ color: mySide ? SIDE_COLOR[mySide] : "#3f8a99", roughness: 0.3, metalness: 0.85, emissive: "#06121e", emissiveIntensity: 0.35, envMapIntensity: 1.4 }),
-    frameEnemy: new THREE.MeshStandardMaterial({ color: "#7a2230", roughness: 0.35, metalness: 0.8, emissive: "#1c0408", emissiveIntensity: 0.35, envMapIntensity: 1.2 }),
-    oceanInlay: makeInlayMat(2),
-    enemyInlay: makeInlayMat(2),
-    gridLine: new THREE.LineBasicMaterial({ color: PAL.grid, transparent: true, opacity: 0.55 }),
-    hull: new THREE.MeshStandardMaterial({ color: myHullColor, roughness: 0.82, metalness: 0.1, envMapIntensity: 0.45 }),
-    hullDeck: new THREE.MeshStandardMaterial({ color: "#2c3238", roughness: 0.85, metalness: 0.3, envMapIntensity: 0.7 }),
-    superstructure: new THREE.MeshStandardMaterial({ color: "#6f7980", roughness: 0.65, metalness: 0.18, normalMap: panelNormal || null, envMapIntensity: 0.45 }),
-    black: new THREE.MeshStandardMaterial({ color: "#14181b", roughness: 0.5, metalness: 0.4 }),
-    glass: new THREE.MeshStandardMaterial({ color: "#0a1418", roughness: 0.08, metalness: 0.1, envMapIntensity: 1.6 }),
-    miss: new THREE.MeshStandardMaterial({ color: _hex(PAL.miss), emissive: _hex(PAL.missEmis), emissiveIntensity: 0.4, roughness: 0.6, metalness: 0, transparent: true, opacity: 0.92 }),
-    hit: new THREE.MeshStandardMaterial({ color: _hex(PAL.hit), emissive: _hex(PAL.hitEmis), emissiveIntensity: 2.0, roughness: 0.4, metalness: 0.1 }),
-    sunkMark: new THREE.MeshStandardMaterial({ color: "#8a1c0c", emissive: "#ff3b12", emissiveIntensity: 1.4, roughness: 0.5, metalness: 0.2 }),
-    shell: new THREE.MeshStandardMaterial({ color: "#d9dde2", roughness: 0.5, metalness: 0.3 }),
-    shellNose: new THREE.MeshStandardMaterial({ color: "#9a1f1f", roughness: 0.5, metalness: 0.3 }),
-    shellFlame: new THREE.MeshStandardMaterial({ color: "#ffd27a", emissive: "#ff7b1a", emissiveIntensity: 4, roughness: 1 }),
-    ghostOk: new THREE.MeshStandardMaterial({ color: "#49f08a", emissive: "#0c3320", emissiveIntensity: 0.45, roughness: 0.5, metalness: 0.2, transparent: true, opacity: 0.5, depthWrite: false }),
-    ghostBad: new THREE.MeshStandardMaterial({ color: "#ff5555", emissive: "#3a0a02", emissiveIntensity: 0.45, roughness: 0.5, metalness: 0.2, transparent: true, opacity: 0.5, depthWrite: false }),
-    enemyLive: new THREE.MeshBasicMaterial({ color: _hex(PAL.hover), transparent: true, opacity: 0.14, depthWrite: false }),
-    target: new THREE.MeshBasicMaterial({ color: _hex(PAL.grid), transparent: true, opacity: 0.75, depthWrite: false }),
-    reticleOk: new THREE.MeshBasicMaterial({ color: "#7ffcff", transparent: true, opacity: 0.95, depthWrite: false }),
+    base: new THREE.MeshStandardMaterial({ color: "#15314f", roughness: 0.85, metalness: 0.05 }),
+    frameOcean: new THREE.MeshStandardMaterial({ color: mySide ? SIDE_COLOR[mySide] : "#3f7fd6", roughness: 0.5, metalness: 0.3, emissive: "#06121e", emissiveIntensity: 0.4 }),
+    frameEnemy: new THREE.MeshStandardMaterial({ color: "#7a2230", roughness: 0.6, metalness: 0.25, emissive: "#1c0408", emissiveIntensity: 0.35 }),
+    oceanA: new THREE.MeshStandardMaterial({ color: "#1f5d86", roughness: 0.55, metalness: 0.1 }),
+    oceanB: new THREE.MeshStandardMaterial({ color: "#23688f", roughness: 0.55, metalness: 0.1 }),
+    enemyA: new THREE.MeshStandardMaterial({ color: "#143241", roughness: 0.6, metalness: 0.1 }),
+    enemyB: new THREE.MeshStandardMaterial({ color: "#173b4f", roughness: 0.6, metalness: 0.1 }),
+    hull: new THREE.MeshStandardMaterial({ color: myHullColor, roughness: 0.5, metalness: 0.55 }),
+    hullDeck: new THREE.MeshStandardMaterial({ color: "#2c3238", roughness: 0.6, metalness: 0.45 }),
+    miss: new THREE.MeshStandardMaterial({ color: "#eef3f6", roughness: 0.5, metalness: 0.05 }),
+    hit: new THREE.MeshStandardMaterial({ color: "#d8442c", roughness: 0.45, metalness: 0.1, emissive: "#5a1206", emissiveIntensity: 0.5 }),
+    sunkMark: new THREE.MeshStandardMaterial({ color: "#8a1c0c", roughness: 0.5, metalness: 0.2, emissive: "#3a0a02", emissiveIntensity: 0.6 }),
+    shell: new THREE.MeshStandardMaterial({ color: "#f0d28a", roughness: 0.4, metalness: 0.3, emissive: "#3a2a00", emissiveIntensity: 0.3 }),
+    ghostOk: new THREE.MeshStandardMaterial({ color: "#4fd18a", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.55, depthWrite: false }),
+    ghostBad: new THREE.MeshStandardMaterial({ color: "#e2503c", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.5, depthWrite: false }),
+    enemyLive: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.16, depthWrite: false }),
+    target: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.8, depthWrite: false }),
+    reticleOk: new THREE.MeshBasicMaterial({ color: "#7fffb0", transparent: true, opacity: 0.95, depthWrite: false }),
     reticleBad: new THREE.MeshBasicMaterial({ color: "#ff6a5a", transparent: true, opacity: 0.95, depthWrite: false }),
     splash: new THREE.MeshBasicMaterial({ color: "#eef6ff", transparent: true, opacity: 0.9, depthWrite: false }),
-    ember: new THREE.MeshBasicMaterial({ color: "#ff7b3c", transparent: true, opacity: 0.95, depthWrite: false }),
-    pillarIdle: new THREE.MeshStandardMaterial({ color: "#1d4a5a", roughness: 0.4, metalness: 0.6, emissive: "#06181f", emissiveIntensity: 0.4, envMapIntensity: 1.2 }),
-    pillarGo: new THREE.MeshStandardMaterial({ color: "#2f8a99", roughness: 0.35, metalness: 0.6, emissive: "#0c3340", emissiveIntensity: 0.6, envMapIntensity: 1.2 }),
-    pillarDim: new THREE.MeshStandardMaterial({ color: "#2a343a", roughness: 0.7, metalness: 0.3, emissive: "#080d10", emissiveIntensity: 0.2 }),
+    ember: new THREE.MeshBasicMaterial({ color: "#ff6a3c", transparent: true, opacity: 0.95, depthWrite: false }),
+    pillarIdle: new THREE.MeshStandardMaterial({ color: "#27506f", roughness: 0.5, metalness: 0.2, emissive: "#0a1c2a", emissiveIntensity: 0.4 }),
+    pillarGo: new THREE.MeshStandardMaterial({ color: "#2f8a5a", roughness: 0.45, metalness: 0.2, emissive: "#0c3320", emissiveIntensity: 0.6 }),
+    pillarDim: new THREE.MeshStandardMaterial({ color: "#39444c", roughness: 0.7, metalness: 0.1, emissive: "#0a0e12", emissiveIntensity: 0.2 }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
   };
 
-  // Per-class hull materials (matte painted steel, textured) built lazily.
-  const hullMatCache = new Map();
-  function hullMatFor(shipId) {
-    if (hullMatCache.has(shipId)) return hullMatCache.get(shipId);
-    const paint = SHIP_PAINT[shipId];
-    const mat = new THREE.MeshStandardMaterial({ color: _hex(paint.hull), roughness: 0.82, metalness: 0.1, envMapIntensity: 0.45 });
-    const alb = makeHullAlbedo(THREE, paint);
-    if (alb) mat.map = alb;
-    if (panelNormal) { mat.normalMap = panelNormal; mat.normalScale = new THREE.Vector2(0.3, 0.3); }
-    if (metalRough) {
-      const rm = metalRough.clone();
-      rm.needsUpdate = true;
-      rm.wrapS = rm.wrapT = THREE.RepeatWrapping;
-      rm.repeat.set(6, 1);
-      mat.roughnessMap = rm;
-      mat.metalnessMap = rm;
-    }
-    hullMatCache.set(shipId, mat);
-    return mat;
-  }
-  function deckMatFor(shipId) {
-    const k = "deck:" + shipId;
-    if (hullMatCache.has(k)) return hullMatCache.get(k);
-    const paint = SHIP_PAINT[shipId];
-    const mat = new THREE.MeshStandardMaterial({ color: _hex(paint.deck), roughness: 0.85, metalness: 0.3, envMapIntensity: 0.7 });
-    hullMatCache.set(k, mat);
-    return mat;
-  }
-
   const G = {
-    inlay: new THREE.PlaneGeometry(GRID_SPAN, GRID_SPAN, 1, 1),
+    tile: new THREE.BoxGeometry(CELL * 0.96, TILE_T, CELL * 0.96),
     hit: new THREE.BoxGeometry(CELL * 0.98, HULL_H * 1.4, CELL * 0.98),
-    // MISS = flat disc (original CircleGeometry CELL*0.34). HIT = red peg
-    // (CylinderGeometry CELL*0.16/0.2 height 0.024).
-    missDisc: new THREE.CircleGeometry(CELL * 0.34, 24),
-    peg: new THREE.CylinderGeometry(CELL * 0.16, CELL * 0.2, CELL * 0.24, 18),
+    peg: new THREE.CylinderGeometry(CELL * 0.18, CELL * 0.18, 0.018, 12),
     emberPeg: new THREE.SphereGeometry(CELL * 0.2, 12, 10),
+    shell: new THREE.SphereGeometry(CELL * 0.12, 10, 8),
     ring: new THREE.TorusGeometry(CELL * 0.34, CELL * 0.05, 8, 22),
     pillar: new THREE.BoxGeometry(CELL * 1.4, CELL * 0.5, CELL * 0.95),
-    bit: new THREE.SphereGeometry(CELL * 0.07, 6, 5),
   };
 
   function cellX(x) { return -HALF + (x + 0.5) * CELL; }
@@ -703,7 +312,6 @@ export function createGame(ctx) {
   // seat's near edge (local −Z ocean) to the front. No extra per-role PI.
   function applyFacing() {
     group.rotation.y = orientFor(seatRy);
-    aimLabels(); // keep pillar labels upright for the local seat
   }
 
   buildStaticBoard();
@@ -713,58 +321,38 @@ export function createGame(ctx) {
   applyFacing();
 
   // ===========================================================================
-  // Static geometry — two metal "console platforms on the sea", each carrying a
-  // glassy dark-teal water inlay + a glowing cyan grid (the original board3d
-  // look), scaled to the café table. YOUR OCEAN (−Z) and ENEMY WATERS (+Z).
+  // Static geometry: base panel + two 10×10 water grids + coloured frame bands +
+  // labelled control pillars.
   // ===========================================================================
   function buildStaticBoard() {
-    // Platform geometry, in original units → metres. top 108, rim 114, inlay 100.
-    const platW = (OSPAN + 8) * SCALE;
-    const rimW = (OSPAN + 14) * SCALE;
-    const platH = 4 * SCALE;
-    const rimH = 3 * SCALE;
+    const baseW = PLAY + CELL * 0.5;
+    const baseD = GRID_SPAN * 2 + GRID_GAP + CELL * 0.7;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(baseW, BASE_T, baseD), M.base);
+    base.position.set(0, BASE_T / 2, 0);
+    base.receiveShadow = true;
+    group.add(base);
 
     for (const which of ["ocean", "enemy"]) {
-      const cz = which === "ocean" ? OCEAN_CZ : ENEMY_CZ;
-
-      // rim (raised frame, slightly larger & lower)
-      const rim = new THREE.Mesh(new THREE.BoxGeometry(rimW, rimH, rimW), M.rim);
-      rim.position.set(0, SURF_Y - platH - rimH * 0.4, cz);
-      rim.receiveShadow = true;
-      group.add(rim);
-
-      // top deck
-      const deck = new THREE.Mesh(new THREE.BoxGeometry(platW, platH, platW), M.base);
-      deck.position.set(0, SURF_Y - platH / 2, cz);
-      deck.receiveShadow = true;
-      group.add(deck);
-
-      // glassy water inlay (the play surface)
-      const inlay = new THREE.Mesh(G.inlay, which === "ocean" ? M.oceanInlay : M.enemyInlay);
-      inlay.rotation.x = -Math.PI / 2;
-      inlay.position.set(0, SURF_Y - 0.0008, cz);
-      inlay.receiveShadow = true;
-      group.add(inlay);
-
-      // glowing cyan grid lines (LineSegments cross-hatch, just above inlay)
-      const pos = [];
-      const half = GRID_SPAN / 2;
-      for (let i = 0; i <= GRID; i++) {
-        const p = -half + i * CELL;
-        pos.push(p, 0, -half, p, 0, half);
-        pos.push(-half, 0, p, half, 0, p);
+      const a = which === "ocean" ? M.oceanA : M.enemyA;
+      const b = which === "ocean" ? M.oceanB : M.enemyB;
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          const tile = new THREE.Mesh(G.tile, (x + y) % 2 === 0 ? a : b);
+          tile.position.set(cellX(x), SURF_Y - TILE_T / 2 + 0.0006, cellZ(y, which));
+          tile.receiveShadow = true;
+          group.add(tile);
+        }
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      const lines = new THREE.LineSegments(geo, M.gridLine);
-      lines.position.set(0, SURF_Y + 0.0006, cz);
-      group.add(lines);
+    }
 
-      // a thin coloured frame band so you read "mine" vs "theirs" instantly.
+    // Coloured frame band around each grid: your-side colour around your ocean,
+    // enemy red around enemy waters — an at-a-glance "this is mine / theirs".
+    for (const which of ["ocean", "enemy"]) {
+      const cz = which === "ocean" ? OCEAN_CZ : ENEMY_CZ;
       const mat = which === "ocean" ? M.frameOcean : M.frameEnemy;
       const fw = GRID_SPAN + CELL * 0.18;
       const t = CELL * 0.14;
-      const h = HULL_H * 0.4;
+      const h = HULL_H * 0.45;
       const fy = SURF_Y + h / 2 - 0.001;
       const rails = [
         [new THREE.BoxGeometry(fw, h, t), 0, cz - GRID_SPAN / 2 - t / 2],
@@ -772,8 +360,8 @@ export function createGame(ctx) {
         [new THREE.BoxGeometry(t, h, GRID_SPAN + t * 2), -HALF - t / 2, cz],
         [new THREE.BoxGeometry(t, h, GRID_SPAN + t * 2), HALF + t / 2, cz],
       ];
-      for (const [g2, x, z] of rails) {
-        const rail = new THREE.Mesh(g2, mat);
+      for (const [geo, x, z] of rails) {
+        const rail = new THREE.Mesh(geo, mat);
         rail.position.set(x, fy, z);
         rail.castShadow = true;
         rail.receiveShadow = true;
@@ -805,41 +393,15 @@ export function createGame(ctx) {
       m.userData.btn = d.btn;
       group.add(m);
 
-      // Canvas label on the top face. A pivot group spins the flat label in the
-      // table plane so the words read RIGHT-SIDE-UP for the LOCAL seated player.
-      // The pillars are anchored to the local −Z ocean and the whole group is
-      // rotated by orientFor(seatRy); without this counter-rotation the labels
-      // render upside-down for seats whose facing is π (opposite chair). We store
-      // the pivot and re-aim it in applyFacing() (same idea as the menu/connect4
-      // faceplate facing fix).
-      const pivot = new THREE.Group();
-      pivot.position.set(0, CELL * 0.26, 0);
+      // Canvas label on the top face.
       const lbl = makeLabelMesh(d.label, CELL * 1.34, CELL * 0.9);
       lbl.rotation.x = -Math.PI / 2;
-      pivot.add(lbl);
-      m.add(pivot);
+      lbl.position.set(0, CELL * 0.26, 0);
+      m.add(lbl);
 
-      placeButtons.push({ mesh: m, btn: d.btn, label: d.label, lblTex: lbl.userData.tex, lblCv: lbl.userData.cv, idleMat: d.mat, pivot });
+      placeButtons.push({ mesh: m, btn: d.btn, label: d.label, lblTex: lbl.userData.tex, lblCv: lbl.userData.cv, idleMat: d.mat });
     });
-    aimLabels();
     refreshButtons();
-  }
-
-  // Spin each flat tabletop label so its baseline faces the LOCAL seat. The plane
-  // (rotation.x=−π/2) authors its text "up" toward the −Z near edge, i.e. TOWARD
-  // the seated player — which reads UPSIDE DOWN. The board group is already
-  // rotated by orientFor(seatRy) so the pillars/placards face the local seat from
-  // any chair; we just need a constant π flip so the text top points AWAY from the
-  // player (the upright reading direction on a flat surface). No per-seat term is
-  // needed (verified across all four chairs): the group's own facing rotation
-  // already carries the label to the right place.
-  function aimLabels() {
-    for (const b of placeButtons) {
-      if (b.pivot) b.pivot.rotation.y = Math.PI;
-    }
-    for (const p of panels) {
-      if (p.pivot) p.pivot.rotation.y = Math.PI;
-    }
   }
 
   // A small canvas-textured plane carrying a single line of text.
@@ -916,18 +478,14 @@ export function createGame(ctx) {
       const mat = tex
         ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
         : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.85, depthWrite: false });
-      // A pivot keeps the placard text upright for the local seat (same facing
-      // fix as the pillar labels) regardless of the group's orientFor rotation.
-      const pivot = new THREE.Group();
-      pivot.position.set(x, SURF_Y + 0.002, ENEMY_CZ + GRID_SPAN / 2 + H * 0.62);
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(W, H), mat);
       mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(x, SURF_Y + 0.002, ENEMY_CZ + GRID_SPAN / 2 + H * 0.62);
       mesh.renderOrder = 6;
       mesh.userData.cv = cv;
       mesh.userData.tex = tex;
-      pivot.add(mesh);
-      group.add(pivot);
-      panels.push({ mesh, cv, tex, firer, pivot });
+      group.add(mesh);
+      panels.push({ mesh, cv, tex, firer });
     };
     if (mySide) {
       // Enemy fleet I must sink (firer = me), plus my losses (firer = opponent).
@@ -1120,11 +678,9 @@ export function createGame(ctx) {
   // ===========================================================================
   const shells = [];
   const blooms = [];
-  const sparks = []; // short-lived particle bits (splash geyser / explosion)
   let rafId = null;
   let lastT = 0;
   let idleT = 0;
-  let waterT = 0;
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   const raf = (fn) => (typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(fn) : setTimeout(() => fn(nowMs()), 16));
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
@@ -1142,40 +698,16 @@ export function createGame(ctx) {
     rafId = raf(tick);
   }
 
-  const _UP = new THREE.Vector3(0, 1, 0);
-  const _vel = new THREE.Vector3();
-  const _q = new THREE.Quaternion();
-
   function stepAnim(dt) {
-    // Scroll the procedural water normal map so the dark teal inlays shimmer.
-    waterT += dt;
-    for (const m of [M.oceanInlay, M.enemyInlay]) {
-      if (m && m.normalMap) {
-        m.normalMap.offset.x = waterT * 0.012;
-        m.normalMap.offset.y = waterT * 0.018;
-      }
-    }
     for (let i = shells.length - 1; i >= 0; i--) {
       const s = shells[i];
       s.t += dt;
       const k = Math.min(1, s.t / s.dur);
-      const px = s.from.x + (s.to.x - s.from.x) * k;
-      const pz = s.from.z + (s.to.z - s.from.z) * k;
-      const py = s.baseY + Math.sin(k * Math.PI) * s.arc;
-      s.mesh.position.set(px, py, pz);
-      // Orient nose (+Y of the rocket group) along the velocity vector.
-      _vel.set(s.to.x - s.from.x, s.arc * Math.PI * Math.cos(k * Math.PI), s.to.z - s.from.z);
-      if (_vel.lengthSq() > 1e-9) {
-        _vel.normalize();
-        _q.setFromUnitVectors(_UP, _vel);
-        s.mesh.quaternion.copy(_q);
-      }
-      // Exhaust puff trail.
-      s.trailT = (s.trailT || 0) + dt;
-      if (s.trailT > 0.03) { s.trailT = 0; spawnTrail(px, py, pz); }
+      s.mesh.position.x = s.from.x + (s.to.x - s.from.x) * k;
+      s.mesh.position.z = s.from.z + (s.to.z - s.from.z) * k;
+      s.mesh.position.y = s.baseY + Math.sin(k * Math.PI) * s.arc;
       if (k >= 1) {
         group.remove(s.mesh);
-        s.mesh.traverse((c) => { if (c.geometry && c.geometry !== G.peg) c.geometry.dispose?.(); });
         shells.splice(i, 1);
         if (s.onLand) s.onLand();
       }
@@ -1192,23 +724,6 @@ export function createGame(ctx) {
         b.mesh.material.dispose?.();
         b.mesh.geometry.dispose?.();
         blooms.splice(i, 1);
-      }
-    }
-    // Cheap CPU particle bits: ballistic, fade out, settle on the sea.
-    for (let i = sparks.length - 1; i >= 0; i--) {
-      const p = sparks[i];
-      p.t += dt;
-      p.vy -= p.gravity * dt;
-      p.mesh.position.x += p.vx * dt;
-      p.mesh.position.y += p.vy * dt;
-      p.mesh.position.z += p.vz * dt;
-      if (p.mesh.position.y < SURF_Y) { p.mesh.position.y = SURF_Y; p.vy = 0; p.vx *= 0.6; p.vz *= 0.6; }
-      const k = Math.min(1, p.t / p.dur);
-      p.mesh.material.opacity = (1 - k) * p.peak;
-      if (k >= 1) {
-        group.remove(p.mesh);
-        p.mesh.material.dispose?.();
-        sparks.splice(i, 1);
       }
     }
     if (targetRings.length > 0 || (reticle && reticle.visible)) {
@@ -1230,98 +745,34 @@ export function createGame(ctx) {
     if (hudMesh) hudMesh.rotation.y = -group.rotation.y;
   }
 
-  // A small ballistic missile (rocket) group, nose along +Y — scaled port of the
-  // original missile.ts (body + red nose + fins + emissive flame).
-  function buildMissile() {
-    const g = new THREE.Group();
-    const u = CELL * 0.18; // unit scale for the toy rocket
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35 * u, 0.42 * u, 3 * u, 10), M.shell);
-    g.add(body);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.42 * u, 1.1 * u, 10), M.shellNose);
-    nose.position.y = 2.05 * u;
-    g.add(nose);
-    for (let i = 0; i < 4; i++) {
-      const a = (i * Math.PI) / 2;
-      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.12 * u, 1.0 * u, 0.7 * u), M.black);
-      fin.position.set(Math.cos(a) * 0.5 * u, -1.2 * u, Math.sin(a) * 0.5 * u);
-      fin.rotation.y = -a;
-      g.add(fin);
-    }
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.36 * u, 1.8 * u, 8), M.shellFlame);
-    flame.position.y = -2.2 * u;
-    flame.rotation.x = Math.PI;
-    g.add(flame);
-    g.traverse((c) => { if (c.isMesh) c.castShadow = true; });
-    return g;
-  }
-
   function launchShell(targetX, targetY, which, fromZEdge, onLand) {
     const tx = cellX(targetX);
     const tz = cellZ(targetY, which);
-    const shell = buildMissile();
-    const dist = Math.abs(tz - fromZEdge);
+    const shell = new THREE.Mesh(G.shell, M.shell);
+    shell.castShadow = true;
     shells.push({
       mesh: shell,
       from: { x: tx, z: fromZEdge },
       to: { x: tx, z: tz },
       baseY: SURF_Y + CELL * 0.2,
-      arc: Math.max(CELL * 1.6, dist * 0.5),
+      arc: CELL * 2.2,
       t: 0,
-      dur: 0.5,
-      trailT: 0,
+      dur: 0.42,
       onLand,
     });
     group.add(shell);
     startLoop();
   }
 
-  // One short-lived additive particle bit.
-  function spawnParticle(x, y, z, vx, vy, vz, color, size, dur, gravity, peak) {
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: peak, depthWrite: false });
-    const mesh = new THREE.Mesh(G.bit, mat);
-    mesh.scale.setScalar(size);
-    mesh.position.set(x, y, z);
-    mesh.renderOrder = 5;
-    group.add(mesh);
-    sparks.push({ mesh, vx, vy, vz, gravity, t: 0, dur, peak });
-  }
-
-  function spawnTrail(x, y, z) {
-    spawnParticle(x, y, z, (Math.random() - 0.5) * CELL, Math.random() * CELL * 0.4, (Math.random() - 0.5) * CELL, "#cfcfcf", 0.9, 0.35, CELL * 0.6, 0.5);
-  }
-
-  // Impact FX — geyser (miss) or fireball + sparks (hit/sunk). A persistent
-  // marker/peg is added separately by placeMarker.
   function spawnBloom(x, z, outcome) {
     const isHit = outcome === "hit" || outcome === "sunk";
-    // central flash ring/ember (the scaling bloom).
     const geo = isHit ? G.emberPeg.clone() : G.ring.clone();
     const mesh = new THREE.Mesh(geo, (isHit ? M.ember : M.splash).clone());
     if (!isHit) mesh.rotation.x = Math.PI / 2;
     mesh.position.set(x, SURF_Y + CELL * 0.18, z);
     mesh.renderOrder = 4;
     group.add(mesh);
-    blooms.push({ mesh, t: 0, dur: isHit ? 0.6 : 0.5, grow: isHit ? 2.6 : 2.0, peak: isHit ? 0.95 : 0.9 });
-
-    const y0 = SURF_Y + CELL * 0.1;
-    if (isHit) {
-      // fireball + sparks: white-hot core, orange body, flying sparks.
-      const big = outcome === "sunk";
-      const n = big ? 22 : 14;
-      for (let i = 0; i < n; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        const spd = CELL * (1 + Math.random() * 2.4);
-        const col = Math.random() < 0.4 ? "#fff1d0" : Math.random() < 0.6 ? "#ff7b1a" : "#ff3b12";
-        spawnParticle(x, y0, z, Math.cos(ang) * spd, CELL * (1.4 + Math.random() * 2.6), Math.sin(ang) * spd, col, 0.7 + Math.random() * 0.8, 0.4 + Math.random() * 0.5, CELL * 1.4, 0.95);
-      }
-    } else {
-      // tall near-white geyser + foam ring.
-      for (let i = 0; i < 14; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        const spd = CELL * (0.4 + Math.random() * 1.4);
-        spawnParticle(x, y0, z, Math.cos(ang) * spd, CELL * (2 + Math.random() * 3), Math.sin(ang) * spd, "#eef6ff", 0.6 + Math.random() * 0.7, 0.5 + Math.random() * 0.4, CELL * 2.4, 0.9);
-      }
-    }
+    blooms.push({ mesh, t: 0, dur: 0.55, grow: isHit ? 2.4 : 2.0, peak: isHit ? 0.95 : 0.9 });
     startLoop();
   }
 
@@ -1333,16 +784,13 @@ export function createGame(ctx) {
     if (mapStore.has(key)) return; // idempotent
     let mesh;
     if (outcome === "miss") {
-      // flat white splash disc on the water (original CircleGeometry).
-      mesh = new THREE.Mesh(G.missDisc, M.miss);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.set(cellX(x), SURF_Y + 0.0012, cellZ(y, which));
+      mesh = new THREE.Mesh(G.peg, M.miss);
+      mesh.position.set(cellX(x), PEG_Y, cellZ(y, which));
     } else {
-      // red glowing peg standing on the surface (original CylinderGeometry).
-      mesh = new THREE.Mesh(G.peg, outcome === "sunk" ? M.sunkMark : M.hit);
-      mesh.position.set(cellX(x), SURF_Y + CELL * 0.12, cellZ(y, which));
-      mesh.castShadow = true;
+      mesh = new THREE.Mesh(G.emberPeg, outcome === "sunk" ? M.sunkMark : M.hit);
+      mesh.position.set(cellX(x), PEG_Y + CELL * 0.06, cellZ(y, which));
     }
+    mesh.castShadow = true;
     group.add(mesh);
     mapStore.set(key, mesh);
   }
@@ -1357,119 +805,28 @@ export function createGame(ctx) {
   // ===========================================================================
   // Hull rendering — MY ships only, on MY (near) ocean. Local-only; never wired.
   // ===========================================================================
-  // Build a class-specific warship: pointed-bow extruded hull in its jewel-tone
-  // paint, plus a small superstructure / turrets / funnels / island matching the
-  // original warship.ts silhouettes (scaled to the café table). Ship runs along
-  // local +X, centred. Sits ON the water at y≈0.
   function buildHull(ship) {
     const spec = SHIP_BY_ID.get(ship.id);
     const len = spec.length;
-    const paint = SHIP_PAINT[ship.id];
     const g = new THREE.Group();
-    const hullMat = hullMatFor(ship.id);
-    const deckMat = deckMatFor(ship.id);
-
-    const L = len * CELL * 0.84; // hull length (original length*CELL*0.84)
-    const w = CELL * paint.beam; // beam
-    const H = HULL_H * (paint.height / 4.2); // height scaled off battleship ref
-    const deckY = H * 0.62;
-
-    const box = (ww, hh, dd, x, y, z, mat) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(ww, hh, dd), mat || M.superstructure);
-      m.position.set(x, y, z);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      g.add(m);
-      return m;
-    };
-
-    if (ship.id === "submarine") {
-      // teardrop body via a stretched, low cylinder + sail.
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.5, w * 0.5, L, 14), hullMat);
-      body.rotation.z = Math.PI / 2;
-      body.position.y = H * 0.32;
-      body.castShadow = true;
-      body.receiveShadow = true;
-      g.add(body);
-      // tapered bow/stern caps
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(w * 0.5, L * 0.18, 14), hullMat);
-      cap.rotation.z = -Math.PI / 2;
-      cap.position.set(L * 0.55, H * 0.32, 0);
-      g.add(cap);
-      box(L * 0.22, H * 0.5, w * 0.5, L * 0.06, H * 0.32 + H * 0.4, 0, hullMat); // sail
-      const peri = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.05, w * 0.05, H * 0.5, 6), M.black);
-      peri.position.set(L * 0.06, H * 0.32 + H * 0.75, 0);
-      g.add(peri);
-    } else {
-      // Pointed-bow hull from an extruded plan shape.
-      const bow = L / 2 - L * 0.22;
-      const stern = w * 0.46;
-      const shape = new THREE.Shape();
-      shape.moveTo(-L / 2, -stern);
-      shape.lineTo(bow, -w / 2);
-      shape.quadraticCurveTo(L / 2, -w * 0.18, L / 2, 0);
-      shape.quadraticCurveTo(L / 2, w * 0.18, bow, w / 2);
-      shape.lineTo(-L / 2, stern);
-      shape.lineTo(-L / 2, -stern);
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: H, bevelEnabled: true, bevelThickness: H * 0.12, bevelSize: w * 0.06, bevelSegments: 1, steps: 1 });
-      geo.rotateX(-Math.PI / 2);
-      geo.translate(0, 0, 0);
-      const hull = new THREE.Mesh(geo, hullMat);
-      hull.castShadow = true;
-      hull.receiveShadow = true;
-      g.add(hull);
-
-      if (ship.id === "carrier") {
-        // flat flight deck slab + starboard island.
-        box(L * 0.92, H * 0.12, w * 1.5, 0, deckY + H * 0.1, 0, deckMat);
-        box(L * 0.14, H * 0.9, w * 0.5, -L * 0.04, deckY + H * 0.55, w * 0.5, M.superstructure); // island
-        box(L * 0.06, H * 0.4, w * 0.4, -L * 0.04, deckY + H * 1.1, w * 0.5, M.glass); // bridge
-        const mast = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.04, w * 0.04, H * 0.8, 6), M.black);
-        mast.position.set(-L * 0.04, deckY + H * 1.5, w * 0.5);
-        g.add(mast);
-      } else if (ship.id === "battleship") {
-        box(L * 0.5, H * 0.18, w * 0.9, 0, deckY + H * 0.05, 0, deckMat);
-        // superfiring main turrets fore + aft.
-        const turret = (x) => {
-          box(w * 0.9, H * 0.3, w * 0.8, x, deckY + H * 0.25, 0, M.superstructure);
-          const barrel = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.06, w * 0.06, L * 0.18, 6), M.black);
-          barrel.rotation.z = Math.PI / 2;
-          barrel.position.set(x + L * 0.1, deckY + H * 0.3, 0);
-          g.add(barrel);
-        };
-        turret(L * 0.3);
-        turret(-L * 0.32);
-        box(L * 0.16, H * 0.9, w * 0.7, 0, deckY + H * 0.55, 0, M.superstructure); // tower
-        box(L * 0.08, H * 0.4, w * 0.45, 0, deckY + H * 1.1, 0, M.glass);
-        const funnel = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.16, w * 0.2, H * 0.7, 12), M.superstructure);
-        funnel.position.set(-L * 0.12, deckY + H * 0.5, 0);
-        g.add(funnel);
-      } else if (ship.id === "cruiser") {
-        box(L * 0.5, H * 0.16, w * 0.9, 0, deckY + H * 0.05, 0, deckMat);
-        box(w * 0.8, H * 0.28, w * 0.7, L * 0.34, deckY + H * 0.22, 0, M.superstructure); // fwd gun
-        box(L * 0.2, H * 0.8, w * 0.65, L * 0.02, deckY + H * 0.5, 0, M.superstructure); // bridge block
-        box(L * 0.1, H * 0.35, w * 0.4, L * 0.05, deckY + H * 1.0, 0, M.glass);
-        const funnel = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.13, w * 0.17, H * 0.6, 10), M.superstructure);
-        funnel.position.set(-L * 0.08, deckY + H * 0.45, 0);
-        g.add(funnel);
-      } else {
-        // destroyer
-        box(L * 0.55, H * 0.16, w * 0.85, 0, deckY + H * 0.05, 0, deckMat);
-        box(w * 0.7, H * 0.26, w * 0.6, L * 0.34, deckY + H * 0.2, 0, M.superstructure); // fwd gun
-        box(L * 0.22, H * 0.75, w * 0.6, L * 0.04, deckY + H * 0.45, 0, M.superstructure); // bridge
-        box(L * 0.08, H * 0.3, w * 0.4, L * 0.08, deckY + H * 0.95, 0, M.glass);
-        const mast = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.04, w * 0.06, H * 0.8, 6), M.black);
-        mast.position.set(-L * 0.02, deckY + H * 0.9, 0);
-        g.add(mast);
-      }
-    }
+    const along = len * CELL * 0.86;
+    const wide = CELL * 0.5;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(along, HULL_H * 0.7, wide), M.hull);
+    body.position.y = HULL_H * 0.35;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    g.add(body);
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(along * 0.3, HULL_H * 0.5, wide * 0.55), M.hullDeck);
+    deck.position.set(-along * 0.12, HULL_H * 0.85, 0);
+    deck.castShadow = true;
+    g.add(deck);
 
     const cells = shipCells(ship);
     const a = cells[0];
     const b = cells[cells.length - 1];
     const cx = (cellX(a.x) + cellX(b.x)) / 2;
     const cz = (cellZ(a.y, "ocean") + cellZ(b.y, "ocean")) / 2;
-    g.position.set(cx, SURF_Y + 0.0005, cz);
+    g.position.set(cx, HULL_Y, cz);
     if (ship.orientation === "vertical") g.rotation.y = Math.PI / 2;
     g.userData.shipId = ship.id;
     return g;
@@ -1934,12 +1291,8 @@ export function createGame(ctx) {
   // recomputes the local role/colour (no side-flip). state === null ⇒ fresh game.
   // ===========================================================================
   function applyState(state) {
-    for (const s of shells) group.remove(s.mesh);
-    for (const b of blooms) { group.remove(b.mesh); b.mesh.material?.dispose?.(); b.mesh.geometry?.dispose?.(); }
-    for (const p of sparks) { group.remove(p.mesh); p.mesh.material?.dispose?.(); }
     shells.length = 0;
     blooms.length = 0;
-    sparks.length = 0;
     clearReticle();
     for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
     targetRings.length = 0;
@@ -2158,7 +1511,7 @@ export function createGame(ctx) {
     }
     placeButtons.length = 0;
     for (const p of panels) {
-      group.remove(p.pivot || p.mesh);
+      group.remove(p.mesh);
       p.mesh.geometry?.dispose?.();
       p.tex?.dispose?.();
       p.mesh.material?.dispose?.();
@@ -2171,19 +1524,9 @@ export function createGame(ctx) {
       hudMesh.material?.dispose?.();
       hudMesh = null;
     }
-    for (const p of sparks) { group.remove(p.mesh); p.mesh.material?.dispose?.(); }
-    sparks.length = 0;
     if (group.parent) group.parent.remove(group);
     for (const g of Object.values(G)) g && g.dispose?.();
-    // Per-instance cloned water normal maps (the shared cache maps stay alive).
-    for (const m of [M.oceanInlay, M.enemyInlay]) m && m.normalMap && m.normalMap.dispose?.();
     for (const m of Object.values(M)) m && m.dispose?.();
-    // Per-class hull materials + their cloned rough/metal maps.
-    for (const mat of hullMatCache.values()) {
-      if (mat.roughnessMap) mat.roughnessMap.dispose?.();
-      mat.dispose?.();
-    }
-    hullMatCache.clear();
   }
 
   // Initial paint.
