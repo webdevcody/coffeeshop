@@ -331,7 +331,16 @@
             if (phase === "lobby") startMatch();
             break;
           case "drop":
-            if (phase === "play" && typeof msg.col === "number") applyRemoteDrop(msg.col);
+            // Bound-check the column: a malformed/hostile peer could otherwise
+            // send a negative, fractional, or out-of-grid col, writing a
+            // "ghost" off-grid cell that silently desyncs the boards.
+            if (
+              phase === "play" &&
+              Number.isInteger(msg.col) &&
+              msg.col >= 0 &&
+              msg.col < COLS
+            )
+              applyRemoteDrop(msg.col);
             break;
           case "restart":
             resetGame(false);
