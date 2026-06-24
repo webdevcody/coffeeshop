@@ -42,6 +42,9 @@ re-downloads what actually changed.
 - **Enter** — focus chat · **Esc** — leave chat
 - **🎙️ Enable voice** — proximity voice chat. Once on: **🎤 Mic** mutes/unmutes your own microphone, **🔊 Audio** silences everyone in the room at once.
 - On touch devices, a virtual joystick appears on the left.
+- **Step outside** — walk out the front door onto the city block: sidewalks, a
+  road with cars driving by, birds overhead, and street props. The block drops
+  off at its edges — walk off and you fall, then respawn back in the café.
 
 ## Project layout
 
@@ -59,7 +62,8 @@ src/
   games/arcade.js         centered modal that hosts a game in an iframe
   engine/scene.js         renderer, lights, CSS2D overlay, resize
   engine/controls.js      keyboard, drag-to-orbit, touch joystick
-  world/coffeeshop.js     assembles the room; returns collision boxes
+  world/coffeeshop.js     assembles the room + entrance; returns colliders, ground, spawn
+  world/outside.js        the street block: road, props, ambient cars + birds
   world/props.js          reusable furniture/decor builders
   world/textures.js       procedural canvas textures (wood, plaster, menu)
   world/collision.js      circle-vs-AABB resolution
