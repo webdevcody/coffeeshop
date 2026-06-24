@@ -56,7 +56,7 @@ src/
   config.js               tuning constants (speeds, camera, palette, voice)
   main.js                 wiring + game loop
   games/registry.js       game catalog: id -> { name, capacity, url(roomId, role) }
-  games/arcade.js         full-screen overlay that hosts a game in an iframe
+  games/arcade.js         centered modal that hosts a game in an iframe
   engine/scene.js         renderer, lights, CSS2D overlay, resize
   engine/controls.js      keyboard, drag-to-orbit, touch joystick
   world/coffeeshop.js     assembles the room; returns collision boxes
@@ -81,7 +81,9 @@ rest (and without re-reading the whole game).
 ## 🎮 Table games
 
 Sit down at any café table (**Space** next to a chair) and that table's game opens
-in a full-screen overlay; **Leave game** (or standing up) returns you to the café.
+in a **modal** over the café — the room and the people in it stay visible behind
+it. Closing the modal (the **Leave game** button, a click on the dimmed backdrop,
+or **Esc**) — or standing up — returns you to the café and ends the match.
 Each table is its **own room**, so two people at the same table play each other.
 
 How a match is coordinated:

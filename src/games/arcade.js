@@ -1,8 +1,11 @@
-// Arcade — manages the full-viewport overlay shown when you sit at a table.
+// Arcade — manages the centered modal shown when you sit at a table.
 // It has three states:
 //   - menu:    the host picks which game to spin up (showMenu)
 //   - waiting: the guest waits for the host to pick a game (showWaiting)
 //   - game:    the chosen game runs in an <iframe> (show)
+// The modal floats over a dimmed-but-see-through backdrop so you keep context
+// of the coffeeshop (and who's in it) while you play. Closing the modal — via
+// the Leave button, a backdrop click, or Escape — kicks you out of the game.
 // It is deliberately game-agnostic: it just loads whatever URL the registry
 // hands it. The server decides the room id and your role (host/guest).
 
@@ -21,18 +24,42 @@ export class Arcade {
     const el = document.createElement("div");
     el.className = "arcade hidden";
     el.innerHTML = `
-      <div class="arcade-bar">
-        <span class="arcade-title" id="arcade-title">Game</span>
-        <span class="arcade-status" id="arcade-status"></span>
-        <button class="arcade-leave" id="arcade-leave" type="button">✕ Leave game</button>
-      </div>
-      <div class="arcade-stage" id="arcade-stage"></div>`;
+      <div class="arcade-modal" role="dialog" aria-modal="true" aria-label="Table game">
+        <div class="arcade-bar">
+          <span class="arcade-title" id="arcade-title">Game</span>
+          <span class="arcade-status" id="arcade-status"></span>
+          <button class="arcade-leave" id="arcade-leave" type="button"
+                  title="Close — leaves the game">✕ Leave game</button>
+        </div>
+        <div class="arcade-stage" id="arcade-stage"></div>
+      </div>`;
     this.root.appendChild(el);
     this.el = el;
+    this.modal = el.querySelector(".arcade-modal");
     this.titleEl = el.querySelector("#arcade-title");
     this.statusEl = el.querySelector("#arcade-status");
     this.stage = el.querySelector("#arcade-stage");
     el.querySelector("#arcade-leave").addEventListener("click", () => this.onLeave?.());
+
+    // Closing the modal kicks you out of the game. A click on the dimmed
+    // backdrop (outside the modal) counts as closing — but only when the press
+    // both starts and ends on the backdrop, so a drag out of the game doesn't
+    // accidentally end the match.
+    let downOnBackdrop = false;
+    el.addEventListener("mousedown", (e) => {
+      downOnBackdrop = e.target === el;
+    });
+    el.addEventListener("click", (e) => {
+      if (downOnBackdrop && e.target === el) this.onLeave?.();
+    });
+
+    // Escape closes too (best-effort — a focused game iframe may swallow it).
+    window.addEventListener("keydown", (e) => {
+      if (!this.open || e.key !== "Escape") return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      this.onLeave?.();
+    });
   }
 
   _reveal() {
