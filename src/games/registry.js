@@ -191,6 +191,24 @@ export const GAMES = {
     },
   },
 
+  tron: {
+    id: "tron",
+    name: "Light Cycles",
+    blurb: "Race, leave a trail, don't crash.",
+    icon: "🏍️",
+    // Real-time, host-authoritative: the host simulates both cycles and streams
+    // the arena every tick; the guest sends only steering. Two players for now.
+    capacity: 2,
+    // Spectators subscribe read-only to the host's per-tick broadcast.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/tron/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
 };
 
 export function getGame(id) {
