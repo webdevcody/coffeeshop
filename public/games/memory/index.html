@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#3a2418" />
+    <title>Memory Match · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online Memory Match — flip café cards and find the pairs."
+    />
+    <style>
+      :root {
+        --bg: #2a1a10;
+        --felt: #6b4327;
+        --felt-edge: #4a2e1a;
+        --card-back: linear-gradient(150deg, #b5763d, #8a5526);
+        --card-front: #f6ecd9;
+        --ink: #f6ecd9;
+        --muted: #e3cbac;
+        --p0: #22d3ee;
+        --p1: #fb923c;
+        --accent: #ffd166;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a2614, #160c05 72%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 12px;
+      }
+      header { text-align: center; line-height: 1.2; }
+      header h1 { margin: 0; font-size: clamp(17px, 3.8vw, 25px); }
+      #status { margin-top: 2px; font-size: clamp(12px, 2.8vw, 15px); color: var(--muted); min-height: 1.2em; }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #9be7c4; font-weight: 700; }
+      #status.lose { color: #ffb0b8; font-weight: 700; }
+      #status.draw { color: #ffe08a; font-weight: 700; }
+
+      #scores { display: flex; gap: 18px; align-items: center; font-weight: 700; font-size: clamp(13px, 2.8vw, 16px); }
+      .score { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border-radius: 8px; }
+      .score .dot { width: 13px; height: 13px; border-radius: 4px; display: inline-block; }
+      .score.p0 { color: var(--p0); } .score.p0 .dot { background: var(--p0); }
+      .score.p1 { color: var(--p1); } .score.p1 .dot { background: var(--p1); }
+      .score.active { background: rgba(255, 255, 255, 0.12); outline: 1px solid rgba(255,255,255,0.25); }
+
+      #board {
+        --cols: 6;
+        display: grid;
+        grid-template-columns: repeat(var(--cols), 1fr);
+        gap: clamp(5px, 1.2vw, 11px);
+        background: var(--felt);
+        border: 4px solid var(--felt-edge);
+        border-radius: 14px;
+        padding: clamp(7px, 1.4vw, 14px);
+        width: min(94vw, 660px);
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+      }
+      .card {
+        aspect-ratio: 3 / 4;
+        perspective: 600px;
+        cursor: default;
+      }
+      .card.flippable { cursor: pointer; }
+      .inner {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        transform-style: preserve-3d;
+        transition: transform 0.4s cubic-bezier(0.3, 0.7, 0.4, 1.3);
+      }
+      .card.flipped .inner { transform: rotateY(180deg); }
+      .face {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        backface-visibility: hidden;
+        -webkit-backface-visibility: hidden;
+        font-size: clamp(18px, 4.6vw, 34px);
+      }
+      .face.back {
+        background: var(--card-back);
+        border: 2px solid #5e3c1a;
+        color: rgba(255, 255, 255, 0.55);
+        box-shadow: inset 0 2px 6px rgba(255, 255, 255, 0.2), inset 0 -3px 8px rgba(0, 0, 0, 0.35);
+      }
+      .face.front {
+        background: var(--card-front);
+        border: 2px solid #d9c39e;
+        transform: rotateY(180deg);
+      }
+      .card.flippable:hover .face.back { filter: brightness(1.12); }
+      .card.claimed .inner { opacity: 0.62; }
+      .card.claimed .face.front { box-shadow: inset 0 0 0 3px var(--claim, #fff); }
+      .card.c0 { --claim: var(--p0); }
+      .card.c1 { --claim: var(--p1); }
+
+      .stage { position: relative; }
+      #overlay {
+        position: absolute; inset: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; gap: 8px; pointer-events: none;
+        background: rgba(10, 6, 2, 0.55); border-radius: 14px;
+      }
+      #overlay .big { font-size: clamp(22px, 6vw, 40px); font-weight: 800; }
+      #overlay .big.win { color: #9be7c4; } #overlay .big.lose { color: #ff9aa2; } #overlay .big.draw { color: #ffe08a; }
+      .hidden { display: none !important; }
+
+      footer { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+      .hint { font-size: 12px; color: var(--muted); opacity: 0.85; }
+      button.cta {
+        font: inherit; color: var(--ink); background: #5e3c1a; border: 1px solid #8a5a2b;
+        border-radius: 8px; padding: 8px 16px; cursor: pointer;
+      }
+      button.cta:hover { background: #71491f; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>☕ Memory Match</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="scores">
+        <span class="score p0" id="score0"><span class="dot"></span><span id="score0n">You</span><span> · </span><b id="score0v">0</b></span>
+        <span class="score p1" id="score1"><span class="dot"></span><span id="score1n">Opponent</span><span> · </span><b id="score1v">0</b></span>
+      </div>
+      <div class="stage">
+        <div id="board" aria-label="Memory Match board"></div>
+        <div id="overlay" class="hidden">
+          <div class="big" id="ovBig"></div>
+          <button id="newGameBtn" class="cta" type="button" style="pointer-events:auto">Play again</button>
+        </div>
+      </div>
+      <footer>
+        <span class="hint">Flip two cards. Match = claim it and go again. Most pairs wins.</span>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // Same room contract as the other café games: #host=<CODE> registers the
+      // room's PeerJS peer, #join=<CODE> connects to it, #spectate=<CODE> watches
+      // read-only. Host-authoritative: the host owns the shuffled deck and which
+      // cards are face-up / claimed, and broadcasts a snapshot after every flip.
+      // Face-DOWN identities are never sent (see buildState) so a peer can't read
+      // the deck off the wire and cheat.
+      const PEER_PREFIX = "coffeeshop-memory-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const overlayEl = document.getElementById("overlay");
+      const ovBigEl = document.getElementById("ovBig");
+      const newGameBtn = document.getElementById("newGameBtn");
+      const score0El = document.getElementById("score0");
+      const score1El = document.getElementById("score1");
+      const score0v = document.getElementById("score0v");
+      const score1v = document.getElementById("score1v");
+
+      // ===== PURE LOGIC START (no DOM/network — deterministic memory rules) =====
+      // Each card holds a pair id (0..pairs-1); every id appears exactly twice.
+      // Card states: "down" (face-down), "up" (revealed this turn), "claimed".
+      const FACES = ["☕", "🫘", "🥐", "🍰", "🍩", "🧁", "🍪", "🥛", "🍫", "🍵", "🧋", "🥧"];
+      const otherSeat = (s) => (s === 0 ? 1 : 0);
+
+      function buildDeck(pairs, rng) {
+        const vals = [];
+        for (let p = 0; p < pairs; p++) vals.push(p, p);
+        for (let i = vals.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const t = vals[i]; vals[i] = vals[j]; vals[j] = t;
+        }
+        return vals;
+      }
+
+      function makeGame(pairs, rng) {
+        const deck = buildDeck(pairs, rng);
+        return {
+          pairs,
+          deck,
+          state: deck.map(() => "down"),
+          claimedBy: deck.map(() => null),
+          turn: 0, // host (seat 0) moves first
+          scores: [0, 0],
+          firstPick: null,
+          pending: null, // [a,b] mismatch awaiting flip-back
+          phase: "play",
+        };
+      }
+
+      // Try to flip card `i` for the side to move. Returns an event describing
+      // what happened: {kind:"reject"} | {kind:"first"} | {kind:"match",over} |
+      // {kind:"mismatch"}. A match claims the pair, scores, and KEEPS the turn; a
+      // mismatch leaves both cards up and parks them in `pending` for the caller
+      // to flip back (via resolveMismatch) after a brief delay.
+      function applyPick(g, seat, i) {
+        if (g.phase !== "play" || g.pending) return { kind: "reject" };
+        if (seat !== g.turn) return { kind: "reject" };
+        if (!Number.isInteger(i) || i < 0 || i >= g.deck.length) return { kind: "reject" };
+        if (g.state[i] !== "down" || i === g.firstPick) return { kind: "reject" };
+
+        g.state[i] = "up";
+        if (g.firstPick === null) {
+          g.firstPick = i;
+          return { kind: "first" };
+        }
+        const a = g.firstPick;
+        const b = i;
+        if (g.deck[a] === g.deck[b]) {
+          g.state[a] = g.state[b] = "claimed";
+          g.claimedBy[a] = g.claimedBy[b] = g.turn;
+          g.scores[g.turn] += 1;
+          g.firstPick = null;
+          if (g.scores[0] + g.scores[1] >= g.pairs) g.phase = "over";
+          return { kind: "match", over: g.phase === "over" };
+        }
+        g.pending = [a, b];
+        return { kind: "mismatch" };
+      }
+
+      // Flip a mismatched pair back face-down and pass the turn.
+      function resolveMismatch(g) {
+        if (!g.pending) return;
+        const [a, b] = g.pending;
+        g.state[a] = g.state[b] = "down";
+        g.firstPick = null;
+        g.pending = null;
+        g.turn = otherSeat(g.turn);
+      }
+
+      function winner(g) {
+        if (g.scores[0] === g.scores[1]) return null; // tie
+        return g.scores[0] > g.scores[1] ? 0 : 1;
+      }
+      // ===== PURE LOGIC END =====
+
+      // ---- Config ----------------------------------------------------------
+      const PAIRS = 12;
+      const COLS = 6;
+      const SHOW_MS = 1100; // how long a mismatched pair stays visible before flipping back
+
+      // ---- Shared render state ---------------------------------------------
+      let view = null;
+      let mySeat = null; // 0 host, 1 guest, null spectator
+      let isSpectator = false;
+      let conn = null;
+      const spectators = [];
+      let cardEls = [];
+
+      // ---- Host-authoritative game (host only) -----------------------------
+      let g = null;
+      let flipBackTimer = null;
+
+      function rng() { return Math.random(); }
+
+      // Masked snapshot — face-down cards carry NO value, so guests/spectators
+      // can never read the deck before a card is flipped.
+      function buildState() {
+        return {
+          type: "state",
+          phase: g.phase,
+          cols: COLS,
+          count: g.deck.length,
+          cards: g.deck.map((v, i) => ({
+            state: g.state[i],
+            value: g.state[i] === "down" ? null : v,
+            by: g.claimedBy[i],
+          })),
+          turn: g.turn,
+          scores: g.scores.slice(),
+          busy: g.pending !== null,
+        };
+      }
+      function broadcast(s) {
+        send(s);
+        for (const c of spectators) if (c.open) c.send(s);
+      }
+      function pushState() {
+        const s = buildState();
+        applyState(s); // host renders the same masked view everyone else gets
+        broadcast(s);
+      }
+
+      function startGame() {
+        clearTimeout(flipBackTimer);
+        g = makeGame(PAIRS, rng);
+        pushState();
+      }
+
+      // Host applies a (validated) flip for `seat`.
+      function hostFlip(seat, i) {
+        const ev = applyPick(g, seat, i);
+        if (ev.kind === "reject") return;
+        if (ev.kind === "mismatch") {
+          pushState(); // show both cards…
+          flipBackTimer = setTimeout(() => {
+            resolveMismatch(g); // …then flip back + pass turn
+            pushState();
+          }, SHOW_MS);
+        } else {
+          pushState();
+        }
+      }
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      function flipCard(i) {
+        if (isSpectator || mySeat === null || !view) return;
+        if (view.busy || view.phase !== "play" || view.turn !== mySeat) return;
+        if (!view.cards[i] || view.cards[i].state !== "down") return;
+        if (mySeat === 0) hostFlip(0, i);
+        else send({ type: "flip", i });
+      }
+
+      function requestRestart() {
+        if (mySeat === 0) startGame();
+        else send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", requestRestart);
+
+      // ---- Rendering -------------------------------------------------------
+      function buildGrid(count) {
+        boardEl.style.setProperty("--cols", COLS);
+        boardEl.innerHTML = "";
+        cardEls = [];
+        for (let i = 0; i < count; i++) {
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML =
+            '<div class="inner"><div class="face back">☕</div><div class="face front"></div></div>';
+          const idx = i;
+          card.addEventListener("click", () => flipCard(idx));
+          boardEl.appendChild(card);
+          cardEls.push(card);
+        }
+      }
+
+      function applyState(s) {
+        view = s;
+        if (cardEls.length !== s.count) buildGrid(s.count);
+        const myTurn = !isSpectator && mySeat !== null && s.phase === "play" && s.turn === mySeat && !s.busy;
+        for (let i = 0; i < s.count; i++) {
+          const c = s.cards[i];
+          const el = cardEls[i];
+          const revealed = c.state !== "down";
+          el.classList.toggle("flipped", revealed);
+          el.classList.toggle("claimed", c.state === "claimed");
+          el.classList.remove("c0", "c1");
+          if (c.by === 0) el.classList.add("c0");
+          else if (c.by === 1) el.classList.add("c1");
+          // Only ever write a face value when the card is revealed (anti-cheat:
+          // the snapshot itself omits face-down values, this is belt-and-braces).
+          el.querySelector(".face.front").textContent = revealed && c.value != null ? FACES[c.value] : "";
+          el.classList.toggle("flippable", myTurn && c.state === "down");
+        }
+        updateHud();
+        drawOverlay();
+      }
+
+      function updateHud() {
+        const s = view;
+        // The local player's score sits on the left ("You"); remap for the guest
+        // so its own score is on the left. Spectators see seat 0 (Cyan) on left.
+        const meIdx = mySeat === null ? 0 : mySeat;
+        const themIdx = otherSeat(meIdx);
+        score0v.textContent = s.scores[meIdx];
+        score1v.textContent = s.scores[themIdx];
+        score0El.classList.toggle("active", s.phase === "play" && s.turn === meIdx);
+        score1El.classList.toggle("active", s.phase === "play" && s.turn === themIdx);
+
+        if (s.phase === "play") {
+          if (s.busy) setStatus("Memorize the cards…", "");
+          else if (mySeat === null) setStatus((s.turn === 0 ? "Cyan" : "Orange") + "'s turn.", "");
+          else setStatus(s.turn === mySeat ? "Your turn — flip two cards." : "Opponent's turn…", s.turn === mySeat ? "turn" : "");
+        } else if (s.phase === "over") {
+          setStatus("Game over.", "");
+        }
+      }
+
+      function drawOverlay() {
+        const s = view;
+        if (s.phase !== "over") { overlayEl.classList.add("hidden"); return; }
+        const meIdx = mySeat === null ? 0 : mySeat;
+        const themIdx = otherSeat(meIdx);
+        let text, cls;
+        if (s.scores[0] === s.scores[1]) {
+          text = `It's a tie — ${s.scores[meIdx]}–${s.scores[themIdx]}.`;
+          cls = "draw";
+        } else if (mySeat === null) {
+          const w = s.scores[0] > s.scores[1] ? "Cyan" : "Orange";
+          text = `${w} wins ${Math.max(s.scores[0], s.scores[1])}–${Math.min(s.scores[0], s.scores[1])}!`;
+          cls = "";
+        } else {
+          const iWon = s.scores[meIdx] > s.scores[themIdx];
+          text = iWon ? `You win ${s.scores[meIdx]}–${s.scores[themIdx]}! 🎉` : `You lose ${s.scores[themIdx]}–${s.scores[meIdx]}.`;
+          cls = iWon ? "win" : "lose";
+        }
+        ovBigEl.textContent = text;
+        ovBigEl.className = "big " + cls;
+        // Spectators can't restart.
+        newGameBtn.style.display = isSpectator ? "none" : "";
+        overlayEl.classList.remove("hidden");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      // ---- Connection handling ---------------------------------------------
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        if (mySeat === 0) {
+          // Host: guest only ever sends a flip or a restart request.
+          if (msg.type === "hello") { if (!g) startGame(); else pushState(); }
+          else if (msg.type === "flip") hostFlip(1, msg.i);
+          else if (msg.type === "restart") startGame();
+          return;
+        }
+        if (msg.type === "state") applyState(msg);
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        c.on("open", () => { if (mySeat === 1) send({ type: "hello" }); });
+        c.on("data", handleData);
+        c.on("close", onPeerGone);
+        c.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        clearTimeout(flipBackTimer);
+        if (mySeat === 0) {
+          g = null;
+          overlayEl.classList.add("hidden");
+          setStatus("Opponent left — waiting for a new challenger…", "");
+        } else {
+          setStatus("Disconnected from the table.", "");
+        }
+      }
+
+      function addSpectator(c) {
+        c.on("open", () => {
+          spectators.push(c);
+          if (g) c.send(buildState());
+        });
+        c.on("data", () => {});
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) {
+        const i = spectators.indexOf(c);
+        if (i >= 0) spectators.splice(i, 1);
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("spectate=")) return { role: "spectator", code: h.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") { setStatus("Failed to load networking library.", "lose"); return; }
+        const info = parseHash();
+        if (!info) { setStatus("Open this game from a café table to start a match.", ""); return; }
+
+        if (info.role === "host") {
+          mySeat = 0;
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("connection", (c) => {
+            if (c.metadata && c.metadata.spectator) { addSpectator(c); return; }
+            if (conn && conn.open) { c.close(); return; }
+            wireConnection(c);
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          mySeat = null;
+          // Neutral labels for an onlooker (no "You").
+          document.getElementById("score0n").textContent = "Cyan";
+          document.getElementById("score1n").textContent = "Orange";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () => {
+            const c = peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } });
+            conn = c;
+            c.on("data", handleData);
+            c.on("open", () => setStatus("👁 Spectating…", ""));
+            c.on("close", () => setStatus("The match ended.", ""));
+            c.on("error", () => setStatus("The match ended.", ""));
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          mySeat = 1;
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>
