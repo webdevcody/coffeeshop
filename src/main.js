@@ -18,7 +18,7 @@ import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
-const { colliders, seats } = buildCoffeeshop(scene);
+const { colliders, seats, ground, spawn, update: updateWorld } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
@@ -185,7 +185,7 @@ function colorFor(id, fallbackName) {
 
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
-  local = new LocalPlayer(scene, controls, colliders, color, name, seats);
+  local = new LocalPlayer(scene, controls, colliders, color, name, seats, ground, spawn);
   // Sitting at a game table asks the server for a role; the reply opens the
   // game-picker menu (host) or a waiting screen (guest), then the game itself.
   local.onSit = (seat) => {
@@ -228,6 +228,7 @@ let previewAngle = 0;
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   controls.update();
+  updateWorld?.(dt); // animate the street: cars driving by, birds overhead
 
   if (joined && local) {
     local.update(dt, camera);
