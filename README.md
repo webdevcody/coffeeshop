@@ -90,12 +90,16 @@ How a match is coordinated:
 
 - The `ws` server is a **generic room coordinator** — it doesn't know what game a
   table runs. The first person to sit is the **host** (and gets a fresh random
-  `roomId`); the second is the **guest** (same `roomId`). The café games are
-  two-player, but tables seat four — so anyone who sits once both player seats are
-  taken becomes a **spectator** of the running match (same `roomId`), watching a
-  read-only board instead of being turned away. Either *player* leaving ends the
-  match and frees the table (spectators are sent back too); a spectator leaving
-  just stops watching.
+  `roomId`); everyone who sits after, up to the game's **`capacity`**, is a
+  **guest** (same `roomId`). Most games are two-player, but a game can ask for up
+  to four — **Ludo** seats a host + up to three guests at one table, and every
+  guest joins the host the same way (`#join`) while the game assigns each a
+  colour by connection order. Once all player seats are taken, further sitters
+  become **spectators** of the running match (same `roomId`), watching read-only
+  instead of being turned away. The **host** leaving ends the match and frees the
+  table (everyone is sent back); in a >2-player game a single *guest* leaving just
+  frees their seat and the match plays on, and a spectator leaving just stops
+  watching.
 - Spectating is driven by the game itself: the host owns the room's fixed PeerJS
   peer, so spectators connect to it read-only (`#spectate=<roomId>`) and the host
   streams a board snapshot after every move. Whether a game supports this is a

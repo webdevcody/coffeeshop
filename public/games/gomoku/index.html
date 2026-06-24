@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#caa472" />
+    <title>Gomoku · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online Gomoku (Five in a Row) — sit at a café table and play a friend."
+    />
+    <style>
+      :root {
+        --bg: #2a1d10;
+        --wood: #d9a86a;
+        --wood-edge: #a9763f;
+        --line: rgba(60, 38, 16, 0.75);
+        --ink: #2a1d10;
+        --paper: #f6ecd9;
+        --muted: #f0d9b8;
+        --black: #1a1a1a;
+        --black-hi: #4a4a4a;
+        --white: #fbfbfb;
+        --white-hi: #ffffff;
+        --accent: #b5651d;
+        --last: #e23b4e;
+        --win: #2a9d8f;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #3a2917, #140c05 70%);
+        color: var(--paper);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 12px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: #ffe2b0; font-weight: 700; }
+      #status.win { color: #9be7c4; font-weight: 700; }
+      #status.lose { color: #ffb0b8; font-weight: 700; }
+      #status.draw { color: #ffe08a; font-weight: 700; }
+
+      #board {
+        --cells: 15;
+        width: min(92vw, 78vh);
+        aspect-ratio: 1 / 1;
+        background: var(--wood);
+        border: 5px solid var(--wood-edge);
+        border-radius: 8px;
+        /* Pad by half a cell so the outermost lines (drawn through cell centers)
+           sit on the board edge like a real Go board. */
+        padding: calc(min(92vw, 78vh) / 30);
+        display: grid;
+        grid-template-columns: repeat(var(--cells), 1fr);
+        grid-template-rows: repeat(var(--cells), 1fr);
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+        touch-action: manipulation;
+      }
+      /* Each intersection is a cell; the grid lines are drawn through its center
+         so stones placed in the cell sit on the intersection. */
+      .pt {
+        position: relative;
+        cursor: default;
+      }
+      .pt::before,
+      .pt::after {
+        content: "";
+        position: absolute;
+        background: var(--line);
+      }
+      .pt::before { left: 0; right: 0; top: 50%; height: 1.5px; transform: translateY(-50%); }
+      .pt::after { top: 0; bottom: 0; left: 50%; width: 1.5px; transform: translateX(-50%); }
+      /* Trim the half-lines that would poke past the outermost intersections. */
+      .pt.edge-l::before { left: 50%; }
+      .pt.edge-r::before { right: 50%; }
+      .pt.edge-t::after { top: 50%; }
+      .pt.edge-b::after { bottom: 50%; }
+
+      .pt.playable { cursor: pointer; }
+      .stone {
+        position: absolute;
+        inset: 12%;
+        border-radius: 50%;
+        z-index: 1;
+        box-shadow: inset 0 -3px 5px rgba(0, 0, 0, 0.45),
+          inset 0 3px 5px rgba(255, 255, 255, 0.2), 0 2px 3px rgba(0, 0, 0, 0.4);
+      }
+      .stone.black { background: radial-gradient(circle at 35% 30%, var(--black-hi), var(--black) 72%); }
+      .stone.white { background: radial-gradient(circle at 35% 30%, var(--white-hi), #d6d6d6 78%); }
+      .stone.place { animation: place 160ms ease-out; }
+      @keyframes place { from { transform: scale(0.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+      /* Last-move marker: a small dot centered on the most recent stone. */
+      .stone.last::after {
+        content: "";
+        position: absolute;
+        inset: 38%;
+        border-radius: 50%;
+        background: var(--last);
+      }
+      .stone.win { outline: 3px solid var(--win); outline-offset: -2px; }
+      /* Hover preview of where your stone will land. */
+      .preview {
+        position: absolute;
+        inset: 12%;
+        border-radius: 50%;
+        opacity: 0;
+        z-index: 1;
+      }
+      .preview.black { background: var(--black); }
+      .preview.white { background: var(--white); }
+      .pt.playable:hover .preview { opacity: 0.4; }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .tag { display: inline-flex; align-items: center; gap: 6px; }
+      .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,0.4); }
+      .dot.black { background: var(--black); }
+      .dot.white { background: var(--white); }
+      button {
+        font: inherit;
+        color: var(--paper);
+        background: #7a4d22;
+        border: 1px solid #a9763f;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #8f5e2c; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>⚫ Gomoku ⚪</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="board" aria-label="Gomoku board"></div>
+      <footer>
+        <span class="tag">You: <span class="dot" id="myDot"></span><span id="myColorLabel">—</span></span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // Same room contract as the other café games: #host=<CODE> registers the
+      // room's PeerJS peer, #join=<CODE> connects to it, #spectate=<CODE> watches
+      // read-only. Peer ids are namespaced so they never collide with other games
+      // on the public PeerJS cloud.
+      const PEER_PREFIX = "coffeeshop-gomoku-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const myDotEl = document.getElementById("myDot");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ===== PURE LOGIC START (no DOM/network — deterministic Gomoku rules) =====
+      const SIZE = 15;
+      const NEED = 5; // stones in a row to win
+
+      const opponent = (c) => (c === "black" ? "white" : "black");
+      const inBounds = (r, c) => r >= 0 && r < SIZE && c >= 0 && c < SIZE;
+
+      function emptyBoard() {
+        return Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
+      }
+
+      // If the stone just placed at (r,c) completes a run of NEED+ same-color
+      // stones, return that run's cells (free-style: an overline of 6+ also
+      // wins); otherwise null. Checks the four axes through the placed point.
+      function winningLine(board, r, c, color) {
+        const dirs = [
+          [0, 1], // horizontal
+          [1, 0], // vertical
+          [1, 1], // diagonal ↘
+          [1, -1], // diagonal ↙
+        ];
+        for (const [dr, dc] of dirs) {
+          const line = [[r, c]];
+          for (const sign of [1, -1]) {
+            let rr = r + dr * sign;
+            let cc = c + dc * sign;
+            while (inBounds(rr, cc) && board[rr][cc] === color) {
+              line.push([rr, cc]);
+              rr += dr * sign;
+              cc += dc * sign;
+            }
+          }
+          if (line.length >= NEED) return line;
+        }
+        return null;
+      }
+
+      function isFull(board) {
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) if (!board[r][c]) return false;
+        }
+        return true;
+      }
+      // ===== PURE LOGIC END =====
+
+      // ---- Game state ------------------------------------------------------
+      let board = emptyBoard();
+      let turn = "black"; // black (host) moves first
+      let myColor = null; // "black" | "white"
+      let phase = "lobby"; // lobby | play | over
+      let conn = null;
+      let isSpectator = false; // true when watching read-only via #spectate
+      const spectators = []; // host-side: open read-only data channels to onlookers
+      let lastMove = null; // {r,c} of the most recent stone (marker + pop-in)
+      let winCells = []; // the winning run, highlighted when the game ends
+
+      // ---- Rendering -------------------------------------------------------
+      function render() {
+        boardEl.innerHTML = "";
+        const myTurn = phase === "play" && !isSpectator && turn === myColor;
+        const winSet = new Set(winCells.map(([r, c]) => r + "," + c));
+
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) {
+            const pt = document.createElement("div");
+            let cls = "pt";
+            if (r === 0) cls += " edge-t";
+            if (r === SIZE - 1) cls += " edge-b";
+            if (c === 0) cls += " edge-l";
+            if (c === SIZE - 1) cls += " edge-r";
+            const val = board[r][c];
+            if (myTurn && !val) cls += " playable";
+            pt.className = cls;
+
+            if (val) {
+              const stone = document.createElement("div");
+              stone.className = "stone " + val;
+              if (lastMove && lastMove.r === r && lastMove.c === c) {
+                stone.classList.add("last");
+                if (phase === "play") stone.classList.add("place");
+              }
+              if (winSet.has(r + "," + c)) stone.classList.add("win");
+              pt.appendChild(stone);
+            } else if (myTurn) {
+              const preview = document.createElement("div");
+              preview.className = "preview " + myColor;
+              pt.appendChild(preview);
+            }
+
+            pt.addEventListener("click", () => onPointClick(r, c));
+            boardEl.appendChild(pt);
+          }
+        }
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onPointClick(r, c) {
+        if (phase !== "play" || isSpectator || turn !== myColor) return;
+        if (board[r][c]) return; // occupied
+        commitMove(r, c);
+      }
+
+      function commitMove(r, c) {
+        const color = turn;
+        board[r][c] = color;
+        lastMove = { r, c };
+        send({ type: "move", r, c });
+        afterMove(r, c, color);
+      }
+
+      function applyRemoteMove(r, c) {
+        const color = turn;
+        // Never trust a remote packet: reject occupied / out-of-bounds points so
+        // a malformed or stale message can't desync or crash the board.
+        if (!inBounds(r, c) || board[r][c]) {
+          handleDesync();
+          return;
+        }
+        board[r][c] = color;
+        lastMove = { r, c };
+        afterMove(r, c, color);
+      }
+
+      function afterMove(r, c, color) {
+        const win = winningLine(board, r, c, color);
+        if (win) {
+          winCells = win;
+          phase = "over";
+          const iWon = color === myColor;
+          setStatus(iWon ? "You win! 🎉" : "You lose.", iWon ? "win" : "lose");
+          newGameBtn.classList.remove("hidden");
+          render();
+          broadcastState();
+          return;
+        }
+        if (isFull(board)) {
+          phase = "over";
+          setStatus("It's a draw.", "draw");
+          newGameBtn.classList.remove("hidden");
+          render();
+          broadcastState();
+          return;
+        }
+        turn = opponent(turn);
+        updateTurnStatus();
+        render();
+        broadcastState();
+      }
+
+      function updateTurnStatus() {
+        if (phase !== "play") return;
+        if (turn === myColor) setStatus("Your move — place a stone.", "turn");
+        else setStatus("Opponent's move…", "");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
+      // ---- New game --------------------------------------------------------
+      function resetGame(broadcast) {
+        board = emptyBoard();
+        turn = "black";
+        phase = "play";
+        lastMove = null;
+        winCells = [];
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        broadcastState();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      // ---- Spectators ------------------------------------------------------
+      // The host owns the room's fixed peer id, so onlookers connect to it. We
+      // keep their read-only channels here and push a full board snapshot after
+      // every change (and on connect) so a late joiner sees the live position.
+      function snapshot() {
+        return { type: "state", board, turn, phase, lastMove, winCells };
+      }
+      function sendSnapshot(c) {
+        if (c && c.open) c.send(snapshot());
+      }
+      function broadcastState() {
+        for (const c of spectators) sendSnapshot(c);
+      }
+      function addSpectator(c) {
+        c.on("open", () => {
+          spectators.push(c);
+          sendSnapshot(c);
+        });
+        c.on("data", () => {}); // spectators are read-only
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) {
+        const i = spectators.indexOf(c);
+        if (i >= 0) spectators.splice(i, 1);
+      }
+      // Spectator-side: adopt the host's snapshot and render read-only.
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.board)) return;
+        board = s.board;
+        turn = s.turn;
+        phase = s.phase;
+        lastMove = s.lastMove || null;
+        winCells = Array.isArray(s.winCells) ? s.winCells : [];
+        newGameBtn.classList.add("hidden");
+        setStatus(
+          phase === "over"
+            ? winCells.length
+              ? "👁 Spectating — game over."
+              : "👁 Spectating — draw."
+            : phase === "lobby"
+              ? "👁 Waiting for the match to start…"
+              : "👁 Spectating — " + (turn === "black" ? "Black" : "White") + "'s move.",
+          ""
+        );
+        render();
+      }
+
+      function startMatch() {
+        myDotEl.className = "dot " + myColor;
+        myColorLabelEl.textContent = myColor === "black" ? "Black (first)" : "White";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        // Spectators only ever consume read-only state snapshots from the host.
+        if (isSpectator) {
+          if (msg.type === "state") applySpectatorState(msg);
+          return;
+        }
+        switch (msg.type) {
+          case "hello":
+            if (phase === "lobby") startMatch();
+            break;
+          case "move":
+            if (
+              phase === "play" &&
+              Number.isInteger(msg.r) &&
+              Number.isInteger(msg.c) &&
+              msg.r >= 0 &&
+              msg.r < SIZE &&
+              msg.c >= 0 &&
+              msg.c < SIZE
+            )
+              applyRemoteMove(msg.r, msg.c);
+            break;
+          case "restart":
+            resetGame(false);
+            break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => {
+          send({ type: "hello" });
+          if (phase === "lobby") startMatch();
+        });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      // Spectator-side: the host's peer went away (match ended / host left).
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("The match ended.", "");
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("spectate=")) return { role: "spectator", code: h.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") {
+          setStatus("Failed to load networking library.", "lose");
+          return;
+        }
+        const info = parseHash();
+        render();
+        if (!info) {
+          setStatus("Open this game from a café table to start a match.", "");
+          return;
+        }
+        if (info.role === "host") {
+          myColor = "black";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("connection", (c) => {
+            // Onlookers connect with spectator metadata — wire them read-only
+            // instead of treating them as the opponent.
+            if (c.metadata && c.metadata.spectator) {
+              addSpectator(c);
+              return;
+            }
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          myColor = null;
+          myColorLabelEl.textContent = "Spectator";
+          myDotEl.className = "dot";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () =>
+            wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } }))
+          );
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          myColor = "white";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>

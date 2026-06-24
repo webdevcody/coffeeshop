@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#15452f" />
+    <title>Reversi · The Daily Grind</title>
+    <meta
+      name="description"
+      content="Two-player online Reversi (Othello) — sit at a café table and play a friend."
+    />
+    <style>
+      :root {
+        --bg: #08160f;
+        --felt: #1f7a4d;
+        --felt-edge: #134d31;
+        --grid: rgba(0, 0, 0, 0.35);
+        --ink: #eafff3;
+        --muted: #a7d6bf;
+        --black: #15201b;
+        --black-hi: #41514a;
+        --white: #f6fbf7;
+        --white-hi: #ffffff;
+        --accent: #7fffc4;
+        --last: #ffd166;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 0%, #123b27, #04100a 70%);
+        color: var(--ink);
+        font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 14px;
+      }
+      header { text-align: center; line-height: 1.25; }
+      header h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); }
+      #status {
+        margin-top: 4px;
+        font-size: clamp(13px, 3vw, 16px);
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      #status.turn { color: var(--accent); font-weight: 700; }
+      #status.win { color: #8fe0a0; font-weight: 700; }
+      #status.lose { color: #ff9aa2; font-weight: 700; }
+      #status.draw { color: var(--last); font-weight: 700; }
+
+      #board {
+        --cells: 8;
+        --gap: clamp(2px, 0.7vw, 5px);
+        width: min(92vw, 64vh);
+        aspect-ratio: 1 / 1;
+        background: var(--felt);
+        border: 4px solid var(--felt-edge);
+        border-radius: 12px;
+        padding: var(--gap);
+        display: grid;
+        grid-template-columns: repeat(var(--cells), 1fr);
+        grid-template-rows: repeat(var(--cells), 1fr);
+        gap: var(--gap);
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+        touch-action: manipulation;
+      }
+      .cell {
+        position: relative;
+        background: var(--grid);
+        border-radius: 4px;
+        cursor: default;
+      }
+      .cell.legal { cursor: pointer; }
+      .cell.legal::after {
+        content: "";
+        position: absolute;
+        inset: 30%;
+        border-radius: 50%;
+        opacity: 0.4;
+      }
+      .cell.legal.black::after { background: var(--black); }
+      .cell.legal.white::after { background: var(--white); }
+      .cell.legal:hover::after { opacity: 0.7; }
+      .cell.last { box-shadow: inset 0 0 0 2px var(--last); }
+
+      .disc {
+        position: absolute;
+        inset: 9%;
+        border-radius: 50%;
+        box-shadow: inset 0 -3px 5px rgba(0, 0, 0, 0.4),
+          inset 0 3px 5px rgba(255, 255, 255, 0.18);
+      }
+      .disc.black { background: radial-gradient(circle at 35% 30%, var(--black-hi), var(--black) 72%); }
+      .disc.white { background: radial-gradient(circle at 35% 30%, var(--white-hi), #d8e4dc 75%); }
+      .disc.place { animation: place 180ms ease-out; }
+      .disc.flip { animation: flip 340ms ease-in-out; }
+      @keyframes place {
+        from { transform: scale(0.2); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
+      }
+      @keyframes flip {
+        0% { transform: rotateY(0deg) scale(1); }
+        50% { transform: rotateY(90deg) scale(1.08); }
+        100% { transform: rotateY(0deg) scale(1); }
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .tag { display: inline-flex; align-items: center; gap: 6px; }
+      .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,0.4); }
+      .dot.black { background: var(--black); }
+      .dot.white { background: var(--white); }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: #134d31;
+        border: 1px solid #2a8b5b;
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      button:hover { background: #1a6340; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>⚫ Reversi ⚪</h1>
+        <div id="status">Loading…</div>
+      </header>
+      <div id="board" aria-label="Reversi board"></div>
+      <footer>
+        <span class="tag"><span class="dot black"></span> Black: <b id="blackCount">2</b></span>
+        <span class="tag"><span class="dot white"></span> White: <b id="whiteCount">2</b></span>
+        <span class="tag">You: <span class="dot" id="myDot"></span><span id="myColorLabel">—</span></span>
+        <button id="newGameBtn" class="hidden">Play again</button>
+      </footer>
+    </div>
+
+    <script src="./peerjs.min.js"></script>
+    <script>
+      "use strict";
+      // Same room contract as the other café games: #host=<CODE> registers the
+      // room's PeerJS peer, #join=<CODE> connects to it, #spectate=<CODE> watches
+      // read-only. Peer ids are namespaced so they never collide with other games
+      // on the public PeerJS cloud.
+      const PEER_PREFIX = "coffeeshop-reversi-";
+
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const blackCountEl = document.getElementById("blackCount");
+      const whiteCountEl = document.getElementById("whiteCount");
+      const myDotEl = document.getElementById("myDot");
+      const myColorLabelEl = document.getElementById("myColorLabel");
+      const newGameBtn = document.getElementById("newGameBtn");
+
+      // ===== PURE LOGIC START (no DOM/network — deterministic Othello rules) =====
+      const SIZE = 8;
+      const DIRS = [
+        [-1, -1], [-1, 0], [-1, 1],
+        [0, -1],          [0, 1],
+        [1, -1],  [1, 0],  [1, 1],
+      ];
+
+      const opponent = (c) => (c === "black" ? "white" : "black");
+      const inBounds = (r, c) => r >= 0 && r < SIZE && c >= 0 && c < SIZE;
+
+      function emptyBoard() {
+        return Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
+      }
+
+      // Standard Othello opening: four discs in the center, diagonally placed.
+      function initialBoard() {
+        const b = emptyBoard();
+        b[3][3] = "white";
+        b[3][4] = "black";
+        b[4][3] = "black";
+        b[4][4] = "white";
+        return b;
+      }
+
+      // Cells that would flip if `color` played a disc at (r,c). Empty array means
+      // the move is illegal (square occupied, or no straight line of opponent
+      // discs is flanked and capped by one of `color`'s own discs).
+      function flipsFor(board, r, c, color) {
+        if (!inBounds(r, c) || board[r][c]) return [];
+        const opp = opponent(color);
+        const out = [];
+        for (const [dr, dc] of DIRS) {
+          const line = [];
+          let rr = r + dr;
+          let cc = c + dc;
+          while (inBounds(rr, cc) && board[rr][cc] === opp) {
+            line.push([rr, cc]);
+            rr += dr;
+            cc += dc;
+          }
+          if (line.length && inBounds(rr, cc) && board[rr][cc] === color) {
+            out.push(...line);
+          }
+        }
+        return out;
+      }
+
+      function legalMoves(board, color) {
+        const moves = [];
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) {
+            if (flipsFor(board, r, c, color).length) moves.push({ r, c });
+          }
+        }
+        return moves;
+      }
+
+      function hasMove(board, color) {
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) {
+            if (flipsFor(board, r, c, color).length) return true;
+          }
+        }
+        return false;
+      }
+
+      // Place `color` at (r,c) and flip the flanked discs. Returns the flipped
+      // cells. Callers must validate legality with flipsFor first.
+      function applyMove(board, r, c, color) {
+        const flipped = flipsFor(board, r, c, color);
+        board[r][c] = color;
+        for (const [fr, fc] of flipped) board[fr][fc] = color;
+        return flipped;
+      }
+
+      function counts(board) {
+        let black = 0;
+        let white = 0;
+        for (const row of board) {
+          for (const v of row) {
+            if (v === "black") black++;
+            else if (v === "white") white++;
+          }
+        }
+        return { black, white };
+      }
+      // ===== PURE LOGIC END =====
+
+      // ---- Game state ------------------------------------------------------
+      let board = initialBoard();
+      let turn = "black"; // black (host) moves first
+      let myColor = null; // "black" | "white"
+      let phase = "lobby"; // lobby | play | over
+      let conn = null;
+      let isSpectator = false; // true when watching read-only via #spectate
+      const spectators = []; // host-side: open read-only data channels to onlookers
+      let lastMove = null; // {r,c} of the most recent placement (highlight + pop-in)
+      let lastFlips = []; // cells flipped by the most recent move (flip animation)
+      let skipNotice = null; // color that was just skipped (had no legal move)
+
+      // ---- Rendering -------------------------------------------------------
+      function render() {
+        boardEl.innerHTML = "";
+        const myTurn = phase === "play" && !isSpectator && turn === myColor;
+        const legalSet = new Set(
+          (myTurn ? legalMoves(board, myColor) : []).map((m) => m.r + "," + m.c)
+        );
+        const flipSet = new Set(lastFlips.map(([r, c]) => r + "," + c));
+
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) {
+            const cell = document.createElement("div");
+            const key = r + "," + c;
+            let cls = "cell";
+            if (legalSet.has(key)) cls += " legal " + myColor;
+            if (lastMove && lastMove.r === r && lastMove.c === c) cls += " last";
+            cell.className = cls;
+
+            const val = board[r][c];
+            if (val) {
+              const disc = document.createElement("div");
+              disc.className = "disc " + val;
+              if (flipSet.has(key)) disc.classList.add("flip");
+              else if (lastMove && lastMove.r === r && lastMove.c === c) disc.classList.add("place");
+              cell.appendChild(disc);
+            }
+
+            cell.addEventListener("click", () => onCellClick(r, c));
+            boardEl.appendChild(cell);
+          }
+        }
+        updateScores();
+      }
+
+      function updateScores() {
+        const { black, white } = counts(board);
+        blackCountEl.textContent = black;
+        whiteCountEl.textContent = white;
+      }
+
+      // ---- Input -----------------------------------------------------------
+      function onCellClick(r, c) {
+        if (phase !== "play" || isSpectator || turn !== myColor) return;
+        if (!flipsFor(board, r, c, myColor).length) return; // illegal square
+        commitMove(r, c);
+      }
+
+      function commitMove(r, c) {
+        const flipped = applyMove(board, r, c, turn);
+        lastMove = { r, c };
+        lastFlips = flipped;
+        send({ type: "move", r, c });
+        afterMove();
+      }
+
+      function applyRemoteMove(r, c) {
+        // Never trust a remote packet: only apply a move that's legal for the
+        // side to move on our own board, so a malformed or stale message can't
+        // desync the boards.
+        if (!flipsFor(board, r, c, turn).length) {
+          handleDesync();
+          return;
+        }
+        const flipped = applyMove(board, r, c, turn);
+        lastMove = { r, c };
+        lastFlips = flipped;
+        afterMove();
+      }
+
+      // Decide who moves next, honoring skipped turns and game end.
+      function afterMove() {
+        const opp = opponent(turn);
+        if (hasMove(board, opp)) {
+          turn = opp;
+          skipNotice = null;
+        } else if (hasMove(board, turn)) {
+          // Opponent has no legal move — their turn is skipped; same player again.
+          skipNotice = opp;
+        } else {
+          endGame();
+          return;
+        }
+        updateTurnStatus();
+        render();
+        broadcastState();
+      }
+
+      function endGame() {
+        phase = "over";
+        const { black, white } = counts(board);
+        const hi = Math.max(black, white);
+        const lo = Math.min(black, white);
+        let text;
+        let cls;
+        if (black === white) {
+          text = `It's a draw — ${black}–${white}.`;
+          cls = "draw";
+        } else {
+          const winner = black > white ? "black" : "white";
+          const iWon = winner === myColor;
+          text = iWon ? `You win ${hi}–${lo}! 🎉` : `You lose ${lo}–${hi}.`;
+          cls = iWon ? "win" : "lose";
+        }
+        setStatus(text, cls);
+        newGameBtn.classList.remove("hidden");
+        render();
+        broadcastState();
+      }
+
+      function updateTurnStatus() {
+        if (phase !== "play") return;
+        const mine = turn === myColor;
+        let msg = mine ? "Your move." : "Opponent's move…";
+        if (skipNotice === myColor) msg = "You have no move — skipped. Opponent's move…";
+        else if (skipNotice) msg = "Opponent had no move — your move again.";
+        setStatus(msg, mine ? "turn" : "");
+      }
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || "";
+      }
+
+      function handleDesync() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Desync detected — start a new game.", "lose");
+        newGameBtn.classList.remove("hidden");
+        render();
+      }
+
+      // ---- New game --------------------------------------------------------
+      function resetGame(broadcast) {
+        board = initialBoard();
+        turn = "black";
+        phase = "play";
+        lastMove = null;
+        lastFlips = [];
+        skipNotice = null;
+        newGameBtn.classList.add("hidden");
+        updateTurnStatus();
+        render();
+        broadcastState();
+        if (broadcast) send({ type: "restart" });
+      }
+      newGameBtn.addEventListener("click", () => resetGame(true));
+
+      // ---- Networking ------------------------------------------------------
+      function send(msg) {
+        if (conn && conn.open) conn.send(msg);
+      }
+
+      // ---- Spectators ------------------------------------------------------
+      // The host owns the room's fixed peer id, so onlookers connect to it. We
+      // keep their read-only channels here and push a full board snapshot after
+      // every change (and on connect) so a late joiner sees the live position.
+      function snapshot() {
+        return { type: "state", board, turn, phase, lastMove, lastFlips, skipNotice };
+      }
+      function sendSnapshot(c) {
+        if (c && c.open) c.send(snapshot());
+      }
+      function broadcastState() {
+        for (const c of spectators) sendSnapshot(c);
+      }
+      function addSpectator(c) {
+        c.on("open", () => {
+          spectators.push(c);
+          sendSnapshot(c);
+        });
+        c.on("data", () => {}); // spectators are read-only
+        c.on("close", () => removeSpectator(c));
+        c.on("error", () => removeSpectator(c));
+      }
+      function removeSpectator(c) {
+        const i = spectators.indexOf(c);
+        if (i >= 0) spectators.splice(i, 1);
+      }
+      // Spectator-side: adopt the host's snapshot and render read-only.
+      function applySpectatorState(s) {
+        if (!s || !Array.isArray(s.board)) return;
+        board = s.board;
+        turn = s.turn;
+        phase = s.phase;
+        lastMove = s.lastMove || null;
+        lastFlips = Array.isArray(s.lastFlips) ? s.lastFlips : [];
+        skipNotice = s.skipNotice || null;
+        newGameBtn.classList.add("hidden");
+        if (phase === "over") {
+          const { black, white } = counts(board);
+          const hi = Math.max(black, white);
+          const lo = Math.min(black, white);
+          setStatus(
+            black === white
+              ? `👁 Spectating — draw ${black}–${white}.`
+              : `👁 Spectating — ${black > white ? "Black" : "White"} wins ${hi}–${lo}.`,
+            ""
+          );
+        } else if (phase === "lobby") {
+          setStatus("👁 Waiting for the match to start…", "");
+        } else {
+          setStatus("👁 Spectating — " + (turn === "black" ? "Black" : "White") + "'s move.", "");
+        }
+        render();
+      }
+
+      function startMatch() {
+        myDotEl.className = "dot " + myColor;
+        myColorLabelEl.textContent = myColor === "black" ? "Black (first)" : "White";
+        resetGame(false);
+      }
+
+      function handleData(msg) {
+        if (!msg || typeof msg !== "object") return;
+        // Spectators only ever consume read-only state snapshots from the host.
+        if (isSpectator) {
+          if (msg.type === "state") applySpectatorState(msg);
+          return;
+        }
+        switch (msg.type) {
+          case "hello":
+            if (phase === "lobby") startMatch();
+            break;
+          case "move":
+            if (
+              phase === "play" &&
+              Number.isInteger(msg.r) &&
+              Number.isInteger(msg.c) &&
+              msg.r >= 0 &&
+              msg.r < SIZE &&
+              msg.c >= 0 &&
+              msg.c < SIZE
+            )
+              applyRemoteMove(msg.r, msg.c);
+            break;
+          case "restart":
+            resetGame(false);
+            break;
+        }
+      }
+
+      function wireConnection(c) {
+        conn = c;
+        conn.on("open", () => {
+          send({ type: "hello" });
+          if (phase === "lobby") startMatch();
+        });
+        conn.on("data", handleData);
+        conn.on("close", onPeerGone);
+        conn.on("error", onPeerGone);
+      }
+
+      function onPeerGone() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("Opponent disconnected.", "lose");
+        newGameBtn.classList.add("hidden");
+      }
+
+      // Spectator-side: the host's peer went away (match ended / host left).
+      function wireSpectator(c) {
+        conn = c;
+        c.on("open", () => setStatus("👁 Spectating — waiting for the game…", ""));
+        c.on("data", handleData);
+        c.on("close", onSpectatorEnd);
+        c.on("error", onSpectatorEnd);
+      }
+      function onSpectatorEnd() {
+        if (phase === "over") return;
+        phase = "over";
+        setStatus("The match ended.", "");
+      }
+
+      function parseHash() {
+        const h = (location.hash || "").replace(/^#/, "");
+        if (h.startsWith("host=")) return { role: "host", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("join=")) return { role: "guest", code: h.slice(5).toUpperCase() };
+        if (h.startsWith("spectate=")) return { role: "spectator", code: h.slice(9).toUpperCase() };
+        return null;
+      }
+
+      function boot() {
+        if (typeof Peer === "undefined") {
+          setStatus("Failed to load networking library.", "lose");
+          return;
+        }
+        const info = parseHash();
+        render();
+        if (!info) {
+          setStatus("Open this game from a café table to start a match.", "");
+          return;
+        }
+        if (info.role === "host") {
+          myColor = "black";
+          setStatus("Waiting for an opponent…", "");
+          const peer = new Peer(PEER_PREFIX + info.code);
+          peer.on("connection", (c) => {
+            // Onlookers connect with spectator metadata — wire them read-only
+            // instead of treating them as the opponent.
+            if (c.metadata && c.metadata.spectator) {
+              addSpectator(c);
+              return;
+            }
+            // Ignore late reconnects / stray clients that know the room code so
+            // they can't clobber an in-progress match.
+            if (conn && conn.open) {
+              c.close();
+              return;
+            }
+            wireConnection(c);
+          });
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else if (info.role === "spectator") {
+          isSpectator = true;
+          myColor = null;
+          myColorLabelEl.textContent = "Spectator";
+          myDotEl.className = "dot";
+          setStatus("Connecting to spectate…", "");
+          const peer = new Peer();
+          peer.on("open", () =>
+            wireSpectator(peer.connect(PEER_PREFIX + info.code, { reliable: true, metadata: { spectator: true } }))
+          );
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        } else {
+          myColor = "white";
+          setStatus("Connecting to the table…", "");
+          const peer = new Peer();
+          peer.on("open", () => wireConnection(peer.connect(PEER_PREFIX + info.code, { reliable: true })));
+          peer.on("error", (e) => setStatus("Connection error: " + (e && e.type ? e.type : "unknown"), "lose"));
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", boot);
+    </script>
+  </body>
+</html>

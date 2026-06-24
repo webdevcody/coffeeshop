@@ -103,22 +103,26 @@ let nextId = 1;
 // ---------------------------------------------------------------------------
 // The server is a generic match coordinator — it doesn't know or care what game
 // a table runs. When a player sits at a table it assigns them a role for that
-// table's current match: the first to sit is the `host`, who then picks a game
-// from a menu (the choice is recorded here and mints the room id); the second
-// is the `guest`, who joins whatever the host picked (same room id); anyone
-// beyond capacity is told the table is `full`. Either player leaving ends the
-// match and frees the table, so the next pair starts fresh. This mirrors how
-// P2P games like Battleship pair exactly two players per host session.
+// table's current match. Seats are an ordered list: the first to sit is the
+// `host` (seat 0), who then picks a game from a menu (the choice is recorded
+// here, mints the room id, and sets how many players the game wants); everyone
+// who sits after, up to that capacity, is a `guest` who joins whatever the host
+// picked (same room id). Most games want two players, but a game can ask for up
+// to four — every guest still connects to the host the same way (`#join`), and
+// the game itself (host-authoritative) assigns each guest a colour/seat by
+// connection order. The host leaving ends the match and frees the table.
 //
-// Once both player seats are taken, anyone else who sits becomes a `spectator`
-// of the current match (instead of being turned away as `full`). Spectators
-// receive the table's gameId + roomId so the client can open the game in a
-// watch-only view; they never affect the match, and they're dropped silently
-// when they stand up. Whether a given game can actually be watched is a
-// client/registry concern — the server stays game-agnostic and just hands out
-// the role.
+// Until the host picks a game the capacity isn't known, so we seat conservatively
+// (host + one guest) and send extra early sitters to the spectator pool; when the
+// host finally picks a >2-player game, those early spectators are promoted into
+// the open player seats. Once all player seats are taken, further sitters become
+// `spectator`s of the current match (instead of being turned away as `full`).
+// Spectators receive the table's gameId + roomId so the client can open the game
+// in a watch-only view; they never affect the match and are dropped silently when
+// they stand up. Whether a game can actually be watched is a client/registry
+// concern — the server stays game-agnostic and just hands out the role.
 //
-/** @type {Map<string, {roomId: string|null, gameId: string|null, host: string|null, guest: string|null, capacity: number, spectators: Set<string>}>} */
+/** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>}>} */
 const tables = new Map();
 
 // How many onlookers a single table will accept once both player seats are
@@ -155,24 +159,27 @@ function assignSeat(id, msg) {
 
   let t = tables.get(tableId);
   if (!t) {
-    t = { roomId: null, gameId: null, host: null, guest: null, capacity: 2, spectators: new Set() };
+    // Capacity defaults to 2 until the host picks a game; this keeps the common
+    // (two-player) case seating exactly host + one guest. A game that wants more
+    // players raises the capacity at pick time and early spectators get promoted.
+    t = { roomId: null, gameId: null, capacity: 2, seats: [], spectators: new Set() };
     tables.set(tableId, t);
   }
 
   let role;
-  if (t.host === null) {
+  if (t.seats.length === 0) {
     // First to sit hosts; the game is chosen next via "choose-game".
-    t.host = id;
+    t.seats.push(id);
     t.gameId = null;
     t.roomId = null;
     role = "host";
-  } else if (t.guest === null && t.host !== id) {
-    t.guest = id;
+  } else if (t.seats.length < t.capacity && !t.seats.includes(id)) {
+    t.seats.push(id);
     role = "guest";
-  } else if (t.host !== id && t.guest !== id && t.spectators.size < SPECTATOR_LIMIT) {
-    // Both player seats are taken — anyone else who sits watches the match.
-    // They get the table's current game (null until the host picks, then a
-    // second game-assign once it's chosen) and never affect the match.
+  } else if (!t.seats.includes(id) && t.spectators.size < SPECTATOR_LIMIT) {
+    // All player seats are taken — anyone else who sits watches the match. They
+    // get the table's current game (null until the host picks, then a second
+    // game-assign once it's chosen) and never affect the match.
     t.spectators.add(id);
     role = "spectator";
   } else {
@@ -206,12 +213,23 @@ function chooseSeatGame(id, msg) {
   const capacity = Number.isFinite(msg.capacity) ? Math.max(2, Math.min(8, msg.capacity)) : 2;
 
   const t = tables.get(tableId);
-  if (!t || t.host !== id) return; // only the table's host may choose
+  if (!t || t.seats[0] !== id) return; // only the table's host (seat 0) may choose
   if (t.gameId) return; // a game is already locked in for this match
 
   t.gameId = gameId;
   t.capacity = capacity;
   t.roomId = genRoomId();
+
+  // The chosen game may want more than two players. Promote early spectators —
+  // who only became spectators because the capacity wasn't known yet — into the
+  // now-open player seats, in the order they sat down.
+  while (t.seats.length < t.capacity && t.spectators.size > 0) {
+    const pid = t.spectators.values().next().value;
+    t.spectators.delete(pid);
+    t.seats.push(pid);
+    const pc = clients.get(pid);
+    if (pc) pc.player.gameRole = "guest";
+  }
 
   const announce = (pid, role) => {
     const c = clients.get(pid);
@@ -219,8 +237,7 @@ function chooseSeatGame(id, msg) {
       send(c.ws, { type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role });
     }
   };
-  announce(t.host, "host");
-  if (t.guest) announce(t.guest, "guest"); // a guest who sat before the pick
+  t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest"));
   for (const sid of t.spectators) announce(sid, "spectator"); // onlookers who sat before the pick
 }
 
@@ -245,14 +262,21 @@ function releaseSeat(id) {
     return;
   }
 
-  if (t.host !== id && t.guest !== id) return;
+  const seatIdx = t.seats.indexOf(id);
+  if (seatIdx < 0) return; // not a player at this table
 
-  // A player (host or guest) left → end the match for the opponent and every
-  // spectator, then free the table so the next pair starts on a clean room.
-  const notify = [];
-  const otherId = t.host === id ? t.guest : t.host;
-  if (otherId) notify.push(otherId);
-  for (const sid of t.spectators) notify.push(sid);
+  // A guest dropping out of a >2-player match just frees their seat — the host
+  // (the authority) keeps the game going, and the game's own P2P channel close
+  // tells it that player left. Only when the host leaves (or it's a two-player
+  // game) does the whole match end.
+  if (seatIdx > 0 && t.capacity > 2) {
+    t.seats.splice(seatIdx, 1);
+    return;
+  }
+
+  // The host (or either player in a 1v1) left → end the match for everyone else
+  // and free the table so the next group starts on a clean room.
+  const notify = [...t.seats.filter((pid) => pid !== id), ...t.spectators];
   for (const pid of notify) {
     const pc = clients.get(pid);
     if (pc) {
