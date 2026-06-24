@@ -228,6 +228,24 @@ export const GAMES = {
     },
   },
 
+  memory: {
+    id: "memory",
+    name: "Memory Match",
+    blurb: "Flip café cards, find the pairs.",
+    icon: "🃏",
+    // Host moves first; matches grant another turn. Two players for now.
+    capacity: 2,
+    // Host streams a masked snapshot (face-down identities withheld) so
+    // spectators can watch read-only without seeing the deck.
+    spectatable: true,
+    // Same room contract as the other café games (#host=<CODE> / #join=<CODE> /
+    // #spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/memory/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
 };
 
 export function getGame(id) {
