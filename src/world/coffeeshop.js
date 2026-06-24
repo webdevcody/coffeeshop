@@ -4,6 +4,7 @@
 
 import * as THREE from "three";
 import { WORLD } from "../config.js";
+import { buildOutside } from "./outside.js";
 import { woodFloorTexture, plasterTexture, chalkboardMenuTexture } from "./textures.js";
 import {
   makeTable,
@@ -80,16 +81,68 @@ export function buildCoffeeshop(scene) {
     group.add(wain);
   }
   wall(WORLD.width, 0, -halfD, 0); // back
-  wall(WORLD.width, 0, halfD, Math.PI); // front
   wall(WORLD.depth, -halfW, 0, Math.PI / 2); // left
   wall(WORLD.depth, halfW, 0, -Math.PI / 2); // right
 
-  // Wall colliders (thin boxes just inside each wall).
+  // --- Front facade with an open entrance ----------------------------------
+  // The front wall (z = +halfD) has a doorway cut into it so players can walk
+  // out to the street. It's two plain wall segments either side of the opening
+  // plus a header beam, a wooden frame, and an open glass door leaf.
+  const doorHalf = 1.3; // half-width of the opening
+  const doorTop = 3.2; // height of the opening
+  const sideW = halfW - doorHalf; // width of each side segment
+  function frontSegment(segW, cx) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(segW, h), wallMat);
+    m.position.set(cx, h / 2, halfD);
+    m.rotation.y = Math.PI;
+    m.receiveShadow = true;
+    group.add(m);
+    const wain = new THREE.Mesh(new THREE.BoxGeometry(segW, 1.1, 0.08), wainscotMat);
+    wain.position.set(cx, 0.55, halfD - 0.06); // just inside the wall plane
+    wain.receiveShadow = true;
+    wain.castShadow = true;
+    group.add(wain);
+  }
+  frontSegment(sideW, -(doorHalf + sideW / 2));
+  frontSegment(sideW, doorHalf + sideW / 2);
+  // header above the opening
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(doorHalf * 2, h - doorTop), wallMat);
+  header.position.set(0, (doorTop + h) / 2, halfD);
+  header.rotation.y = Math.PI;
+  header.receiveShadow = true;
+  group.add(header);
+  // wooden frame: jambs + lintel
+  const frameMat = new THREE.MeshStandardMaterial({ color: "#4a3322", roughness: 0.6 });
+  for (const jx of [-doorHalf, doorHalf]) {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.12, doorTop, 0.22), frameMat);
+    jamb.position.set(jx, doorTop / 2, halfD - 0.04);
+    jamb.castShadow = true;
+    group.add(jamb);
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorHalf * 2 + 0.24, 0.18, 0.22), frameMat);
+  lintel.position.set(0, doorTop, halfD - 0.04);
+  group.add(lintel);
+  // an open glass door leaf, hinged on the left jamb and swung out to the street
+  const leafPivot = new THREE.Group();
+  leafPivot.position.set(-doorHalf + 0.04, 0, halfD - 0.04);
+  const leafW = 2 * doorHalf - 0.16;
+  const leaf = new THREE.Mesh(
+    new THREE.BoxGeometry(leafW, doorTop - 0.12, 0.06),
+    new THREE.MeshStandardMaterial({ color: "#bcd9e6", roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.55 })
+  );
+  leaf.position.set(leafW / 2, (doorTop - 0.12) / 2, 0);
+  leafPivot.add(leaf);
+  leafPivot.rotation.y = -1.95; // swing it open toward the street
+  group.add(leafPivot);
+
+  // Wall colliders (thin boxes just inside each wall). The front wall leaves a
+  // gap at the entrance so you can walk through it.
   const t = 0.3;
-  addBox(colliders, 0, -halfD + t / 2, WORLD.width, t);
-  addBox(colliders, 0, halfD - t / 2, WORLD.width, t);
-  addBox(colliders, -halfW + t / 2, 0, t, WORLD.depth);
-  addBox(colliders, halfW - t / 2, 0, t, WORLD.depth);
+  addBox(colliders, 0, -halfD + t / 2, WORLD.width, t); // back
+  addBox(colliders, -(doorHalf + sideW / 2), halfD - t / 2, sideW, t); // front-left
+  addBox(colliders, doorHalf + sideW / 2, halfD - t / 2, sideW, t); // front-right
+  addBox(colliders, -halfW + t / 2, 0, t, WORLD.depth); // left
+  addBox(colliders, halfW - t / 2, 0, t, WORLD.depth); // right
 
   // --- Windows on the left & right walls -----------------------------------
   for (const z of [-4, 4]) {
@@ -110,13 +163,7 @@ export function buildCoffeeshop(scene) {
     group.add(win);
   }
 
-  // --- Entrance door (visual) on the front wall ----------------------------
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 3.2, 0.1),
-    new THREE.MeshStandardMaterial({ color: "#4a3322", roughness: 0.6 })
-  );
-  door.position.set(0, 1.6, halfD - 0.06);
-  group.add(door);
+  // --- Welcome mat just inside the entrance --------------------------------
   const matWelcome = new THREE.Mesh(
     new THREE.BoxGeometry(2.0, 0.02, 1.0),
     new THREE.MeshStandardMaterial({ color: "#7a5a3a", roughness: 1 })
@@ -131,6 +178,8 @@ export function buildCoffeeshop(scene) {
   counter.position.set(-2.5, 0, -halfD + 1.4);
   group.add(counter);
   addBox(colliders, -2.5, -halfD + 1.4, counterLen + 0.2, 1.0);
+  // The order zone in front of the counter: stand here to use the coffee bar.
+  const bar = { x: -2.5, z: -halfD + 1.4, halfW: counterLen / 2 + 0.5, range: 2.6 };
 
   const espresso = makeEspressoMachine();
   espresso.position.set(-4.0, 1.13, -halfD + 1.4);
@@ -185,11 +234,15 @@ export function buildCoffeeshop(scene) {
     table.position.set(x, 0, z);
     group.add(table);
     addBox(colliders, x, z, 1.0, 1.0); // table footprint
-    // four chairs around it — each seat remembers which table (and therefore
-    // which game room) it belongs to. The game itself is chosen from a menu by
-    // whoever sits first, so seats only flag that they belong to a game table.
-    const offsets = [[0, 0.85, 0], [0, -0.85, Math.PI], [0.85, 0, -Math.PI / 2], [-0.85, 0, Math.PI / 2]];
-    for (const [ox, oz, ry] of offsets) {
+    // Four chairs around it — one per side — each facing INWARD toward the
+    // table so seated players look at the board. A chair faces +Z at yaw 0
+    // (backrest at -Z) and facing(yaw) = (sin yaw, cos yaw), so to look from a
+    // chair's offset back toward the center the yaw is atan2(-ox, -oz). Deriving
+    // it from the offset keeps every chair inward by construction. Each seat
+    // remembers which table (and therefore which game room) it belongs to.
+    const offsets = [[0, 0.85], [0, -0.85], [0.85, 0], [-0.85, 0]];
+    for (const [ox, oz] of offsets) {
+      const ry = Math.atan2(-ox, -oz); // face the table center
       const chair = makeChair();
       chair.position.set(x + ox, 0, z + oz);
       chair.rotation.y = ry;
@@ -232,7 +285,19 @@ export function buildCoffeeshop(scene) {
     lights.push(light);
   }
 
-  return { group, colliders, lights, seats };
+  // --- Outside: the street block in front of the entrance ------------------
+  const outside = buildOutside(scene);
+  for (const c of outside.colliders) colliders.push(c);
+
+  // Walkable ground = the interior floor + the outside block. Standing outside
+  // every rect makes the player fall and respawn (see LocalPlayer).
+  const ground = [
+    { minX: -halfW, maxX: halfW, minZ: -halfD, maxZ: halfD },
+    ...outside.ground,
+  ];
+  const spawn = { x: 0, z: 4 };
+
+  return { group, colliders, lights, seats, bar, ground, spawn, update: outside.update };
 }
 
 // Register an axis-aligned box collider centered at (cx, cz) with full size (w, d).

@@ -2,7 +2,7 @@
 // voice toggle, the online-count pill, and the controls hint. Builds its own DOM
 // inside #ui and surfaces interactions through assignable callbacks.
 
-import { PALETTE } from "../config.js";
+import { PALETTE, SKIN_TONES, HAIR_TONES } from "../config.js";
 
 export class HUD {
   constructor(root) {
@@ -14,6 +14,9 @@ export class HUD {
     this.onToggleDeafen = null;
     this.onToggleMute = null;
     this.onToggleShare = null; // toggle screen sharing
+    this.onBuy = null; // (itemId) => void — buy an item at the coffee bar
+    this.onCustomize = null; // ({ color?, skin?, hair? }) — a swatch was picked
+    this.appearance = { color: null, skin: null, hair: null };
     this.joined = false;
     this._buildJoin();
     this._buildGame();
@@ -77,6 +80,15 @@ export class HUD {
     const ui = document.createElement("div");
     ui.className = "game-ui hidden";
     ui.innerHTML = `
+      <div class="look-corner">
+        <button class="pill look-btn" id="look-btn">🎨 Customize</button>
+        <div class="customize-panel hidden" id="customize-panel">
+          <div class="people-title">Customize your look</div>
+          <div class="custom-row"><span class="custom-label">Skin</span><div class="swatch-row" id="skin-swatches"></div></div>
+          <div class="custom-row"><span class="custom-label">Hair</span><div class="swatch-row" id="hair-swatches"></div></div>
+          <div class="custom-row"><span class="custom-label">Clothing</span><div class="swatch-row" id="cloth-swatches"></div></div>
+        </div>
+      </div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -91,6 +103,11 @@ export class HUD {
         <div class="people-foot">Muting silences a person's voice for you only.</div>
       </div>
       <div class="chat-log" id="chat-log"></div>
+      <div class="shop-panel hidden" id="shop-panel">
+        <div class="shop-title">☕ Coffee bar · pay with fake money</div>
+        <div class="shop-list" id="shop-list"></div>
+      </div>
+      <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
       <form class="chat-bar" id="chat-bar" autocomplete="off">
         <input id="chat-input" class="chat-input" maxlength="200" placeholder="Press Enter to say something…" />
@@ -107,14 +124,31 @@ export class HUD {
     this.shareBtn = ui.querySelector("#share-btn");
     this.peoplePanel = ui.querySelector("#people-panel");
     this.peopleList = ui.querySelector("#people-list");
+    this.lookBtn = ui.querySelector("#look-btn");
+    this.customizePanel = ui.querySelector("#customize-panel");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
+    this.shopPanel = ui.querySelector("#shop-panel");
+    this.shopList = ui.querySelector("#shop-list");
+    this.heldEl = ui.querySelector("#held-item");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
     this.peopleBtn.addEventListener("click", () => {
       const open = this.peoplePanel.classList.toggle("hidden");
       this.peopleBtn.classList.toggle("active", !open);
+    });
+
+    // Customize panel: one swatch row per editable part. Picking a swatch fires
+    // onCustomize with just that field and re-highlights the active choice.
+    this._swatchRows = {
+      skin: this._buildSwatchRow(ui.querySelector("#skin-swatches"), SKIN_TONES, "skin", "Skin"),
+      hair: this._buildSwatchRow(ui.querySelector("#hair-swatches"), HAIR_TONES, "hair", "Hair"),
+      color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color", "Clothing"),
+    };
+    this.lookBtn.addEventListener("click", () => {
+      const open = this.customizePanel.classList.toggle("hidden");
+      this.lookBtn.classList.toggle("active", !open);
     });
 
     form.addEventListener("submit", (e) => {
@@ -142,6 +176,49 @@ export class HUD {
     });
   }
 
+  // Build a row of color swatches for one appearance field; clicking one fires
+  // onCustomize({ [field]: hex }). Returns the row's <button> elements so
+  // setAppearance can highlight the active one. `label` is the human field name
+  // (e.g. "Clothing") used for each swatch's accessible name, since the swatch
+  // itself is only a background colour with nothing for a screen reader to read.
+  _buildSwatchRow(container, colors, field, label) {
+    const btns = [];
+    for (const c of colors) {
+      const s = document.createElement("button");
+      s.type = "button";
+      s.className = "swatch sm";
+      s.style.background = c;
+      s.dataset.color = c.toLowerCase();
+      s.setAttribute("aria-label", `${label} ${c}`);
+      s.setAttribute("aria-pressed", "false");
+      s.addEventListener("click", () => {
+        this.appearance[field] = c;
+        this._highlightRow(field);
+        this.onCustomize?.({ [field]: c });
+      });
+      container.appendChild(s);
+      btns.push(s);
+    }
+    return btns;
+  }
+
+  _highlightRow(field) {
+    const active = (this.appearance[field] || "").toLowerCase();
+    for (const b of this._swatchRows[field]) {
+      const on = b.dataset.color === active;
+      b.classList.toggle("active", on);
+      // Expose the selected swatch to assistive tech, not just the visual outline.
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  // Sync the customize panel to the player's current look (called after join and
+  // whenever appearance changes), so the active swatches reflect reality.
+  setAppearance(app = {}) {
+    Object.assign(this.appearance, app);
+    for (const field of ["skin", "hair", "color"]) this._highlightRow(field);
+  }
+
   setCount(n) {
     this.countPill.textContent = `☕ ${n} here`;
   }
@@ -167,6 +244,40 @@ export class HUD {
       this.sitPrompt.classList.remove("hidden");
     } else {
       this.sitPrompt.classList.add("hidden");
+    }
+  }
+
+  // Populate the coffee-bar menu once with the item catalog. Each item buys via
+  // the onBuy callback.
+  setShopItems(items) {
+    if (!this.shopList) return;
+    this.shopList.innerHTML = "";
+    for (const it of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "shop-item";
+      btn.innerHTML = `<span class="shop-item-icon">${it.icon || "🛍️"}</span><span class="shop-item-name"></span><span class="shop-item-price">§${it.price}</span>`;
+      btn.querySelector(".shop-item-name").textContent = it.name;
+      btn.addEventListener("click", () => this.onBuy?.(it.id));
+      this.shopList.appendChild(btn);
+    }
+  }
+
+  // Show/hide the coffee-bar menu (shown when you stand at the counter).
+  setShopVisible(on) {
+    if (!this.shopPanel) return;
+    this.shopPanel.classList.toggle("hidden", !on);
+  }
+
+  // Reflect the item currently in your hand (or null) with a drop hint.
+  setHeldItem(name) {
+    if (!this.heldEl) return;
+    if (name) {
+      const text = `Holding ${name} · press G to drop`;
+      if (this.heldEl.textContent !== text) this.heldEl.textContent = text;
+      this.heldEl.classList.remove("hidden");
+    } else {
+      this.heldEl.classList.add("hidden");
     }
   }
 

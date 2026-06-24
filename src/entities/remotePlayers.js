@@ -21,7 +21,7 @@ export class RemotePlayers {
 
   add(p) {
     if (this.players.has(p.id)) return this.players.get(p.id);
-    const character = new Character(p.color, p.id);
+    const character = new Character({ color: p.color, skin: p.skin, hair: p.hair }, p.id);
     character.group.position.set(p.x, 0, p.z);
     character.group.rotation.y = p.ry;
     if (p.sitting) character.setSeated(true, p.seatY || 0);
@@ -78,6 +78,12 @@ export class RemotePlayers {
     e.target.ry = ry;
     e.moving = moving;
     e.character.setSeated(!!sitting, seatY);
+  }
+
+  // Apply a live appearance change (skin / hair / clothing) from a remote player.
+  setAppearance(id, app) {
+    const e = this.players.get(id);
+    if (e) e.character.setAppearance(app);
   }
 
   // Toggle the floating "talking" indicator above a remote player's head.
