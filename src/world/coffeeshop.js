@@ -64,9 +64,16 @@ export function buildCoffeeshop(scene) {
     m.rotation.y = ry;
     m.receiveShadow = true;
     group.add(m);
-    // wainscot panel along the bottom
+    // Wainscot panel along the bottom. Walls sit on the room boundary, so nudge
+    // the panel a few cm toward the room centre along the wall's inward normal —
+    // otherwise its front face lands exactly on the wall plane and the two
+    // z-fight (the "flashing wall"). Each wall is axis-aligned, so the inward
+    // direction is simply away from whichever axis is pinned to the boundary.
+    const inset = 0.06;
+    const nx = x !== 0 ? -Math.sign(x) : 0;
+    const nz = z !== 0 ? -Math.sign(z) : 0;
     const wain = new THREE.Mesh(new THREE.BoxGeometry(w, 1.1, 0.08), wainscotMat);
-    wain.position.set(x, 0.55, z + (ry === 0 ? 0.04 : 0) * Math.sign(z || 1));
+    wain.position.set(x + nx * inset, 0.55, z + nz * inset);
     wain.rotation.y = ry;
     wain.receiveShadow = true;
     wain.castShadow = true;
