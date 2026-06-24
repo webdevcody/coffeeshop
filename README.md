@@ -42,6 +42,7 @@ re-downloads what actually changed.
 - **Enter** — focus chat · **Esc** — leave chat
 - **Coffee bar** — walk up to the counter and a little menu of silly items pops up. Buying one (it's all fake money) puts it in your hand; press **G** to drop it. You can only hold one at a time, and **G** won't drop it while you're typing in chat.
 - **🎙️ Enable voice** — proximity voice chat: the closer you stand, the louder you are. **Sitting at a game table scopes your voice to that table** — you only hear, and are heard by, the people seated there (players and spectators), so each table is its own private conversation. Once on: **🎤 Mic** mutes/unmutes your own microphone, **🔊 Audio** silences everyone at once.
+- **🖥️ Share screen** — show what you're working on. It's scoped the same way voice is: the people who can hear you — your table-mates when you're seated, or whoever's nearby otherwise — see your screen in a little panel and can talk it over. Stop from the same button (or your browser's "Stop sharing" bar).
 - On touch devices, a virtual joystick appears on the left.
 - **Step outside** — walk out the front door onto the city block: sidewalks, a
   road with cars driving by, birds overhead, and street props. The block drops
@@ -73,6 +74,7 @@ src/
   entities/remotePlayers.js  interpolated remote players
   net/network.js          WebSocket client (auto-reconnect)
   net/voice.js            WebRTC mesh + distance-based volume
+  net/screenShare.js      WebRTC screen sharing, scoped to table/proximity
   ui/labels.js            floating name tags + chat bubbles (CSS2D)
   ui/hud.js               join overlay, chat bar, voice toggle, count
 ```

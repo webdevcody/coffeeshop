@@ -188,16 +188,19 @@ body {
 }
 .voice-btn,
 .mic-btn,
-.deafen-btn {
+.deafen-btn,
+.share-btn {
   cursor: pointer;
   transition: background 0.15s;
 }
 .voice-btn:hover,
 .mic-btn:hover,
-.deafen-btn:hover {
+.deafen-btn:hover,
+.share-btn:hover {
   background: rgba(54, 36, 22, 0.85);
 }
-.voice-btn.active {
+.voice-btn.active,
+.share-btn.active {
   background: rgba(42, 157, 143, 0.85);
   border-color: rgba(255, 255, 255, 0.3);
 }
@@ -255,6 +258,65 @@ body {
   white-space: nowrap;
   backdrop-filter: blur(8px);
 }
+/* ---------- Screen sharing (viewer tiles) ---------- */
+.screenshare-tiles {
+  position: fixed;
+  right: 14px;
+  bottom: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 30;
+}
+.screenshare-tile {
+  width: min(46vw, 360px);
+  background: rgba(12, 8, 5, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.2);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+.ss-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: rgba(34, 22, 14, 0.95);
+  color: var(--cream);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.ss-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ss-close {
+  flex: none;
+  cursor: pointer;
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  background: rgba(255, 234, 200, 0.08);
+  color: var(--cream);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.ss-close:hover {
+  background: rgba(239, 71, 111, 0.7);
+}
+.ss-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 50vh;
+  background: #000;
+}
+
 .sit-prompt.hidden {
   display: none;
 }
