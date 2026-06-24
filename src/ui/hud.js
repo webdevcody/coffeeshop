@@ -13,6 +13,7 @@ export class HUD {
     this.onToggleMic = null;
     this.onToggleDeafen = null;
     this.onToggleMute = null;
+    this.onBuy = null; // (itemId) => void — buy an item at the coffee bar
     this.joined = false;
     this._buildJoin();
     this._buildGame();
@@ -89,6 +90,11 @@ export class HUD {
         <div class="people-foot">Muting silences a person's voice for you only.</div>
       </div>
       <div class="chat-log" id="chat-log"></div>
+      <div class="shop-panel hidden" id="shop-panel">
+        <div class="shop-title">☕ Coffee bar · pay with fake money</div>
+        <div class="shop-list" id="shop-list"></div>
+      </div>
+      <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
       <form class="chat-bar" id="chat-bar" autocomplete="off">
         <input id="chat-input" class="chat-input" maxlength="200" placeholder="Press Enter to say something…" />
@@ -106,6 +112,9 @@ export class HUD {
     this.peopleList = ui.querySelector("#people-list");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
+    this.shopPanel = ui.querySelector("#shop-panel");
+    this.shopList = ui.querySelector("#shop-list");
+    this.heldEl = ui.querySelector("#held-item");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
@@ -163,6 +172,40 @@ export class HUD {
       this.sitPrompt.classList.remove("hidden");
     } else {
       this.sitPrompt.classList.add("hidden");
+    }
+  }
+
+  // Populate the coffee-bar menu once with the item catalog. Each item buys via
+  // the onBuy callback.
+  setShopItems(items) {
+    if (!this.shopList) return;
+    this.shopList.innerHTML = "";
+    for (const it of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "shop-item";
+      btn.innerHTML = `<span class="shop-item-icon">${it.icon || "🛍️"}</span><span class="shop-item-name"></span><span class="shop-item-price">§${it.price}</span>`;
+      btn.querySelector(".shop-item-name").textContent = it.name;
+      btn.addEventListener("click", () => this.onBuy?.(it.id));
+      this.shopList.appendChild(btn);
+    }
+  }
+
+  // Show/hide the coffee-bar menu (shown when you stand at the counter).
+  setShopVisible(on) {
+    if (!this.shopPanel) return;
+    this.shopPanel.classList.toggle("hidden", !on);
+  }
+
+  // Reflect the item currently in your hand (or null) with a drop hint.
+  setHeldItem(name) {
+    if (!this.heldEl) return;
+    if (name) {
+      const text = `Holding ${name} · press G to drop`;
+      if (this.heldEl.textContent !== text) this.heldEl.textContent = text;
+      this.heldEl.classList.remove("hidden");
+    } else {
+      this.heldEl.classList.add("hidden");
     }
   }
 

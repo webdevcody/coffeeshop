@@ -14,11 +14,12 @@ import { Voice } from "./net/voice.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
 import { getGame, listGames } from "./games/registry.js";
+import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
-const { colliders, seats } = buildCoffeeshop(scene);
+const { colliders, seats, bar } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
@@ -164,6 +165,13 @@ network.on("game-end", () => {
 // The overlay's "Leave game" button: stand up, which closes everything below.
 arcade.onLeave = () => local?.standUp();
 
+// True when the local player is standing in the order zone in front of the bar.
+function nearBar() {
+  if (!local || !bar) return false;
+  const dz = local.pos.z - bar.z; // positive = in front of the counter
+  return dz > 0 && dz < bar.range && Math.abs(local.pos.x - bar.x) < bar.halfW;
+}
+
 function tableLabel(table) {
   const n = parseInt(String(table).split("-")[1] || "0", 10) + 1;
   return Number.isFinite(n) ? `Table ${n}` : "Table";
@@ -186,6 +194,12 @@ function colorFor(id, fallbackName) {
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
   local = new LocalPlayer(scene, controls, colliders, color, name, seats);
+  // Coffee-bar shop: buying an item puts it in your hand (one at a time).
+  hud.setShopItems(ITEMS);
+  hud.onBuy = (id) => {
+    const item = getItem(id);
+    if (item) local.holdItem(item);
+  };
   // Sitting at a game table asks the server for a role; the reply opens the
   // game-picker menu (host) or a waiting screen (guest), then the game itself.
   local.onSit = (seat) => {
@@ -232,6 +246,10 @@ function frame() {
   if (joined && local) {
     local.update(dt, camera);
     hud.setSitPrompt(local.sitPromptText());
+    // Open the coffee-bar menu when standing in the order zone; reflect whatever
+    // you're holding (and the drop hint) the rest of the time.
+    hud.setShopVisible(nearBar() && !local.sitting);
+    hud.setHeldItem(local.heldName());
     maybeSendState();
   } else {
     // Gentle interior orbit of the room while the join card is up.

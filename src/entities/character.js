@@ -110,6 +110,13 @@ export class Character {
       pivot.rotation.z = side * 0.08;
       this.group.add(pivot);
       this.arms.push(pivot);
+      // Right hand gets an anchor a held item can be parented to, so it swings
+      // naturally with the arm.
+      if (side === 1) {
+        this.handAnchor = new THREE.Group();
+        this.handAnchor.position.set(0.04, -0.66, 0.06);
+        pivot.add(this.handAnchor);
+      }
     }
   }
 

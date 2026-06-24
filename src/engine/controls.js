@@ -12,6 +12,7 @@ export function createControls(domElement) {
   const move = { x: 0, z: 0 };
   const orbit = { yaw: 0, pitch: 0.42 };
   let sitPressed = false; // edge-triggered Space, drained by consumeSit()
+  let dropPressed = false; // edge-triggered G, drained by consumeDrop()
   let locked = false; // suppress movement/sit while a game overlay is open
 
   // --- Keyboard ----------------------------------------------------------
@@ -26,6 +27,9 @@ export function createControls(domElement) {
       e.preventDefault(); // don't scroll the page
       if (!keys.has("Space")) sitPressed = true; // first press only, ignore auto-repeat
     }
+    // G drops the item you're holding. `typing()` above already ignores keys
+    // while the chat box is focused, so this never fires mid-message.
+    if (e.code === "KeyG" && !keys.has("KeyG")) dropPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -140,6 +144,13 @@ export function createControls(domElement) {
     return locked ? false : pressed;
   }
 
+  // Returns true once per G press (drop the held item), then resets.
+  function consumeDrop() {
+    const pressed = dropPressed;
+    dropPressed = false;
+    return locked ? false : pressed;
+  }
+
   // Lock/unlock café input (used while a game overlay is open).
   function setLocked(v) {
     locked = !!v;
@@ -148,10 +159,11 @@ export function createControls(domElement) {
       move.x = 0;
       move.z = 0;
       sitPressed = false;
+      dropPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, setLocked };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, setLocked };
 }
 
 function clamp(v, lo, hi) {
