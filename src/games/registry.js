@@ -209,6 +209,25 @@ export const GAMES = {
     },
   },
 
+  ludo: {
+    id: "ludo",
+    name: "Ludo",
+    blurb: "Race 4 tokens home (2–4 players).",
+    icon: "🎲",
+    // The café's first 4-player game: host + up to three guests share one room.
+    // The server seats them (see multi-seat room coordination) and every guest
+    // joins the host the same way (#join); the host assigns each a colour by
+    // connection order.
+    capacity: 4,
+    // The host already broadcasts authoritative state, so onlookers can watch
+    // read-only (#spectate=<CODE>).
+    spectatable: true,
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/ludo/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
+
 };
 
 export function getGame(id) {
