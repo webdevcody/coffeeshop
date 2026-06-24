@@ -132,6 +132,14 @@ function genRoomId() {
   return randomBytes(6).toString("hex").toUpperCase();
 }
 
+// Tell everyone which game table a player is now seated at (or null when they
+// get up). Clients use this to scope proximity voice: once you're at a table you
+// only hear — and are heard by — the people at the same table. Broadcast to all,
+// the player included, so their own voice scoping updates too.
+function broadcastSeat(id, table) {
+  broadcast({ type: "seat-update", id, table: table ?? null });
+}
+
 // A player sits at a table. The first to sit becomes the `host` and then picks
 // which game to play (see chooseSeatGame); the next becomes the `guest` of
 // whatever the host picked; anyone beyond capacity is told the table is `full`.
@@ -182,6 +190,10 @@ function assignSeat(id, msg) {
       roomId: role === "full" ? null : t.roomId,
       role,
     });
+    // Announce this player's table so every client can scope voice to it. A
+    // "full" sitter has no table (gameTable stays null) — they're not in the
+    // table's voice group.
+    broadcastSeat(id, c.player.gameTable);
   }
 }
 
@@ -222,6 +234,8 @@ function releaseSeat(id) {
     c.player.gameRole = null;
   }
   if (!tableId) return;
+  // This player vacated their table — update everyone's voice scoping.
+  broadcastSeat(id, null);
   const t = tables.get(tableId);
   if (!t) return;
 
@@ -245,6 +259,7 @@ function releaseSeat(id) {
       pc.player.gameTable = null;
       pc.player.gameRole = null;
       send(pc.ws, { type: "game-end", table: tableId, reason: "opponent-left" });
+      broadcastSeat(pid, null); // they were sent back to the café — update voice scoping
     }
   }
   tables.delete(tableId);
