@@ -149,13 +149,20 @@
 
       function physics(dt) {
         if (serveTimer > 0) { serveTimer -= dt; return; }
+        const prevX = ball.x;
         ball.x += ball.vx * dt; ball.y += ball.vy * dt;
         if (ball.y < BALL_R) { ball.y = BALL_R; ball.vy = Math.abs(ball.vy); }
         if (ball.y > H - BALL_R) { ball.y = H - BALL_R; ball.vy = -Math.abs(ball.vy); }
-        if (ball.vx < 0 && ball.x - BALL_R <= LEFT_X && ball.x - BALL_R > LEFT_X - 5) {
+        // Swept paddle test: deflect when the ball's leading edge *crosses* the
+        // paddle plane between last frame and this one, rather than landing
+        // inside a fixed window. A near-max ball travels BALL_MAX * maxDt =
+        // 130 * 0.05 = 6.5 units in one long frame — more than any fixed band —
+        // so a window test lets it tunnel through and score. Crossing detection
+        // can't be outrun.
+        if (ball.vx < 0 && prevX - BALL_R > LEFT_X && ball.x - BALL_R <= LEFT_X) {
           if (Math.abs(ball.y - lp) <= PADDLE_HALF + BALL_R) { ball.x = LEFT_X + BALL_R; deflect(lp, 1); }
         }
-        if (ball.vx > 0 && ball.x + BALL_R >= RIGHT_X && ball.x + BALL_R < RIGHT_X + 5) {
+        if (ball.vx > 0 && prevX + BALL_R < RIGHT_X && ball.x + BALL_R >= RIGHT_X) {
           if (Math.abs(ball.y - rp) <= PADDLE_HALF + BALL_R) { ball.x = RIGHT_X - BALL_R; deflect(rp, -1); }
         }
         if (ball.x < 0) score("right");
