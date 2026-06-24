@@ -63,6 +63,25 @@ export const GAMES = {
       return `/games/connect4/index.html#${verb}=${encodeURIComponent(roomId)}`;
     },
   },
+
+  pong: {
+    id: "pong",
+    name: "Pong",
+    blurb: "Real-time paddle duel.",
+    icon: "🏓",
+    // Host is the left paddle and runs the authoritative physics; guest is the
+    // right paddle and sends input. First to 7 wins.
+    capacity: 2,
+    // The host already broadcasts authoritative state, so onlookers can
+    // subscribe to the same read-only stream (#spectate=<CODE>).
+    spectatable: true,
+    // Same room contract as the other games for pairing (#host / #join), plus a
+    // read-only spectator connection (#spectate=<CODE>).
+    url(roomId, role) {
+      const verb = role === "host" ? "host" : role === "spectator" ? "spectate" : "join";
+      return `/games/pong/index.html#${verb}=${encodeURIComponent(roomId)}`;
+    },
+  },
 };
 
 export function getGame(id) {
