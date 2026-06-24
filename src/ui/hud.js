@@ -13,6 +13,7 @@ export class HUD {
     this.onToggleMic = null;
     this.onToggleDeafen = null;
     this.onToggleMute = null;
+    this.onToggleShare = null; // toggle screen sharing
     this.joined = false;
     this._buildJoin();
     this._buildGame();
@@ -82,6 +83,7 @@ export class HUD {
         <button class="pill voice-btn" id="voice-btn">🎙️ Enable voice</button>
         <button class="pill mic-btn hidden" id="mic-btn">🎤 Mic on</button>
         <button class="pill deafen-btn hidden" id="deafen-btn">🔊 Audio on</button>
+        <button class="pill share-btn" id="share-btn">🖥️ Share screen</button>
       </div>
       <div class="people-panel hidden" id="people-panel">
         <div class="people-title">People in the café</div>
@@ -102,6 +104,7 @@ export class HUD {
     this.micBtn = ui.querySelector("#mic-btn");
     this.deafenBtn = ui.querySelector("#deafen-btn");
     this.peopleBtn = ui.querySelector("#people-btn");
+    this.shareBtn = ui.querySelector("#share-btn");
     this.peoplePanel = ui.querySelector("#people-panel");
     this.peopleList = ui.querySelector("#people-list");
     this.chatLog = ui.querySelector("#chat-log");
@@ -125,6 +128,7 @@ export class HUD {
     this.voiceBtn.addEventListener("click", () => this.onToggleVoice?.());
     this.micBtn.addEventListener("click", () => this.onToggleMic?.());
     this.deafenBtn.addEventListener("click", () => this.onToggleDeafen?.());
+    this.shareBtn.addEventListener("click", () => this.onToggleShare?.());
 
     // Enter focuses chat when not already typing; Escape blurs.
     window.addEventListener("keydown", (e) => {
@@ -193,6 +197,14 @@ export class HUD {
     this.deafenBtn.textContent = deafened ? "🔕 Audio muted" : "🔊 Audio on";
     this.deafenBtn.title = deafened ? "Unmute everyone" : "Mute everyone in the room";
     this.deafenBtn.classList.toggle("muted", deafened);
+  }
+
+  // Reflect whether you're currently sharing your screen.
+  setSharing(sharing) {
+    if (!this.shareBtn) return;
+    this.shareBtn.textContent = sharing ? "🖥️ Stop sharing" : "🖥️ Share screen";
+    this.shareBtn.title = sharing ? "Stop sharing your screen" : "Share your screen with people around you";
+    this.shareBtn.classList.toggle("active", sharing);
   }
 
   // Render the roster of other people, each with a per-person mute toggle.

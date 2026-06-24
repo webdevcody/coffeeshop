@@ -11,6 +11,7 @@ import { LocalPlayer } from "./entities/localPlayer.js";
 import { RemotePlayers } from "./entities/remotePlayers.js";
 import { Network } from "./net/network.js";
 import { Voice } from "./net/voice.js";
+import { ScreenShare } from "./net/screenShare.js";
 import { HUD } from "./ui/hud.js";
 import { Arcade } from "./games/arcade.js";
 import { getGame, listGames } from "./games/registry.js";
@@ -30,8 +31,9 @@ let joined = false;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false };
 
-// Voice needs to know where everyone is so it can attenuate by distance.
-const voice = new Voice(network, {
+// Where everyone is, so voice (and screen share) can scope to the people you're
+// actually with — table-mates when seated, nearby players otherwise.
+const positions = {
   local: () => (local ? { x: local.pos.x, z: local.pos.z } : { x: 0, z: 0 }),
   remote: (id) => {
     const e = remotes.players.get(id);
@@ -39,8 +41,18 @@ const voice = new Voice(network, {
     const p = e.character.group.position;
     return { x: p.x, z: p.z };
   },
-});
+};
+const voice = new Voice(network, positions);
 voice.onStatus = (s) => hud.setVoiceStatus(s);
+
+// Screen sharing rides the same table/proximity scoping: people who can hear you
+// can also see your screen.
+const screenShare = new ScreenShare(network, positions, {
+  getName: (id) => remotes.players.get(id)?.name || "Someone",
+});
+screenShare.onStateChange = (sharing) => hud.setSharing(sharing);
+screenShare.onError = (msg) => hud.toast(msg);
+hud.onToggleShare = () => screenShare.toggle();
 // Light up the talking indicator over whoever's voice is currently active.
 voice.onSpeaking = (id, speaking) => {
   if (network.id && id === network.id) local?.setSpeaking(speaking);
@@ -243,6 +255,7 @@ function frame() {
   remotes.update(dt);
   voice.updateVolumes();
   voice.updateSpeaking(dt);
+  screenShare.update(dt);
 
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
@@ -275,5 +288,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare };
 window.__coffeeReady = true;
