@@ -312,9 +312,14 @@ export class LocalPlayer {
     // Eye at the seated player's head, leaned a touch toward the table so their
     // own head/body stays behind the camera. Zoom dollies the eye forward + down.
     const zf = cl(zoom.factor, SEATED_CAM.zoomMin, SEATED_CAM.zoomMax);
-    const zoomIn = (SEATED_CAM.zoomMax - zf) / (SEATED_CAM.zoomMax - SEATED_CAM.zoomMin); // 0..1
-    const lean = SEATED_CAM.eyeForward + zoomIn * SEATED_CAM.zoomLean;
-    const eyeY = seatY + SEATED_CAM.eyeHeight - zoomIn * SEATED_CAM.zoomDrop;
+    // Two signed phases hinged on the neutral anchor: zoomIn (>0 only below
+    // neutral) leans the eye over the board exactly as before; zoomOut (>0 only
+    // above neutral) dollies the eye back along -fwd and lifts it so the whole
+    // board fits when scrolled out.
+    const zoomIn = cl((SEATED_CAM.zoomNeutral - zf) / (SEATED_CAM.zoomNeutral - SEATED_CAM.zoomMin), 0, 1);
+    const zoomOut = cl((zf - SEATED_CAM.zoomNeutral) / (SEATED_CAM.zoomMax - SEATED_CAM.zoomNeutral), 0, 1);
+    const lean = SEATED_CAM.eyeForward + zoomIn * SEATED_CAM.zoomLean - zoomOut * SEATED_CAM.zoomBack;
+    const eyeY = seatY + SEATED_CAM.eyeHeight - zoomIn * SEATED_CAM.zoomDrop + zoomOut * SEATED_CAM.zoomRise;
     this._seatCamPos.set(
       this.pos.x + this._fwd.x * lean,
       eyeY,

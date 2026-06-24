@@ -125,6 +125,14 @@ let nextId = 1;
 /** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>, full: object|null, pub: object|null}>} */
 const tables = new Map();
 
+// PASSERSBY: reserved pseudo-gameId for a host-occupied table that is still in
+// the flip-book MENU (no real game chosen yet). The host publishes the open
+// menu's page index as the table's `pub` (just like a game's public snapshot),
+// so passersby can mirror the open book read-only. The client's ambient manager
+// resolves this id to menu.js via a synthetic meta (it is NOT a registry entry).
+// Must stay in sync with the local mountFlipbookMenu gameId in main.js.
+const MENU_GAME_ID = "__menu__";
+
 // Per-gameId flag: may the host's full snapshot / raw moves reach spectators?
 // Full-info + real-time games can mirror everything; hidden-info games expose
 // ONLY their pub snapshot (no raw moves, no full) — enforced server-side so a
@@ -214,13 +222,19 @@ function broadcastSeat(id, table) {
 // Snapshot of one table's public ambient view, or a "cleared" marker.
 function ambientPayload(tableId, t) {
   const active = !!(t && t.gameId && t.roomId);
+  // A host-occupied table that hasn't chosen a game yet, but has published the
+  // open flip-book MENU's page index as `pub`, is broadcast as the reserved
+  // MENU_GAME_ID so passersby mirror the open book (read-only, following the
+  // host's page). gameId stays null on the table itself; we only report
+  // MENU_GAME_ID over the wire.
+  const inMenu = !!(t && t.seats.length && !t.gameId && t.pub != null);
   return {
     type: "ambient",
     table: tableId,
-    gameId: active ? t.gameId : null,
+    gameId: active ? t.gameId : (inMenu ? MENU_GAME_ID : null),
     // Always the PUBLIC snapshot — never `full`. null until the host pushes state
     // (or once cleared). Passersby render read-only from this and nothing else.
-    pub: active ? (t.pub ?? null) : null,
+    pub: (active || inMenu) ? (t.pub ?? null) : null,
   };
 }
 
@@ -240,7 +254,9 @@ function broadcastAmbientClear(tableId) {
 // converge on all live tables the moment they join (not only on the next move).
 function sendAllAmbient(ws) {
   for (const [tid, t] of tables) {
-    if (t && t.gameId && t.roomId) send(ws, ambientPayload(tid, t));
+    const active = !!(t && t.gameId && t.roomId);
+    const inMenu = !!(t && t.seats.length && !t.gameId && t.pub != null);
+    if (active || inMenu) send(ws, ambientPayload(tid, t));
   }
 }
 
@@ -356,6 +372,14 @@ function chooseSeatGame(id, msg) {
   };
   t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest", i));
   for (const sid of t.spectators) announce(sid, "spectator", null); // onlookers who sat before the pick
+
+  // PASSERSBY: emit an immediate ambient frame for the newly-chosen game so
+  // passersby paint its board right away, even before the host's first
+  // net.sendState (Gap 2). t.pub is null at this instant, so the mirror mounts
+  // empty and converges on the next public snapshot. This also transitions the
+  // table OUT of menu state: the payload now carries the real gameId, so a
+  // passerby's ambient mirror sees gameId change (menu → game) and rebuilds.
+  broadcastAmbient(tableId, t);
 }
 
 // A player stands up / disconnects. Ends the match for both players and frees

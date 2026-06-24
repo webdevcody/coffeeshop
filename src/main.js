@@ -56,7 +56,16 @@ network.on("game-input", (m) => inWorld.onGameInput(m));
 const ambient = new AmbientBoards({
   network,
   tables,
-  getGameMeta: (id) => getGame(id),
+  // PASSERSBY: resolve the reserved menu id to a synthetic meta so the ambient
+  // manager can load + mount the flip-book MENU module read-only on a table whose
+  // host is still choosing a game. registry.js has no "__menu__" entry (and can't
+  // get one), so we inject the meta here. menu.js's createGame in a non-host
+  // ("spectator") role renders the open book and follows applyState({index}).
+  // Keep "__menu__" in sync with the server's MENU_GAME_ID and mountFlipbookMenu.
+  getGameMeta: (id) =>
+    id === "__menu__"
+      ? { capacity: 2, spectatable: true, load: () => import("./games/inworld/menu.js") }
+      : getGame(id),
   getActiveTableId: () => inWorld.activeTableId,
 });
 

@@ -474,7 +474,11 @@ export function createGame(ctx) {
     selRing: new THREE.TorusGeometry(STEP * 0.42, STEP * 0.05, 8, 28),
     target: new THREE.CylinderGeometry(STEP * 0.16, STEP * 0.16, STEP * 0.04, 22),
     capRing: new THREE.TorusGeometry(STEP * 0.40, STEP * 0.045, 8, 28),
-    hit: new THREE.BoxGeometry(STEP * 0.98, PIECE_HEIGHT.k * 1.4, STEP * 0.98),
+    // Flat slab (like checkers): a thin per-cell collider sitting just above the
+    // tiles. A tall collider would occlude the square BEHIND it at an oblique
+    // camera angle, so empty-square clicks could pick the wrong (front) cell.
+    // Keeping it flat means hits[0] is reliably the aimed square's collider.
+    hit: new THREE.BoxGeometry(STEP * 0.98, TILE_T * 3, STEP * 0.98),
   };
 
   // Procedural piece geometry (lathe surfaces of revolution + stylized knight).
@@ -730,7 +734,7 @@ export function createGame(ctx) {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         const box = new THREE.Mesh(G.hit, M.invisible);
-        box.position.set(cellX(c), TILE_TOP + PIECE_HEIGHT.k * 0.5, cellZ(r));
+        box.position.set(cellX(c), TILE_TOP + (TILE_T * 3) / 2, cellZ(r));
         box.userData.cell = { r, c };
         group.add(box);
       }
@@ -887,12 +891,17 @@ export function createGame(ctx) {
           have.userData.pieceColor === want.color &&
           have.userData.isModel === wantIsModel) {
           have.position.set(cellX(c), TILE_TOP, cellZ(r));
+          // Tag this piece's resting cell so a click on ANY of its submeshes
+          // resolves to its OWN square (never a neighbour). The moving piece
+          // glides to (r,c) but state has already advanced, so this is correct.
+          have.userData.cell = { r, c };
           continue;
         }
         if (have) { disposePiece(have); pieceMeshes[r][c] = null; }
         const g = makePiece(want.type, want.color);
         g.userData.isModel = wantIsModel;
         g.position.set(cellX(c), TILE_TOP, cellZ(r));
+        g.userData.cell = { r, c };
         group.add(g);
         pieceMeshes[r][c] = g;
       }
@@ -1047,6 +1056,33 @@ export function createGame(ctx) {
     }
     updateIdentityCue();
     refreshHighlights();
+  }
+
+  // ===========================================================================
+  // hitToCell — authoritative pointer->cell resolver (used by board.js tier 1).
+  // Walk the hit object's parent chain returning the FIRST userData.cell found:
+  // this covers BOTH the flat per-square colliders AND the now-tagged piece
+  // groups, so a click on a tall piece resolves to that piece's OWN square
+  // (never a neighbour). Only when no tagged ancestor exists (a true bare-wood
+  // hit beyond the colliders) do we fall back to a SNAP geometric map using
+  // round() (nearest cell centre), which tolerates a high/oblique hit-point far
+  // better than a floor()-based world-point map.
+  // ===========================================================================
+  function hitToCell(hit) {
+    let o = hit && hit.object;
+    while (o) {
+      if (o.userData && o.userData.cell) {
+        return { r: o.userData.cell.r, c: o.userData.cell.c };
+      }
+      o = o.parent;
+    }
+    if (hit && hit.point && group.worldToLocal) {
+      const local = group.worldToLocal(hit.point.clone());
+      const c = Math.round((local.x + HALF) / BOARD_SIZE * N - 0.5);
+      const r = Math.round((local.z + HALF) / BOARD_SIZE * N - 0.5);
+      if (inBounds(r, c)) return { r, c };
+    }
+    return null;
   }
 
   // ===========================================================================
@@ -1258,6 +1294,7 @@ export function createGame(ctx) {
     applyState,
     applyMove,
     onPointer,
+    hitToCell,
     publicState,
     setRole,
     setSeatRy,

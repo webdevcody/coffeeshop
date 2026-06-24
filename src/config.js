@@ -44,13 +44,19 @@ export const SEATED_CAM = {
   maxPitch: 1.0,
   basePitch: 0.62, // resting gaze pitch (set on sit-down; looks down at the board)
   lookPitchGain: 1.2, // how far pitch raises/lowers the aim point (metres per rad)
-  // Zoom dollies the eye toward the board. zoomMax (=default factor 1.0) is the
-  // NEUTRAL farthest framing with NO forced lean; scrolling in (toward zoomMin)
-  // leans the eye over the board.
-  zoomMin: 0.55, // scrolled all the way in
-  zoomMax: 1.0, // neutral / default (farthest)
+  // Zoom dollies the eye relative to the board, hinged on a NEUTRAL anchor.
+  // zoomNeutral (=default factor 1.0) is the framing with NO forced lean and NO
+  // pull-back. Below it (toward zoomMin) the eye leans IN over the board, as
+  // before. Above it (toward zoomMax) the eye dollies BACK along -fwd and rises
+  // UP for a whole-board view, so large boards (battleship's two ocean grids)
+  // fit fully on screen.
+  zoomMin: 0.55, // scrolled all the way in (leans over the board)
+  zoomNeutral: 1.0, // neutral / default (no lean, no pull-back)
+  zoomMax: 1.8, // scrolled all the way out (eye dollied back + up); matches wheel max
   zoomLean: 0.4, // extra forward lean at full zoom-in (metres)
   zoomDrop: 0.16, // extra downward dip at full zoom-in (metres)
+  zoomBack: 4.0, // eye retreat opposite the board at full zoom-out (metres)
+  zoomRise: 1.2, // eye lift at full zoom-out (metres)
 };
 
 export const SEAT = {

@@ -19,15 +19,16 @@
 //       front of you and fire across the table.
 //
 //   (2) BOTH SEATS MUST SEE THEIR OWN OCEAN NEAREST. Host and guest sit on OPPOSITE
-//       chairs, so the framework's single orientFor(seatRy) rotation would put the
-//       SAME physical grid nearest both — fine for a symmetric board, wrong for a
-//       "your half / their half" board. We therefore declare orientPolicy:"self"
-//       (board.js then does NOT rotate the group) and rotate the group OURSELVES:
-//       orientFor(seatRy) brings −Z near; an extra PI for the guest brings the guest's
-//       own ocean (also authored at −Z locally) back to the near edge. Each client
-//       renders with its OWN role, so host sees host-blue near, guest sees guest-amber
-//       near, opponent across — and applyState NEVER recomputes role/colour from the
-//       wire (no side-flip).
+//       chairs. We declare orientPolicy:"self" (board.js then does NOT rotate the
+//       group) and rotate the group OURSELVES by orientFor(seatRy) ALONE. Because
+//       each client renders with its OWN seatRy, orientFor() brings THAT seat's own
+//       near edge (local −Z ocean, authored once) to the front for everyone:
+//       host orientFor(0)=0 keeps −Z near; guest orientFor(~PI)=PI maps local −Z to
+//       world +Z, nearest the guest. No extra per-role PI is added — that would
+//       double-count the opposite seat and flip the guest into the host's frame.
+//       So host sees host-blue ocean near, guest sees guest-amber ocean near,
+//       opponent across — and applyState NEVER recomputes role/colour from the wire
+//       (no side-flip).
 //
 //   (3) A REAL, ALWAYS-ON HUD. A floating billboard placard above the board states
 //       the phase ("Place your fleet" / "YOUR TURN — fire!" / "Waiting for opponent"
@@ -291,7 +292,7 @@ export function createGame(ctx) {
     emberPeg: new THREE.SphereGeometry(CELL * 0.2, 12, 10),
     shell: new THREE.SphereGeometry(CELL * 0.12, 10, 8),
     ring: new THREE.TorusGeometry(CELL * 0.34, CELL * 0.05, 8, 22),
-    btn: new THREE.BoxGeometry(CELL * 1.6, CELL * 0.5, CELL * 0.7),
+    btn: new THREE.BoxGeometry(CELL * 1.25, CELL * 0.45, CELL * 0.7),
     statusChip: new THREE.BoxGeometry(CELL * 0.7, CELL * 0.22, CELL * 0.22),
   };
 
@@ -316,12 +317,14 @@ export function createGame(ctx) {
 
   // Self-orientation: rotate the WHOLE group so the local player's own ocean
   // (authored at −Z) lands nearest them. board.js does NOT rotate us
-  // (orientPolicy:"self"). Host: orientFor(seatRy); guest: + PI so their ocean
-  // (also −Z locally) comes near instead of the enemy grid.
+  // (orientPolicy:"self"). Each client renders with its OWN seatRy, and
+  // orientFor(seatRy) ALONE brings that seat's near edge (local −Z, our ocean)
+  // to the front — INCLUDING the opposite guest chair, where orientFor(~PI)===PI
+  // already maps local −Z to world +Z (nearest the guest). There is NO extra
+  // per-role PI: adding one would double-count the opposite seat and flip the
+  // guest back into the host's frame (placing/firing on the wrong grids).
   function applyFacing() {
-    let ry = orientFor(seatRy);
-    if (role === "guest") ry += Math.PI;
-    group.rotation.y = ry;
+    group.rotation.y = orientFor(seatRy);
   }
 
   buildStaticBoard();
@@ -382,7 +385,11 @@ export function createGame(ctx) {
     buildPlaceButtons();
   }
 
-  // Floating placement buttons beside YOUR ocean (the near −Z grid).
+  // Floating placement controls ON the board, hovering just in front of (slightly
+  // −Z of) YOUR ocean's near edge. Laid out as a row ACROSS X, centred on 0, so
+  // every button stays inside |X| <= HALF and within the tabletop radius / seated
+  // camera framing. Anchored to the local −Z ocean, so Fix A renders them in front
+  // of WHICHEVER seat owns that ocean (host near host, guest near guest).
   function buildPlaceButtons() {
     const defs = [
       { btn: "rotate", mat: M.btnIdle },
@@ -390,11 +397,14 @@ export function createGame(ctx) {
       { btn: "clear", mat: M.btnIdle },
       { btn: "ready", mat: M.btnGo },
     ];
-    const bx = HALF + CELL * 1.4;
-    const startZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.6;
+    // Row sits just in front of the ocean grid's near edge, still on the base.
+    const rowZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.5;
+    const bx0 = -HALF * 0.66;
+    const bxStep = (HALF * 1.32) / 3;
     defs.forEach((d, i) => {
       const m = new THREE.Mesh(G.btn, d.mat.clone());
-      m.position.set(bx, SURF_Y + CELL * 0.3, startZ + i * CELL * 0.95);
+      // Raised above the water so they read as floating controls and don't z-fight.
+      m.position.set(bx0 + i * bxStep, SURF_Y + CELL * 0.35, rowZ);
       m.castShadow = true;
       m.userData.btn = d.btn;
       group.add(m);
@@ -435,12 +445,14 @@ export function createGame(ctx) {
         statusChips[firer].push(chip);
       });
     };
+    // Keep chips inboard (within |X| <= HALF) so they read on the board, not
+    // floating off the tabletop edge.
     const z0 = ENEMY_CZ - GRID_SPAN / 2 + CELL * 0.4;
     if (mySide) {
-      makeRow(mySide, HALF + CELL * 1.3, z0);
+      makeRow(mySide, HALF - CELL * 0.9, z0);
     } else {
-      makeRow("host", HALF + CELL * 1.3, z0);
-      makeRow("guest", -HALF - CELL * 1.3, z0);
+      makeRow("host", HALF - CELL * 0.9, z0);
+      makeRow("guest", -HALF + CELL * 0.9, z0);
     }
   }
 
@@ -879,6 +891,7 @@ export function createGame(ctx) {
       sendReveal();
       return;
     }
+    if (role === "host") pushSnapshot();
     refreshHud();
     // The turn passes to the opponent; it returns to me only after their incoming
     // {fire} lands (receiveIncomingFire sets myTurn=true).
@@ -905,6 +918,7 @@ export function createGame(ctx) {
     }
     myTurn = true;
     refreshAim();
+    if (role === "host") pushSnapshot();
     refreshHud();
   }
 

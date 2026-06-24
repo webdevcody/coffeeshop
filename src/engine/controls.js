@@ -170,10 +170,12 @@ export function createControls(domElement) {
       seated.on = true;
       seated.baseYaw = baseYaw;
       // Start centred on the board with a comfortable downward gaze and the
-      // neutral (farthest) zoom, so sitting down doesn't snap you in too close.
+      // neutral zoom, so sitting down doesn't snap in too close OR pull fully
+      // back. The player can then scroll in (lean over the board) or out
+      // (dolly back + up to fit a large board).
       orbit.yaw = baseYaw;
       orbit.pitch = SEATED_CAM.basePitch;
-      zoom.factor = SEATED_CAM.zoomMax;
+      zoom.factor = SEATED_CAM.zoomNeutral;
     } else if (on) {
       // Already seated (e.g. seat/role refresh): just re-centre the yaw baseline.
       seated.baseYaw = baseYaw;
