@@ -59,6 +59,14 @@ export function createEngine(canvas) {
   // match the sky horizon each frame. DISTANCES are fixed at 220/480 and MUST NOT
   // change — only the colour is animated.
   scene.fog = new THREE.Fog(0xcfe3f2, 220, 480);
+  // Bind the scene background to the SAME Color object as the fog. The sky dome is a
+  // finite 500 m sphere at the origin; out over the huge ocean / far islands the
+  // camera can see PAST the dome's edge, where an unset background renders as the
+  // black clear colour ("black box in the sky"). Pointing background at fog.color
+  // means any such gap reads as seamless horizon haze instead of black — and since
+  // it's the same Color reference the day/night driver already re-tints via
+  // fog.color.copy(...), the background tracks the hour for free, no per-frame cost.
+  scene.background = scene.fog.color;
 
   // near=1.0 (not 0.1) buys ~10x depth-buffer precision everywhere, which is what
   // stops the near-coplanar ground layers (base/slab/road/markings, all within a

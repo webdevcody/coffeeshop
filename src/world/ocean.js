@@ -180,7 +180,7 @@ export function buildOcean(opts = {}) {
   // Half-size ~1600 → ~3200 across. A modest 48×48 segment grid is plenty for a
   // cheap sine swell; we cache the base heights once so update() never allocates.
   const SEA_HALF = 1600;
-  const seaGeo = new THREE.PlaneGeometry(SEA_HALF * 2, SEA_HALF * 2, 48, 48);
+  const seaGeo = new THREE.PlaneGeometry(SEA_HALF * 2, SEA_HALF * 2, 32, 32);
   const sea = new THREE.Mesh(seaGeo, seaMat);
   sea.rotation.x = -Math.PI / 2;
   sea.position.set(cx, waterY, cz);
@@ -416,13 +416,23 @@ export function buildOcean(opts = {}) {
     // X/Y arrays and writes Z back; no attribute getX/getY calls, no allocation.
     for (let i = 0; i < seaPos.count; i++) {
       const lx = seaLX[i], ly = seaLY[i];
-      const h = Math.sin(lx * 0.02 + t * 0.8) * 0.5
-              + Math.cos(ly * 0.025 - t * 0.6) * 0.4
-              + Math.sin((lx + ly) * 0.05 + t * 1.4) * 0.15;
+      // Crested swell amplitude is kept SMALL (sum ≤ 0.56) on purpose: the sea sits
+      // at waterY=-0.8 only 0.68 m below the base pavement (-0.12), so a bigger
+      // swell (the old sum 1.05) pushed wave CRESTS up to +0.25 — above the city
+      // slabs/roads at y=0 — and the sea visibly "overflowed" onto the tiles,
+      // roads and cafe floor. At ≤0.56 the highest crest is -0.24, safely under the
+      // pavement, so the sea can never poke through the city ground.
+      const h = Math.sin(lx * 0.02 + t * 0.8) * 0.28
+              + Math.cos(ly * 0.025 - t * 0.6) * 0.2
+              + Math.sin((lx + ly) * 0.05 + t * 1.4) * 0.08;
       seaPos.setZ(i, seaBaseZ[i] + h);
     }
     seaPos.needsUpdate = true;
-    seaGeo.computeVertexNormals(); // facet normals shift → moving sparkle
+    // NO computeVertexNormals() here: the material is flatShading, so the shader
+    // derives face normals from screen-space position derivatives and ignores the
+    // normal attribute entirely. Recomputing 2304 vertex normals every frame was
+    // pure wasted work (a major FPS sink) — the facets still sparkle as they move
+    // because their POSITIONS change, which flat shading already responds to.
     // Colour/emissive shimmer between teal and a sun-glint blue.
     const s = (Math.sin(t * 0.7) + 1) * 0.5; // 0..1
     seaMat.emissiveIntensity = 0.22 + s * 0.16;
