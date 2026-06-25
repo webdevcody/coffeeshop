@@ -825,21 +825,69 @@ export function createGame(ctx) {
   // ===========================================================================
   // Hull rendering — MY ships only, on MY (near) ocean. Local-only; never wired.
   // ===========================================================================
+  function shipClass(spec) {
+    const id = (spec.id || spec.name || "").toLowerCase();
+    if (id.includes("carrier")) return "carrier";
+    if (id.includes("battle")) return "battleship";
+    if (id.includes("cruiser")) return "cruiser";
+    if (id.includes("sub")) return "submarine";
+    if (id.includes("destroy")) return "destroyer";
+    return spec.length >= 5 ? "carrier" : spec.length === 4 ? "battleship" : spec.length === 2 ? "destroyer" : "cruiser";
+  }
+
+  // A proper low-poly warship per class (hull + bow + class superstructure), sized
+  // to the ship's cells. PURELY VISUAL: every mesh is made non-raycastable so the
+  // ships can never intercept a board click — the grid cells stay the only hit-test.
   function buildHull(ship) {
     const spec = SHIP_BY_ID.get(ship.id);
     const len = spec.length;
+    const cls = shipClass(spec);
     const g = new THREE.Group();
-    const along = len * CELL * 0.86;
+    const along = len * CELL * 0.88;
     const wide = CELL * 0.5;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(along, HULL_H * 0.7, wide), M.hull);
-    body.position.y = HULL_H * 0.35;
-    body.castShadow = true;
-    body.receiveShadow = true;
-    g.add(body);
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(along * 0.3, HULL_H * 0.5, wide * 0.55), M.hullDeck);
-    deck.position.set(-along * 0.12, HULL_H * 0.85, 0);
-    deck.castShadow = true;
-    g.add(deck);
+    const bodyH = HULL_H * 0.55;
+    const deckMat = M.hullDeck;
+    const add = (geo, x, y, z, mat) => {
+      const m = new THREE.Mesh(geo, mat || deckMat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      g.add(m);
+      return m;
+    };
+
+    if (cls === "submarine") {
+      // Low rounded cylindrical hull + sail (conning tower).
+      const sub = add(new THREE.CylinderGeometry(wide * 0.42, wide * 0.42, along * 0.82, 14), 0, bodyH * 0.5, 0, M.hull);
+      sub.rotation.z = Math.PI / 2;
+      add(new THREE.ConeGeometry(wide * 0.42, along * 0.18, 14), along * 0.45, bodyH * 0.5, 0, M.hull).rotation.z = -Math.PI / 2;
+      add(new THREE.BoxGeometry(along * 0.14, HULL_H * 0.45, wide * 0.4), -along * 0.02, bodyH + HULL_H * 0.18, 0, deckMat);
+    } else {
+      // Box hull + pointed bow.
+      add(new THREE.BoxGeometry(along * 0.8, bodyH, wide), -along * 0.05, bodyH * 0.5, 0, M.hull);
+      const bow = add(new THREE.ConeGeometry(wide * 0.5, along * 0.24, 4), along * 0.43, bodyH * 0.5, 0, M.hull);
+      bow.rotation.z = -Math.PI / 2;
+      bow.rotation.y = Math.PI / 4;
+    }
+
+    const deckY = bodyH;
+    const turret = (x) => {
+      add(new THREE.CylinderGeometry(wide * 0.3, wide * 0.34, HULL_H * 0.3, 10), x, deckY + HULL_H * 0.15, 0);
+      const barrel = add(new THREE.CylinderGeometry(CELL * 0.045, CELL * 0.045, CELL * 0.62, 6), x + CELL * 0.32, deckY + HULL_H * 0.22, 0);
+      barrel.rotation.z = Math.PI / 2;
+    };
+    const funnel = (x) => add(new THREE.CylinderGeometry(wide * 0.17, wide * 0.2, HULL_H * 0.55, 10), x, deckY + HULL_H * 0.28, 0);
+    const bridge = (x, w) => add(new THREE.BoxGeometry(along * (w || 0.12), HULL_H * 0.62, wide * 0.62), x, deckY + HULL_H * 0.31, 0);
+
+    if (cls === "carrier") {
+      add(new THREE.BoxGeometry(along * 0.92, HULL_H * 0.14, wide * 1.08), 0, deckY + HULL_H * 0.07, 0, deckMat); // flight deck
+      add(new THREE.BoxGeometry(along * 0.1, HULL_H * 0.55, wide * 0.3), along * 0.16, deckY + HULL_H * 0.36, wide * 0.34, deckMat); // island
+    } else if (cls === "battleship") {
+      bridge(-along * 0.02, 0.14); turret(-along * 0.33); turret(along * 0.28); funnel(along * 0.05); funnel(along * 0.16);
+    } else if (cls === "cruiser") {
+      bridge(-along * 0.05, 0.12); turret(-along * 0.3); turret(along * 0.3); funnel(along * 0.08);
+    } else if (cls === "destroyer") {
+      bridge(-along * 0.04, 0.12); turret(along * 0.32); funnel(along * 0.06);
+    }
 
     const cells = shipCells(ship);
     const a = cells[0];
@@ -849,6 +897,8 @@ export function createGame(ctx) {
     g.position.set(cx, HULL_Y, cz);
     if (ship.orientation === "vertical") g.rotation.y = Math.PI / 2;
     g.userData.shipId = ship.id;
+    // Purely decorative — never intercept a board click.
+    g.traverse((c) => { if (c.isMesh) c.raycast = () => {}; });
     return g;
   }
 
