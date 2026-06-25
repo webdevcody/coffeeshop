@@ -97,6 +97,11 @@ const lampPostMat = new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness
 const lampGlowMat = new THREE.MeshStandardMaterial({
   color: "#ffe6a8", emissive: "#ffbe55", emissiveIntensity: 0.9, roughness: 0.5,
 });
+// Door-awning canopy (corrugated steel/canvas look). DoubleSide so it reads from
+// under it too, since the player walks UNDERNEATH the projecting canopy.
+const awningMat = new THREE.MeshStandardMaterial({
+  color: "#b0563a", roughness: 0.8, metalness: 0.2, side: THREE.DoubleSide,
+});
 
 // --- Shared geometries (created ONCE, reused) ------------------------------
 const smokeGeo = new THREE.IcosahedronGeometry(0.55, 0);
@@ -925,6 +930,206 @@ function makeLampPost() {
   return g;
 }
 
+// A simple slatted yard BENCH (seat + back + two end legs). Decorative, no
+// collider — slim enough to read as walk-past clutter beside the shop fronts.
+function makeBench() {
+  const g = new THREE.Group();
+  const seat = box(1.6, 0.1, 0.45, palletMat, false);
+  seat.position.y = 0.48;
+  g.add(seat);
+  const back = box(1.6, 0.4, 0.08, palletMat, false);
+  back.position.set(0, 0.74, -0.2);
+  g.add(back);
+  for (const sx of [-0.65, 0.65]) {
+    const leg = box(0.12, 0.48, 0.42, frameMat, false);
+    leg.position.set(sx, 0.24, 0);
+    g.add(leg);
+  }
+  return g;
+}
+
+// A projecting door AWNING: a canted canopy on two angled wall braces, built so
+// its LOCAL origin sits at the wall face and the canopy cants out toward −Z (the
+// street). Mounted ABOVE the door (y≈2.55) so it never blocks the doorway — and
+// it carries NO collider, so the player walks straight under it into the shop.
+// (Colliders are infinite-height in XZ; a high canopy MUST stay collider-free.)
+function makeAwning(width) {
+  const g = new THREE.Group();
+  const canopy = box(width, 0.08, 1.1, awningMat, false);
+  canopy.position.set(0, 0, -0.55);
+  canopy.rotation.x = -0.32; // outer edge cants down toward the street
+  g.add(canopy);
+  const valance = box(width, 0.22, 0.05, awningMat, false);
+  valance.position.set(0, -0.16, -1.04);
+  g.add(valance);
+  for (const sx of [-width / 2 + 0.25, width / 2 - 0.25]) {
+    const brace = box(0.05, 0.05, 1.05, frameMat, false);
+    brace.position.set(sx, -0.16, -0.5);
+    brace.rotation.x = 0.42;
+    g.add(brace);
+  }
+  return g;
+}
+
+// An overhead PIPE GANTRY that straddles a lane: two ground legs (with feet) a
+// `span` apart, an overhead crossbeam carrying a twin pipe run, and a hanging
+// caution sign slung below the beam. EVERYTHING above the legs (beam, pipes,
+// sign) sits >4 m up with NO collider, so the car + player pass underneath; the
+// caller adds a TIGHT collider on each thin leg only. Sign is DoubleSide
+// (artPanel) so it reads from both lane directions.
+function makeGantry(span) {
+  const g = new THREE.Group();
+  const legH = 4.6;
+  const legGeo = new THREE.BoxGeometry(0.24, legH, 0.24);
+  for (const sx of [-span / 2, span / 2]) {
+    const leg = new THREE.Mesh(legGeo, frameMat);
+    leg.position.set(sx, legH / 2, 0);
+    leg.castShadow = true;
+    g.add(leg);
+    const foot = box(0.5, 0.12, 0.5, concreteDark, false);
+    foot.position.set(sx, 0.06, 0);
+    g.add(foot);
+  }
+  const beamY = legH - 0.2;
+  const beam = box(span + 0.5, 0.3, 0.4, frameMat);
+  beam.position.set(0, beamY, 0);
+  g.add(beam);
+  const pipeG = new THREE.CylinderGeometry(0.16, 0.16, span + 0.4, 8);
+  for (let i = 0; i < 2; i++) {
+    const p = new THREE.Mesh(pipeG, i ? pipeMat2 : pipeMat);
+    p.rotation.z = Math.PI / 2;
+    p.position.set(0, beamY + 0.32 + i * 0.34, i ? 0.12 : -0.12);
+    p.castShadow = true;
+    g.add(p);
+  }
+  // hanging caution sign below the beam (bottom ≈ 3.35 m — overhead, NO collider)
+  const sign = artPanel(1.7, 0.6, "sign", {
+    text: "CLEARANCE", bg: "#e6c200", fg: "#1c1c1c", emissiveIntensity: 0.4,
+    file: "industrial-gantry-sign.png",
+  });
+  sign.position.set(0, beamY - 0.75, 0);
+  g.add(sign);
+  for (const sx of [-0.75, 0.75]) {
+    const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.45, 5), frameMat);
+    chain.position.set(sx, beamY - 0.42, 0);
+    g.add(chain);
+  }
+  return g;
+}
+
+// ── Enterable MESS HALL / CANTEEN ──────────────────────────────────────────
+// A third interior archetype (the works canteen) sharing the same shell as the
+// other two shops: four walls + floor + flat roof, with a doorway GAP in the −Z
+// (street) wall that carries NO collider. Interior: a servery counter, a pair of
+// canteen tables with stools, a drinks shelf and a wall sign. Returns
+// { group, colliders } with colliders in the shop's LOCAL frame (the caller
+// offsets them via placeShopColliders).
+function makeMessHall(W, D, H, wallT, doorGap) {
+  const g = new THREE.Group();
+  const colliders = [];
+  const hw = W / 2, hd = D / 2;
+  const wallCX = hw + wallT / 2;
+  const wallCZ = hd + wallT / 2;
+  const outerW = W + 2 * wallT;
+
+  // Floor + flat roof + parapet (same recipe as the other shops).
+  const floor = box(W + wallT, 0.12, D + wallT, shopFloorMat, false);
+  floor.position.y = 0.06; floor.receiveShadow = true; g.add(floor);
+  const roof = box(outerW, 0.2, D + 2 * wallT, shopRoofMat, true);
+  roof.position.y = H + 0.1; g.add(roof);
+  const parapet = box(outerW + 0.18, 0.28, D + 2 * wallT + 0.18, roofMat, false);
+  parapet.position.y = H + 0.04; g.add(parapet);
+
+  // Walls: back (+Z), two sides (±X), two front (−Z) flanks around the door.
+  const back = box(outerW, H, wallT, shopWallMat);
+  back.position.set(0, H / 2, wallCZ); g.add(back);
+  for (const sx of [-1, 1]) {
+    const side = box(wallT, H, D, shopWallMat);
+    side.position.set(sx * wallCX, H / 2, 0); g.add(side);
+  }
+  const frontSegLen = (outerW - doorGap) / 2;
+  const segOffset = doorGap / 2 + frontSegLen / 2;
+  for (const sx of [-1, 1]) {
+    const seg = box(frontSegLen, H, wallT, shopWallMat);
+    seg.position.set(sx * segOffset, H / 2, -wallCZ); g.add(seg);
+  }
+  const doorClear = 2.4;
+  if (H > doorClear + 0.1) {
+    const lintel = box(doorGap + 0.2, H - doorClear, wallT, shopWallMat);
+    lintel.position.set(0, doorClear + (H - doorClear) / 2, -wallCZ); g.add(lintel);
+  }
+  for (const sx of [-1, 1]) {
+    const jamb = box(0.1, doorClear, wallT + 0.04, frameMat, false);
+    jamb.position.set(sx * (doorGap / 2 + 0.05), doorClear / 2, -wallCZ); g.add(jamb);
+  }
+
+  // WALL COLLIDERS (doorway gap left open — no collider).
+  addCollider(colliders, 0, wallCZ, outerW, wallT);
+  addCollider(colliders, -wallCX, 0, wallT, D);
+  addCollider(colliders, wallCX, 0, wallT, D);
+  addCollider(colliders, -segOffset, -wallCZ, frontSegLen, wallT);
+  addCollider(colliders, segOffset, -wallCZ, frontSegLen, wallT);
+
+  // Floor rug to anchor the room.
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.5, D * 0.5), shopRugMat);
+  rug.rotation.x = -Math.PI / 2; rug.position.set(0, 0.13, 0.1);
+  rug.receiveShadow = true; g.add(rug);
+
+  // Servery COUNTER along the back wall, with a lighter top, a tea urn + tins.
+  const counterW = W * 0.62, counterD = 0.6, counterH = 1.0;
+  const counterZ = hd - counterD / 2 - 0.4;
+  const counterBody = box(counterW, counterH, counterD, counterMat);
+  counterBody.position.set(0, counterH / 2, counterZ); g.add(counterBody);
+  const counterTop = box(counterW + 0.1, 0.08, counterD + 0.1, counterTopMat);
+  counterTop.position.set(0, counterH + 0.04, counterZ); g.add(counterTop);
+  const urn = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 0.4, 10), stoolLegMat);
+  urn.position.set(-counterW / 2 + 0.4, counterH + 0.24, counterZ);
+  urn.castShadow = true; g.add(urn);
+  for (let i = 0; i < 3; i++) {
+    const tin = new THREE.Mesh(shopProdCanGeo, i % 2 ? prodMatD : prodMatA);
+    tin.position.set(0.1 + i * 0.3, counterH + 0.23, counterZ);
+    tin.castShadow = true; g.add(tin);
+  }
+
+  // Two canteen TABLES (steel-topped) with a pair of stools each.
+  for (const tx of [-hw + 0.95, hw - 0.95]) {
+    const tableTop = box(1.0, 0.08, 0.8, counterTopMat);
+    tableTop.position.set(tx, 0.74, -hd + 1.25); g.add(tableTop);
+    const tleg = box(0.12, 0.74, 0.12, stoolLegMat, false);
+    tleg.position.set(tx, 0.37, -hd + 1.25); g.add(tleg);
+    for (const sz of [-0.55, 0.55]) {
+      const stool = new THREE.Mesh(stoolSeatGeo, stoolSeatMat);
+      stool.position.set(tx, 0.48, -hd + 1.25 + sz);
+      stool.castShadow = true; g.add(stool);
+    }
+  }
+
+  // A drinks/supplies SHELF on the +X wall (a couple of planks).
+  const shelfX = hw - 0.28;
+  for (let p = 0; p < 2; p++) {
+    const plank = box(0.32, 0.05, D * 0.5, shelfMat, false);
+    plank.position.set(shelfX, 0.9 + p * 0.6, 0); g.add(plank);
+  }
+
+  // Hanging interior light.
+  const cordLen = H - 0.9;
+  const cord = new THREE.Mesh(lampCordGeo, cordMat);
+  cord.scale.y = cordLen; cord.position.set(0, H - cordLen / 2 - 0.1, 0); g.add(cord);
+  const shade = new THREE.Mesh(lampShadeGeo, lampShadeMat);
+  shade.position.set(0, H - cordLen - 0.1, 0); g.add(shade);
+
+  // Interior wall sign behind the counter (faces −Z into the room).
+  const wallSign = artPanel(2.0, 0.7, "sign", {
+    text: "CANTEEN", bg: "#0b6e4f", fg: "#f7fff7", emissiveIntensity: 0.4,
+    file: "industrial-mess-wallsign.png",
+  });
+  wallSign.position.set(0, 2.1, hd - 0.06);
+  wallSign.rotation.y = Math.PI;
+  g.add(wallSign);
+
+  return { group: g, colliders };
+}
+
 export function buildIndustrial() {
   const group = new THREE.Group();
   const colliders = [];
@@ -1213,12 +1418,14 @@ export function buildIndustrial() {
   }
 
   // --- Enterable FAB / WELDING SHOP "ARC & ANVIL" (west-centre band) --------
-  // The big open band west of the centre cross (between WH1 to the N and WH2 to
-  // the S) is mostly empty — drop a fab shop here facing the open lane. Interior
-  // 6.0 × 5.0 m; outer footprint x∈[−18.25,−11.75], z∈[4.25,9.75] — inside ±23,
-  // clear of WH1 (z≤−5), WH2 (z≥10), the silos/tanks and the open lanes (minZ
-  // 4.25 > the z≈3.4 kerb). Door faces −Z toward the player's approach (no flip).
-  const FAB = { x: -15.0, z: 7.0, W: 6.0, D: 5.0, H: 3.1, wallT: 0.25, door: 2.2 };
+  // The open band west of the centre cross (between WH1 to the N and WH2 to the S)
+  // fits a COMPACT fab shop facing the lane. Interior 6.0 × 4.0 m; outer footprint
+  // x∈[−18.25,−11.75], z∈[3.65,8.15] — inside ±23 and threaded through the narrow
+  // gap between the z≈3.4 lane kerb and WH2's flipped loading DOCK APRON, which
+  // reaches z≈8.4 (NOT just the WH2 body at z≥10 — the earlier 5.0 m-deep shell
+  // clipped that apron). The shallow 4.0 m depth clears both. Door faces −Z toward
+  // the player's approach (no flip).
+  const FAB = { x: -15.0, z: 5.9, W: 6.0, D: 4.0, H: 3.1, wallT: 0.25, door: 2.2 };
   const fab = makeFabShop(FAB.W, FAB.D, FAB.H, FAB.wallT, FAB.door);
   fab.group.position.set(FAB.x, 0, FAB.z);
   group.add(fab.group);
@@ -1237,13 +1444,14 @@ export function buildIndustrial() {
   group.add(fabSign);
 
   // --- Enterable PARTS DEPOT "GEAR DEPOT" (east band, S of the silos) -------
-  // The east strip between WH3 (z≤−10) and the silos (z≥−8.35) opens up south of
-  // the silos. Place a tool-supply depot here, FLIPPED 180° so its door faces +Z
-  // toward the centre the player approaches from. Interior 4.6 × 4.0 m; outer
-  // footprint x∈[17.45,22.55], z∈[−9.25,−4.75] — inside ±23, clear of WH3, the
-  // silos and the open lanes (after the flip the door opens onto maxZ −4.75 >
-  // the z≈−3.4 kerb). The flipped colliders are mapped by placeShopColliders.
-  const DEPOT = { x: 20.0, z: -7.0, W: 4.6, D: 4.0, H: 3.0, wallT: 0.25, door: 2.0 };
+  // The east strip south of the silos and WH3 fits a tool-supply depot, FLIPPED
+  // 180° so its door faces +Z toward the centre the player approaches from.
+  // Interior 4.6 × 4.0 m; outer footprint x∈[17.45,22.55], z∈[−8.15,−3.65] —
+  // inside ±23 and threaded between WH3's +Z loading DOCK APRON, which reaches
+  // z≈−8.4 (NOT just the WH3 body at z≤−10 — the earlier z=−7 placement clipped
+  // that apron), and the z≈−3.4 lane kerb the flipped door now opens onto. The
+  // flipped colliders are mapped by placeShopColliders.
+  const DEPOT = { x: 20.0, z: -5.9, W: 4.6, D: 4.0, H: 3.0, wallT: 0.25, door: 2.0 };
   const depot = makeToolShop(DEPOT.W, DEPOT.D, DEPOT.H, DEPOT.wallT, DEPOT.door);
   depot.group.position.set(DEPOT.x, 0, DEPOT.z);
   depot.group.rotation.y = Math.PI; // door (built on −Z) now faces +Z, toward centre
@@ -1260,10 +1468,69 @@ export function buildIndustrial() {
   depotSign.position.set(DEPOT.x, DEPOT.H + 0.6, DEPOT.z + (DEPOT.D / 2 + DEPOT.wallT) + 0.05);
   group.add(depotSign);
 
+  // --- Enterable MESS HALL / CANTEEN "THE FEED BIN" (N of BOLT & BARREL) ----
+  // Drops into the open SE-north pocket west of the storage tanks: interior
+  // 4.6 × 4.6 m, door facing −Z down the open approach corridor (the strip west
+  // of BOLT & BARREL). Outer footprint x∈[3.76,9.04], z∈[13.36,18.64] — inside
+  // ±23, clear of BOLT & BARREL (z≤12.44), the tanks (x≥10.5), the water tower
+  // and the lanes. The doorway gap gets NO collider; every other wall is an AABB.
+  const MESS = { x: 6.4, z: 16.0, W: 4.6, D: 4.6, H: 3.0, wallT: 0.25, door: 2.0 };
+  const mess = makeMessHall(MESS.W, MESS.D, MESS.H, MESS.wallT, MESS.door);
+  mess.group.position.set(MESS.x, 0, MESS.z);
+  group.add(mess.group);
+  placeShopColliders(mess.colliders, MESS.x, MESS.z, false);
+  // Exterior sign over the door (−Z wall), rotated to read from the corridor.
+  const messSign = artPanel(3.0, 0.95, "sign", {
+    text: "THE FEED BIN", bg: "#7a3b12", fg: "#ffd166", emissiveIntensity: 0.5,
+    file: "industrial-mess-sign.png",
+  });
+  messSign.position.set(MESS.x, MESS.H + 0.6, MESS.z - (MESS.D / 2 + MESS.wallT) - 0.05);
+  messSign.rotation.y = Math.PI;
+  group.add(messSign);
+
+  // --- Projecting door AWNINGS over every shop entrance --------------------
+  // Each canopy is mounted high (y≈2.55, above the 2.4 m door clear) on the street
+  // wall and cants out over the approach. They carry NO collider, so the player
+  // walks straight under them into the doorway. The flipped DEPOT door faces +Z,
+  // so its awning is turned 180° to project +Z to match.
+  const shopAwnings = [
+    { x: SHOP.x, z: SHOP.z - (SHOP.D / 2 + SHOP.wallT), w: SHOP.door + 0.9, flip: false },
+    { x: FAB.x, z: FAB.z - (FAB.D / 2 + FAB.wallT), w: FAB.door + 0.9, flip: false },
+    { x: MESS.x, z: MESS.z - (MESS.D / 2 + MESS.wallT), w: MESS.door + 0.9, flip: false },
+    { x: DEPOT.x, z: DEPOT.z + (DEPOT.D / 2 + DEPOT.wallT), w: DEPOT.door + 0.9, flip: true },
+  ];
+  for (const a of shopAwnings) {
+    const aw = makeAwning(a.w);
+    aw.position.set(a.x, 2.55, a.z);
+    if (a.flip) aw.rotation.y = Math.PI;
+    group.add(aw);
+  }
+
+  // --- Overhead PIPE GANTRY bridging the works across the E–W lane ---------
+  // The two legs stand JUST outside the lane (z = ±3.8) and get a TIGHT post
+  // collider each; the crossbeam, twin pipe run and hanging "CLEARANCE" sign all
+  // sit >4 m up with NO collider, so the car and the player pass straight under.
+  // (Colliders are infinite-height in XZ — the beam/panel MUST stay collider-free
+  // to stay walk-under.)
+  const gantry = makeGantry(7.6);
+  gantry.position.set(-11, 0, 0);
+  gantry.rotation.y = Math.PI / 2; // legs straddle the E–W lane (world z = ±3.8)
+  group.add(gantry);
+  addCollider(colliders, -11, 3.8, 0.34, 0.34);
+  addCollider(colliders, -11, -3.8, 0.34, 0.34);
+
+  // --- A couple of yard BENCHES facing the open centre (decorative, no collider).
+  for (const [bx, bz, br] of [[-6.5, 4.6, 0], [12.5, 4.6, 0]]) {
+    const bench = makeBench();
+    bench.position.set(bx, 0, bz);
+    bench.rotation.y = br;
+    group.add(bench);
+  }
+
   // --- Extra street-level flavour: planters, pallets, lamp posts -----------
   // Planters soften the grey yard near the shop fronts (decorative, no collider).
   const planterSpots = [
-    [-11.0, 7.0], [-19.0, 7.0],   // flanking the ARC & ANVIL door
+    [-10.7, 5.0], [-19.3, 5.0],   // flanking the ARC & ANVIL front (clear of the shrunk shop)
     [5.6, 7.5], [16.4, 7.5],       // flanking the BOLT & BARREL door
   ];
   for (const [x, z] of planterSpots) {
@@ -1288,6 +1555,7 @@ export function buildIndustrial() {
   const lampSpots = [
     [-5.0, -5.0, 0], [5.0, 5.0, Math.PI],     // NW + SE inner corners of the cross
     [5.0, -5.0, Math.PI / 2], [-5.0, 5.0, -Math.PI / 2],
+    [4.2, 9.0, Math.PI / 2], [16.0, 4.5, -Math.PI / 2], // canteen corridor + BOLT & BARREL front
   ];
   for (const [x, z, ry] of lampSpots) {
     const lp = makeLampPost();
@@ -1321,6 +1589,10 @@ export function buildIndustrial() {
     beaconT += dt;
     beacon.rotation.y = beaconT * 2.2;
     beacon.material.emissiveIntensity = 0.6 + Math.abs(Math.sin(beaconT * 2.2)) * 0.6;
+
+    // Fab-shop weld arcs flicker (shared spark material strobes like a live weld).
+    // Cheap + allocation-free: mutates one shared material's emissive intensity.
+    sparkMat.emissiveIntensity = 1.0 + Math.abs(Math.sin(beaconT * 11)) * 1.1;
 
     // Roof ventilation turbines idly spin (varied speed for a lively look).
     for (let i = 0; i < spinners.length; i++) {

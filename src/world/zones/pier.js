@@ -992,6 +992,183 @@ export function buildPier() {
     addCollider(colliders, tCx + sx, tCz + tFrontZ, tFrontSegW, tWT); // front flanks
   }
 
+  // --- ENTERABLE PIER COFFEE KIOSK ----------------------------------------
+  // A third walk-in shop tucked into the open far-LEFT corner of the promenade,
+  // just left of the arcade (whose volume ends X=-19.5) and well BEHIND the
+  // driving lane (Z in [-12,-2]). Its whole footprint sits in LOCAL X[-22.7,-19.9],
+  // Z[-18.5,-13.5] — clear of the arcade, the lane and every other prop, and fully
+  // inside the [-23,23] setback. Same construction as the other shacks: 4 thin
+  // walls with a doorway gap in the +Z (street-facing) front wall, a floor and a
+  // roof. Each load-bearing wall gets its OWN AABB collider; the doorway gap gets
+  // NONE, and the sign over the door sits in that gap (above head height, no
+  // collider) so you walk straight under it into the interior.
+  const cofCx = -21.3, cofCz = -16.0;       // room centre
+  const cofW = 2.8, cofD = 5.0, cofH = 3.0; // 2.8 m wide × 5 m deep × 3 m tall
+  const cofWT = 0.2;                          // wall thickness
+  const cofDOOR = 1.6;                        // doorway gap width
+  const coffee = new THREE.Group();
+  coffee.position.set(cofCx, 0, cofCz);
+  const cofFrontZ = cofD / 2;   // +Z wall (street-facing), local +2.5
+  const cofBackZ = -cofD / 2;   // -Z wall, local -2.5
+  const cofLeftX = -cofW / 2;   // local -1.4
+  const cofRightX = cofW / 2;   // local +1.4
+
+  // Floor (wood) + flat roof slab + a teal eave fascia.
+  const cofFloor = new THREE.Mesh(new THREE.PlaneGeometry(cofW, cofD), shackFloorMat);
+  cofFloor.rotation.x = -Math.PI / 2;
+  cofFloor.position.y = 0.12;
+  cofFloor.receiveShadow = true;
+  coffee.add(cofFloor);
+  const cofRoof = box(cofW + 0.2, 0.2, cofD + 0.2, roofMat);
+  cofRoof.position.set(0, cofH + 0.1, 0);
+  coffee.add(cofRoof);
+  const cofFascia = box(cofW + 0.2, 0.4, 0.12, wallTrimMat, false);
+  cofFascia.position.set(0, cofH - 0.2, cofFrontZ + 0.16);
+  coffee.add(cofFascia);
+
+  // Walls (thin boxes), each its own mesh + own collider; doorway gap has neither.
+  const cofBack = box(cofW, cofH, cofWT, wallMat);
+  cofBack.position.set(0, cofH / 2, cofBackZ);
+  coffee.add(cofBack);
+  const cofLeft = box(cofWT, cofH, cofD, wallMat);
+  cofLeft.position.set(cofLeftX, cofH / 2, 0);
+  coffee.add(cofLeft);
+  const cofRight = box(cofWT, cofH, cofD, wallMat);
+  cofRight.position.set(cofRightX, cofH / 2, 0);
+  coffee.add(cofRight);
+  const cofFrontSegW = (cofW - cofDOOR) / 2; // each flank = 0.6 m
+  for (const sx of [-(cofDOOR / 2 + cofFrontSegW / 2), (cofDOOR / 2 + cofFrontSegW / 2)]) {
+    const seg = box(cofFrontSegW, cofH, cofWT, wallMat);
+    seg.position.set(sx, cofH / 2, cofFrontZ);
+    coffee.add(seg);
+  }
+  // Lintel bridges the doorway above head height — NO collider, so you walk under.
+  const cofLintel = box(cofDOOR + 0.3, 0.4, cofWT, wallTrimMat, false);
+  cofLintel.position.set(0, cofH - 0.2, cofFrontZ);
+  coffee.add(cofLintel);
+
+  // INTERIOR -----------------------------------------------------------------
+  // A welcome mat just inside the door.
+  const cofRug = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.1), rugMat);
+  cofRug.rotation.x = -Math.PI / 2;
+  cofRug.position.set(0, 0.13, cofFrontZ - 1.0);
+  coffee.add(cofRug);
+
+  // Service COUNTER across the back, with a pale slab top.
+  const cofCounterW = 2.2, cofCounterD = 0.7, cofCounterH = 1.0;
+  const cofCounterCz = cofBackZ + cofCounterD / 2 + 0.35;
+  const cofCounter = box(cofCounterW, cofCounterH, cofCounterD, counterMat);
+  cofCounter.position.set(0, cofCounterH / 2 + 0.12, cofCounterCz);
+  coffee.add(cofCounter);
+  const cofCounterTop = box(cofCounterW + 0.2, 0.12, cofCounterD + 0.2, counterTopMat, false);
+  cofCounterTop.position.set(0, cofCounterH + 0.18, cofCounterCz);
+  coffee.add(cofCounterTop);
+
+  // Espresso MACHINE on the counter (dark body, a glowing ready-light, two
+  // portafilter spouts) plus a small bean grinder beside it.
+  const cofMachine = box(0.85, 0.5, 0.42, stoolLegMat, false);
+  cofMachine.position.set(-0.45, cofCounterH + 0.43, cofCounterCz);
+  coffee.add(cofMachine);
+  const cofReady = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), bulbMat);
+  cofReady.position.set(-0.45, cofCounterH + 0.52, cofCounterCz + 0.22);
+  coffee.add(cofReady);
+  const cofSpoutGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.13, 6);
+  for (const sx of [-0.58, -0.32]) {
+    const spout = new THREE.Mesh(cofSpoutGeo, barrelHoopMat);
+    spout.position.set(sx, cofCounterH + 0.3, cofCounterCz + 0.23);
+    coffee.add(spout);
+  }
+  const cofGrinder = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.34, 10), barrelHoopMat);
+  cofGrinder.position.set(0.2, cofCounterH + 0.35, cofCounterCz);
+  coffee.add(cofGrinder);
+  // A few paper CUPS in a stack on the counter top.
+  const cofCupGeo = new THREE.CylinderGeometry(0.055, 0.045, 0.12, 8);
+  for (const [cx, cz] of [[0.55, -0.12], [0.7, 0.04], [0.5, 0.08]]) {
+    const cup = new THREE.Mesh(cofCupGeo, counterTopMat);
+    cup.position.set(cx, cofCounterH + 0.3, cofCounterCz + cz);
+    coffee.add(cup);
+  }
+
+  // Back-wall SHELF stocked with bags of beans (instanced, bright pouches).
+  const cofShelfX = 0.75, cofShelfW = 1.1;
+  for (let tier = 0; tier < 2; tier++) {
+    const shelf = box(cofShelfW, 0.1, 0.4, shelfMat, false);
+    shelf.position.set(cofShelfX, 1.9 + tier * 0.5, cofBackZ + cofWT / 2 + 0.22);
+    coffee.add(shelf);
+  }
+  const cofGoodGeo = new THREE.BoxGeometry(0.24, 0.32, 0.2);
+  const cofGoodsCount = 4;
+  const cofGoods = new THREE.InstancedMesh(cofGoodGeo, goodsMats[3], cofGoodsCount);
+  cofGoods.castShadow = true;
+  const cofgm = new THREE.Matrix4();
+  let cofgi = 0;
+  for (let tier = 0; tier < 2; tier++) {
+    for (const gx of [0.5, 1.0]) {
+      cofgm.makeTranslation(gx, 1.9 + tier * 0.5 + 0.21, cofBackZ + cofWT / 2 + 0.22);
+      cofGoods.setMatrixAt(cofgi++, cofgm);
+    }
+  }
+  cofGoods.instanceMatrix.needsUpdate = true;
+  coffee.add(cofGoods);
+
+  // Two STOOLS at the counter (reusing the shared seat/leg geometry).
+  for (const sx of [-0.55, 0.45]) {
+    const stool = new THREE.Group();
+    stool.position.set(sx, 0, cofCounterCz + 1.1);
+    const seat = new THREE.Mesh(seatGeo, stoolSeatMat);
+    seat.position.y = 0.74 + 0.12;
+    seat.castShadow = true;
+    stool.add(seat);
+    for (const [lx, lz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]]) {
+      const leg = new THREE.Mesh(legGeo, stoolLegMat);
+      leg.position.set(lx, 0.31 + 0.12, lz);
+      stool.add(leg);
+    }
+    coffee.add(stool);
+  }
+
+  // Hanging interior LIGHT (reuses the shared cord + bulb geometry).
+  const cofCord = new THREE.Mesh(cordGeo, stoolLegMat);
+  cofCord.position.set(0, cofH - 0.25, 0.4);
+  coffee.add(cofCord);
+  const cofBulb = new THREE.Mesh(bulbGeo, bulbMat);
+  cofBulb.position.set(0, cofH - 0.55, 0.4);
+  coffee.add(cofBulb);
+
+  // Interior MENU board on the back wall (faces +Z, toward a customer at the door).
+  const cofMenu = artPanel(1.0, 0.9, "sign", {
+    text: "COFFEE", bg: "#3d2b1f", fg: "#f7e7c8",
+    file: "pier-coffee-menu.png", emissiveIntensity: 0.5,
+  });
+  cofMenu.position.set(-0.7, 1.95, cofBackZ + cofWT / 2 + 0.02);
+  coffee.add(cofMenu);
+
+  // OUTSIDE shop SIGN above the door, facing the street (+Z). It sits over the
+  // doorway GAP (no collider there) so you walk straight under it inside.
+  const cofSign = artPanel(2.4, 0.9, "sign", {
+    text: "PIER COFFEE", bg: "#6f4e2e", fg: "#fff3d6",
+    file: "pier-coffee-sign.png", emissiveIntensity: 0.55,
+  });
+  cofSign.position.set(0, cofH + 0.4, cofFrontZ + 0.16);
+  coffee.add(cofSign);
+
+  group.add(coffee);
+
+  // Per-wall colliders (world = local + kiosk centre); the doorway gap gets none.
+  addCollider(colliders, cofCx, cofCz + cofBackZ, cofW, cofWT);   // back wall
+  addCollider(colliders, cofCx + cofLeftX, cofCz, cofWT, cofD);   // left wall
+  addCollider(colliders, cofCx + cofRightX, cofCz, cofWT, cofD);  // right wall
+  for (const sx of [-(cofDOOR / 2 + cofFrontSegW / 2), (cofDOOR / 2 + cofFrontSegW / 2)]) {
+    addCollider(colliders, cofCx + sx, cofCz + cofFrontZ, cofFrontSegW, cofWT); // front flanks
+  }
+
+  // A planter brightening the kiosk frontage, right of the doorway (clear of the
+  // lane: Z=-12.8 sits just behind the lane's back edge at Z=-12).
+  const cofPlanter = makePlanter();
+  cofPlanter.position.set(-20.0, 0.08, -12.8);
+  group.add(cofPlanter);
+  addCollider(colliders, -20.0, -12.8, 1.5, 0.6);
+
   // --- STREET-LEVEL FLAVOUR along the promenade ----------------------------
   // Benches, lamp posts, planters, crates/barrels and a couple of market stalls
   // dress the boardwalk so it feels worked-in. All of these sit in the OPEN
@@ -1001,8 +1178,12 @@ export function buildPier() {
   // each gets a small footprint collider so the car can't drive through them.
 
   // Lamp posts spaced along the back of the promenade (no collider — slim poles
-  // the player brushes past; keeps the boardwalk drivable but lit).
-  for (const [lx, lz] of [[-21, -13], [-9.5, -13], [3, -13.2], [16, -13], [22, -13]]) {
+  // the player brushes past; keeps the boardwalk drivable but lit). The far-left
+  // pole was nudged to (-22.6,-12.8) so it lights the NEW coffee kiosk's frontage
+  // without standing in its doorway, and the far-right pole was moved off the
+  // Bait & Tackle footprint (it used to stand INSIDE the shack at X=22,Z=-13) to
+  // the open seaward-right kerb at (21,-2.4).
+  for (const [lx, lz] of [[-22.6, -12.8], [-9.5, -13], [3, -13.2], [16, -13], [21, -2.4]]) {
     const lamp = makeLampPost();
     lamp.position.set(lx, 0, lz);
     group.add(lamp);
@@ -1094,10 +1275,14 @@ export function buildPier() {
   stallA.position.set(-6, 0.08, -13.0);
   group.add(stallA);
   addCollider(colliders, -6, -13.0, 2.6, 1.2);
+  // StallB moved from (6,-13) — where it intersected a pier-hall portico column
+  // at world (5.2,-12.95) — to the open arcade frontage at (-15,-13): clear of the
+  // arcade volume (front Z=-14.5, so the stall sits 0.9 m proud of it), its awning
+  // posts (X=-18.6/-9.4) and every prop, while still facing +Z toward the lane.
   const stallB = makeStall("FRUIT");
-  stallB.position.set(6, 0.08, -13.0); // faces +Z toward the lane (no rotation → sign un-mirrored)
+  stallB.position.set(-15, 0.08, -13.0); // faces +Z toward the lane (no rotation → sign un-mirrored)
   group.add(stallB);
-  addCollider(colliders, 6, -13.0, 2.6, 1.2);
+  addCollider(colliders, -15, -13.0, 2.6, 1.2);
 
   // A scatter of life-ring buoys hung on the railings + a couple of small
   // potted/decorative buoys standing on the boardwalk (no colliders — tiny).

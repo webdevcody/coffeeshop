@@ -217,14 +217,14 @@ export function buildNightlife() {
   // pulled inward (and modestly narrowed) so nothing reaches the street.
   makeBuilding(-16, -15.5, 14, 7.5, 12, buildingDarkMat, trimMat, 1, winLitMat);    // NEON LOUNGE bar  X[-23,-9]
   makeBuilding(-2, -16, 14, 9.5, 12, buildingPlumMat, trimTealMat, 1, winTealMat);  // THE CLUB (tall hero) X[-9,5]
-  makeBuilding(8.5, -15.5, 7, 6.0, 9, buildingTealMat, trimTealMat, 1, winTealMat); // CLUB box-office kiosk X[5,12]
+  makeBuilding(7.75, -15.5, 5.5, 6.0, 9, buildingTealMat, trimTealMat, 1, winTealMat); // CLUB box-office kiosk X[5,10.5] (narrowed to abut the diner, no overlap)
   makeBuilding(16.5, -15, 12, 6.5, 11, buildingTealMat, trimMat, 1, winLitMat);     // OPEN 24/7 diner  X[10.5,22.5]
   // -- SOUTH STREETWALL (front faces -Z) --
   makeBuilding(-17.5, 16, 11, 7.0, 11, buildingPlumMat, trimMat, -1, winLitMat);    // south corner bar X[-23,-12]
   makeBuilding(-7, 16, 11, 6.5, 11, buildingTealMat, trimTealMat, -1, winTealMat);  // south bar (terrace) X[-12.5,-1.5]
   makeBuilding(3, 16.5, 10, 7.5, 11, buildingDarkMat, trimTealMat, -1, winTealMat); // south music hall X[-2,8]
-  makeBuilding(13, 16.5, 13, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);       // south lounge X[6.5,19.5]
-  makeBuilding(18.5, 16, 9, 6.5, 11, buildingTealMat, trimMat, -1, winLitMat);      // south corner diner X[14,23]
+  makeBuilding(13, 16.5, 10, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);       // south lounge X[8,18] (narrowed; centre kept at 13 so the LATE LOUNGE sign still fits)
+  makeBuilding(20.5, 16, 5, 6.5, 11, buildingTealMat, trimMat, -1, winLitMat);      // south corner diner X[18,23] (was 5.5m embedded inside the lounge; now abuts it cleanly)
 
   // ── LIT WINDOW BAYS — one InstancedMesh per material, shared geometry ──
   // Build window-bay grids on each lane-facing façade above the storefront.
@@ -336,7 +336,7 @@ export function buildNightlife() {
     return p;
   }
   addPoster({ top: "LIVE TONIGHT", bottom: "THE VOLTS", foot: "DOORS 9PM", glyph: "♪", accent: "#ff2f8e", bg: "#1a0f24", file: "poster-volts.png" }, -11.6, 2.6, -8.85, 0);
-  addPoster({ top: "LIVE TONIGHT", bottom: "NEON KIDS", foot: "FREE ENTRY", glyph: "★", accent: "#2fe6ff", bg: "#12091e", file: "poster-neonkids.png" }, 9.4, 2.6, -8.65, 0);
+  addPoster({ top: "LIVE TONIGHT", bottom: "NEON KIDS", foot: "FREE ENTRY", glyph: "★", accent: "#2fe6ff", bg: "#12091e", file: "poster-neonkids.png" }, 12, 2.6, -9.35, 0); // was floating 2.3m in front of the recessed kiosk; now flush on the diner storefront
   addPoster({ top: "LIVE TONIGHT", bottom: "DJ HALO", foot: "TILL LATE", glyph: "◎", accent: "#ffb028", bg: "#1a0f24", file: "poster-djhalo.png" }, -7.2, 2.6, 9.4, Math.PI);
 
   // ── MARQUEE (a wide horizontal sign that rotates/oscillates in update) ──
@@ -527,7 +527,7 @@ export function buildNightlife() {
   addRoofClutter(16.5, -15, 12, 11, 6.5);    // diner roof
   addRoofClutter(-17.5, 16, 11, 11, 7.0);    // south corner bar roof
   addRoofClutter(-7, 16, 11, 11, 6.5);       // south bar roof
-  addRoofClutter(13, 16.5, 13, 12, 8);       // south lounge roof
+  addRoofClutter(13, 16.5, 10, 12, 8);       // south lounge roof (width follows the narrowed footprint)
 
   // ── EXTRA NEON + GIG POSTERS (more signage density) ──
   // A second blade sign on the south side + extra wall neons.

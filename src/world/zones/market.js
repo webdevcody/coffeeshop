@@ -997,6 +997,22 @@ export function buildMarket() {
     cx: 0, cz: -18.5, w: 8, d: 7, h: 3.2, doorW: 2.2, frontZsign: 1,
   });
 
+  // --- A FOURTH enterable shop fills the open SOUTH-EAST market slot ---------
+  // The south side has a ~6.5 m gap between the enterable DELI room (right edge
+  // x≈4) and the solid DELI storefront block (left edge x≈10.5). A small FISH
+  // MARKET room slots in there with its door facing +Z toward the central lane.
+  // Room: 5.4 m wide × 7 m deep → footprint x∈[4.4,9.8], z∈[-22,-15] — inside
+  // [-23,23], clear of the hall columns (z=±11.6) and stalls (z=±9), and not
+  // overlapping the deli room (x≤4.1) or the DELI block (x≥10.5). It registers
+  // only its own four wall AABBs (none across the doorway gap), so the player
+  // walks straight in; the nearby barrel/crate stock sits in front un-blocked.
+  makeDeliShop(group, colliders, dummy, col, {
+    cx: 7.1, cz: -18.5, w: 5.4, d: 7, h: 3.2, doorW: 1.8, frontZsign: 1,
+    outerText: "FISH MARKET", outerBg: "#2f6f8d",
+    innerText: "FRESH CATCH", innerBg: "#1d5a7a",
+    goodsColors: ["#bcd4dd", "#8fb3c0", "#cfe0e6", "#7a98a4", "#e8efe4", "#5f7e8a"],
+  });
+
   // --- TWO MORE enterable shops along the open NORTH gap ------------------
   // The north side has a wide clear gap between FRESH GROCER (right edge x≈-10.5)
   // and CORNER MART (left edge x≈9). Two themed rooms sit side-by-side there,

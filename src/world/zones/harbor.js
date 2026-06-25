@@ -704,15 +704,19 @@ export function buildHarbor() {
     addBox(cylGeo, matBarrel, fm.rightX - 0.8, fm.floorY + 0.5, fm.frontZ - 1.0, 0.8, 1.0, 0.8, false);
   }
 
-  // ── SHOP 3: HARBOR FERRY TICKET OFFICE (south pier, near the south end) ────
-  // Footprint X[-15,-7] Z[12.5,18.5] (8w × 6d), centred (-11,15.5), on the open
-  // south pier deck clear of the bait shack (maxZ 9.25) and inside [-23,23].
+  // ── SHOP 3: HARBOR FERRY TICKET OFFICE (south pier) ───────────────────────
+  // Footprint X[-15,-7] Z[10,16] (8w × 6d), centred (-11,13). PULLED NORTH from
+  // its old centre (15.5 → 13): the old Z[12.5,18.5] poked 0.5m PAST the pier's
+  // south edge (Z=18), so the floor + door wall floated over open water and the
+  // +Z-facing door was unreachable. Now the whole footprint sits on solid deck
+  // with a ~2m approach apron (Z[16,18]) south of the door; still clear of the
+  // bait shack (maxZ 9.25) and inside [-23,23]. Front/sign face +Z (un-mirrored).
   {
-    const fo = makeShopShell(-11, 15.5, 8, 6, 3.2, {
+    const fo = makeShopShell(-11, 13, 8, 6, 3.2, {
       text: "HARBOR FERRY TICKETS", bg: "#5a3a22", fg: "#ffe08a",
       file: "harbor-ferry-office.png", emissiveIntensity: 0.55,
     });
-    const cx = -11, cz = 15.5;
+    const cx = -11, cz = 13;
     // Ticket counter with a glass-topped window across the back.
     addBox(boxGeo, matShop2Counter, cx, fo.floorY + 0.55, fo.backZ + 0.9, 5.6, 1.1, 0.8);
     addBox(boxGeo, matShop2Top, cx, fo.floorY + 1.13, fo.backZ + 0.9, 5.8, 0.1, 0.9, false);
@@ -740,7 +744,7 @@ export function buildHarbor() {
   // ── Lobster pots, crates, barrels & a net stand scattered on the deck ─────
   // (decorative, NO colliders — small enough to step past, keep hot path clear)
   const lobsterGeo = new THREE.BoxGeometry(0.9, 0.55, 0.9);
-  for (const [px, pz, r] of [[-4.2, -11, 0.2], [-3.6, -6, -0.4], [-15.0, -11.5, 0.5], [-4.0, 11, 0.3]]) {
+  for (const [px, pz, r] of [[-4.2, -11, 0.2], [-3.6, -6, -0.4], [-4.0, -3.5, 0.5], [-4.0, 11, 0.3]]) {
     const pot = new THREE.Mesh(lobsterGeo, matCrate);
     pot.position.set(px, 0.5, pz);
     pot.rotation.y = r;
@@ -750,10 +754,10 @@ export function buildHarbor() {
     addBox(cylGeo, matBarrel, px, 0.82, pz, 0.7, 0.22, 0.7, false);
   }
   // A few stacked crates + barrels along the quay edge for cargo flavor.
-  for (const [px, pz] of [[-6.2, -12.5], [-6.2, -11.4], [-14.0, -6.0]]) {
+  for (const [px, pz] of [[-6.2, -12.5], [-6.2, -11.4], [-14.0, -13.3]]) {
     addBox(boxGeo, matCrate, px, 0.55, pz, 1.0, 1.0, 1.0, true);
   }
-  for (const [px, pz] of [[-5.2, 13.5], [-5.6, 14.6], [-14.6, 12.0]]) {
+  for (const [px, pz] of [[-5.2, 13.5], [-5.6, 14.6], [-4.5, 11.5]]) {
     const bar = new THREE.Mesh(cylGeo, matBarrel);
     bar.scale.set(0.8, 1.1, 0.8);
     bar.position.set(px, 0.55, pz);
@@ -769,11 +773,16 @@ export function buildHarbor() {
     addBox(boxGeo, lampHeadMat, lx, 3.05, lz, 0.42, 0.42, 0.42, false);
   }
 
-  // ── A wooden produce/fish STALL on the quay (open-air, awning + crates) ───
-  // Set on the north quay band Z[-23,-14] in the open gap east of the crane,
-  // footprint ~X[8.5,13.5] Z[-13.5,-10.5], inside [-23,23] and clear of roads.
+  // ── A wooden produce/fish STALL on the pier (open-air, awning + crates) ───
+  // The north quay band is FULL (warehouse, port-authority, chandlery, container
+  // stack and crane leave no 5m gap), and the spot east of the crane is actually
+  // OPEN WATER (south of the quay edge Z=-14, east of the pier X=-2 — no deck).
+  // So this open-air stall now sits on solid PIER deck, on the west side of the
+  // clear span between the fish market and the bait shack: footprint
+  // ~X[-15.4,-10.6] Z[-3.4,1.8], inside [-23,23], clear of the road seams, and no
+  // longer floating over the sea. Front/sign face +Z (the open pier walkway).
   {
-    const sx = 11, sz = -12;
+    const sx = -13, sz = -2;
     const matAwn = new THREE.MeshStandardMaterial({ color: "#b5453a", roughness: 0.85, side: THREE.DoubleSide });
     // Four corner posts + a flat counter board.
     for (const [dx, dz] of [[-2, -1.2], [2, -1.2], [-2, 1.2], [2, 1.2]]) {

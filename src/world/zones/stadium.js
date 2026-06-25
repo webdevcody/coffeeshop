@@ -8,7 +8,10 @@
 // buildStadium() returns { group, colliders, ground, update }:
 //   group     — THREE.Group of all geometry (LOCAL coords within the tile)
 //   colliders — AABBs { minX,maxX,minZ,maxZ } for solid props (grandstand shell
-//               arcs, floodlight towers, sign boxes). Pitch + gates are open.
+//               arcs, floodlight towers, shop/booth/cafe walls, ground props).
+//               Pitch, gates AND every overhead sign/banner/scoreboard are
+//               WALK-UNDER: high-mounted panels register NO collider (colliders
+//               are infinite-height in XZ) so players pass freely beneath them.
 //   ground    — walkable rects; includes the full tile.
 //   update(dt)— flickers the floodlights + slowly orbits a blimp over the pitch.
 //
@@ -94,6 +97,17 @@ const boothWallMat = new THREE.MeshStandardMaterial({ color: "#243a78", roughnes
 const boothRoofMat = new THREE.MeshStandardMaterial({ color: "#16245a", roughness: 0.7 });
 const boothTrimMat = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.55 });
 const ticketMat = new THREE.MeshStandardMaterial({ color: "#f4ead0", roughness: 0.8 });
+
+// --- Stand-cafe (matchday coffee kiosk) materials --------------------------
+// A fourth walk-IN unit themed as a pitchside espresso bar (warm cream walls,
+// espresso-brown roof, teal trim). Reuses counter/case/bulb mats where possible.
+const cafeWallMat = new THREE.MeshStandardMaterial({ color: "#efe7d6", roughness: 0.9 });
+const cafeRoofMat = new THREE.MeshStandardMaterial({ color: "#3f2a1c", roughness: 0.7 });
+const cafeTrimMat = new THREE.MeshStandardMaterial({ color: "#1f6f5c", roughness: 0.55 });
+const espressoMat = new THREE.MeshStandardMaterial({ color: "#3a3d42", roughness: 0.35, metalness: 0.65 });
+const cafeCupMat = new THREE.MeshStandardMaterial({ color: "#efe6d0", roughness: 0.6 });
+const pastryMat = new THREE.MeshStandardMaterial({ color: "#caa050", roughness: 0.7 });
+const beanSackMat = new THREE.MeshStandardMaterial({ color: "#6e4a2b", roughness: 0.9 });
 
 // --- Street-flavour prop materials (created once, reused) -------------------
 const benchWoodMat = new THREE.MeshStandardMaterial({ color: "#7c5a3a", roughness: 0.8 });
@@ -384,33 +398,34 @@ export function buildStadium() {
     return g;
   }
 
-  // North-stand banner: mounted on the inner face of the north arc (z≈-19),
-  // FRONT faces +Z toward the pitch/viewer.
+  // North-stand banner: mounted on the inner face of the north arc, sitting a
+  // touch proud of the wall (z=-17.7 keeps the box back clear of the inner face
+  // at z≈-18.5, no coplanar z-fight). FRONT faces +Z toward the pitch/viewer.
+  // WALK-UNDER: the banner panel is high overhead (y 3.4–6.6), so it registers
+  // NO collider — players walk right beneath it; the wall behind still blocks.
   signBox(12, 3.2, 1.0, "sign", {
     text: "CAFE FC", bg: "#9b1f2a", fg: "#ffe14d",
     emissiveIntensity: 0.5, file: "stadium-cafefc.png",
-  }, [0, 5.0, -18.0], 0);
-  // North sign-box collider (full footprint of the new solid box).
-  colliders.push({ minX: -6.3, maxX: 6.3, minZ: -18.5, maxZ: -17.5 });
+  }, [0, 5.0, -17.7], 0);
 
-  // South-stand banner: mounted on the inner face of the south arc (z≈+19),
-  // FRONT faces -Z toward the pitch (rotated 180°).
+  // South-stand banner: mounted on the inner face of the south arc (z=+17.7,
+  // proud of the wall to avoid a coplanar back face). FRONT faces -Z toward the
+  // pitch (rotated 180°). WALK-UNDER: overhead panel, so NO collider.
   signBox(12, 3.2, 1.0, "sign", {
     text: "CAFE FC", bg: "#1f3a9b", fg: "#ffffff",
     emissiveIntensity: 0.5, file: "stadium-cafefc-b.png",
-  }, [0, 5.0, 18.0], Math.PI);
-  colliders.push({ minX: -6.3, maxX: 6.3, minZ: 17.5, maxZ: 18.5 });
+  }, [0, 5.0, 17.7], Math.PI);
 
-  // Scoreboard: a chunky billboard cabinet mounted on the north-stand inner
-  // wall, offset to the west of the central banner and FRONT facing +Z toward
-  // the pitch. Kept OFF the Z≈0 drive-through gate corridor so the east/west
-  // gates stay open.
+  // Scoreboard: a chunky billboard cabinet mounted on the north-arc inner wall,
+  // offset to the west of the central banner. The inner wall is a tight ellipse,
+  // so the cabinet is placed ON the wall point near x≈-12.5 and ROTATED to sit
+  // tangent (rotY≈0.72) with its FRONT facing the pitch centre — otherwise a flat
+  // off-centre panel would float outside the curving wall. Kept OFF the Z≈0
+  // drive-through gate corridor. WALK-UNDER: overhead cabinet, so NO collider.
   signBox(8, 4.5, 1.2, "billboard", {
     title: "CAFE FC", sub: "HOME 2 — 1 AWAY", a: "#13243f", b: "#070d1a",
     accent: "#ffd24a", glyph: "⚽", emissiveIntensity: 0.5, file: "stadium-score.png",
-  }, [-13.0, 6.0, -18.0], 0);
-  // scoreboard cabinet collider (8.6 wide in X, 1.2 deep in Z) on the north wall.
-  colliders.push({ minX: -17.3, maxX: -8.7, minZ: -18.6, maxZ: -17.4 });
+  }, [-12.1, 6.0, -13.65], 0.72);
 
   // --- Floodlight tint / blimp animation -------------------------------------
   // Blimp circling above the pitch.
@@ -861,6 +876,190 @@ export function buildStadium() {
     booth.add(boothSign);
 
     group.add(booth);
+  }
+
+  // --- ENTERABLE STAND CAFE (south-west apron) -------------------------------
+  // A fourth walk-IN unit: a matchday COFFEE kiosk tucked on the -X/-Z apron,
+  // clear of the concession (x≥-4) and the Z≈0 drive lane. Real room: 4 walls +
+  // floor + roof with a 1.8 m DOORWAY GAP in the +Z (pitch-facing) wall; each
+  // solid wall pushes its own AABB, the doorway none, so the player walks
+  // straight in. Inside: an espresso bar with a chrome machine + grinder, a
+  // pastry case, coffee-bean sacks, stools and signage. The back wall nestles
+  // just inside the innermost seating tier; all within LOCAL [-23, 23].
+  {
+    const SW = 5.0, SD = 4.0, WT = 0.22, WH = 3.0;
+    const SCX = -8.0, SCZ = -5.6;
+    const x0 = SCX - SW / 2, x1 = SCX + SW / 2;   // -10.5 .. -5.5
+    const z0 = SCZ - SD / 2, z1 = SCZ + SD / 2;   // -7.6 .. -3.6 (z1 = front/door)
+    const DOOR = 1.8;
+    const segW = (SW - DOOR) / 2;
+    const FY = 0.13;
+
+    const cafe = new THREE.Group();
+
+    const floor = box(SW, 0.12, SD, concFloorMat, false);
+    floor.position.set(SCX, FY - 0.06, SCZ);
+    floor.receiveShadow = true;
+    cafe.add(floor);
+
+    const addWall = (cx, cz, w, d) => {
+      const wall = box(w, WH, d, cafeWallMat);
+      wall.position.set(cx, FY + WH / 2, cz);
+      cafe.add(wall);
+      colliders.push({
+        minX: cx - w / 2, maxX: cx + w / 2,
+        minZ: cz - d / 2, maxZ: cz + d / 2,
+      });
+    };
+    addWall(SCX, z0, SW + WT, WT);          // BACK (-Z)
+    addWall(x0, SCZ, WT, SD);               // LEFT (-X)
+    addWall(x1, SCZ, WT, SD);               // RIGHT (+X)
+    addWall(x0 + segW / 2, z1, segW, WT);   // FRONT (+Z) left of door
+    addWall(x1 - segW / 2, z1, segW, WT);   // FRONT (+Z) right of door
+    // doorway gap x ∈ [SCX-0.9, SCX+0.9] has NO wall + NO collider.
+
+    const lintel = box(DOOR + 0.4, 0.45, WT, cafeTrimMat);
+    lintel.position.set(SCX, FY + WH - 0.22, z1);
+    cafe.add(lintel);
+
+    const roof = box(SW + WT + 0.4, 0.2, SD + WT + 0.4, cafeRoofMat);
+    roof.position.set(SCX, FY + WH + 0.1, SCZ);
+    roof.castShadow = true;
+    cafe.add(roof);
+    const fascia = box(SW + WT + 0.5, 0.28, SD + WT + 0.5, cafeTrimMat, false);
+    fascia.position.set(SCX, FY + WH - 0.05, SCZ);
+    cafe.add(fascia);
+
+    // Awning over the door — high above head height; NO collider (walk-under).
+    const awning = box(SW * 0.7, 0.12, 1.0, cafeTrimMat, false);
+    awning.position.set(SCX, FY + WH - 0.5, z1 + 0.5);
+    awning.rotation.x = -0.3;
+    cafe.add(awning);
+
+    // ESPRESSO BAR counter along the back wall, facing the door
+    const counter = box(3.6, 1.0, 0.8, counterMat);
+    counter.position.set(SCX, FY + 0.5, z0 + 0.95);
+    cafe.add(counter);
+    const counterTop = box(3.8, 0.1, 1.0, counterTopMat, false);
+    counterTop.position.set(SCX, FY + 1.05, z0 + 0.95);
+    cafe.add(counterTop);
+
+    // chrome espresso machine + a grinder on the counter
+    const machine = box(1.1, 0.6, 0.6, espressoMat);
+    machine.position.set(SCX - 0.9, FY + 1.4, z0 + 0.95);
+    cafe.add(machine);
+    const grinder = box(0.35, 0.55, 0.35, espressoMat);
+    grinder.position.set(SCX, FY + 1.37, z0 + 0.95);
+    cafe.add(grinder);
+
+    // a small cluster of to-go cups on the counter (instanced)
+    {
+      const cupGeo = new THREE.CylinderGeometry(0.07, 0.05, 0.18, 8);
+      const cups = new THREE.InstancedMesh(cupGeo, cafeCupMat, 5);
+      cups.castShadow = true;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < 5; i++) {
+        m.makeTranslation(SCX + 0.7 + (i % 3) * 0.22, FY + 1.19, z0 + 0.75 + ((i / 3) | 0) * 0.22);
+        cups.setMatrixAt(i, m);
+      }
+      cups.instanceMatrix.needsUpdate = true;
+      cafe.add(cups);
+    }
+
+    // PASTRY CASE by the right wall (glass cabinet + golden pastries)
+    const caseBase = box(0.9, 0.9, 2.2, counterMat);
+    caseBase.position.set(x1 - 0.55, FY + 0.45, SCZ);
+    cafe.add(caseBase);
+    const caseGlass = box(0.86, 0.7, 2.1, caseMat, false);
+    caseGlass.position.set(x1 - 0.55, FY + 1.2, SCZ);
+    cafe.add(caseGlass);
+    {
+      const pGeo = new THREE.BoxGeometry(0.3, 0.16, 0.3);
+      const pastries = new THREE.InstancedMesh(pGeo, pastryMat, 4);
+      pastries.castShadow = true;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < 4; i++) {
+        m.makeTranslation(x1 - 0.55, FY + 0.98, SCZ - 0.75 + i * 0.5);
+        pastries.setMatrixAt(i, m);
+      }
+      pastries.instanceMatrix.needsUpdate = true;
+      cafe.add(pastries);
+    }
+
+    // COFFEE-BEAN SACKS on the floor by the left wall
+    for (const sz of [SCZ - 0.6, SCZ + 0.4]) {
+      const sack = box(0.55, 0.6, 0.55, beanSackMat);
+      sack.position.set(x0 + 0.5, FY + 0.3, sz);
+      cafe.add(sack);
+    }
+
+    // STOOLS at the counter
+    for (const sx of [SCX - 0.9, SCX + 0.9]) {
+      const stool = new THREE.Group();
+      const legs = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.7, 6), stoolMat);
+      legs.position.y = 0.35;
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.1, 12), cafeTrimMat);
+      seat.position.y = 0.74;
+      legs.castShadow = seat.castShadow = true;
+      stool.add(legs, seat);
+      stool.position.set(sx, FY, z0 + 2.1);
+      cafe.add(stool);
+    }
+
+    // MENU BOARD on the back wall (interior, faces +Z toward the door)
+    const menu = artPanel(2.6, 1.2, "sign", {
+      text: "STAND CAFE", bg: "#1f6f5c", fg: "#ffe9ad",
+      emissiveIntensity: 0.4, file: "stadium-cafe-menu.png",
+    });
+    menu.position.set(SCX, FY + 2.3, z0 + WT / 2 + 0.04);
+    cafe.add(menu);
+
+    // hanging bulb
+    {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.45, 4), stoolMat);
+      cord.position.set(SCX, FY + WH - 0.32, SCZ + 0.3);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), shopBulbMat);
+      bulb.position.set(SCX, FY + WH - 0.56, SCZ + 0.3);
+      cafe.add(cord, bulb);
+    }
+
+    // OUTSIDE "MATCHDAY COFFEE" sign above the door — overhead panel, NO collider
+    // so players walk straight under it. artPanel faces +Z by default → no rotate.
+    const cafeSign = artPanel(4.4, 1.1, "sign", {
+      text: "MATCHDAY COFFEE", bg: "#3f2a1c", fg: "#ffe9ad",
+      emissiveIntensity: 0.5, file: "stadium-cafe-sign.png",
+    });
+    cafeSign.position.set(SCX, FY + WH + 0.5, z1 + WT / 2 + 0.05);
+    cafe.add(cafeSign);
+
+    group.add(cafe);
+
+    // Outdoor flavour by the cafe: a hedge planter at the left-front corner + a
+    // short A-frame sandwich board to one side (both ground props, tight AABBs,
+    // neither blocks the 1.8 m doorway).
+    const pot = box(1.0, 0.6, 1.0, planterMat);
+    pot.position.set(x0 - 0.2, FY + 0.3, z1 + 0.4);
+    const hedge = box(0.9, 0.45, 0.9, hedgeMat);
+    hedge.position.set(x0 - 0.2, FY + 0.8, z1 + 0.4);
+    hedge.castShadow = true;
+    group.add(pot, hedge);
+    colliders.push({ minX: x0 - 0.7, maxX: x0 + 0.3, minZ: z1 - 0.1, maxZ: z1 + 0.9 });
+
+    {
+      const aframe = new THREE.Group();
+      for (const s of [-1, 1]) {
+        const leaf = artPanel(0.7, 1.0, "sign", {
+          text: "OPEN", bg: "#1f6f5c", fg: "#ffe9ad",
+          emissiveIntensity: 0.35, file: "stadium-cafe-aframe.png",
+        });
+        leaf.position.set(0, 0.5, s * 0.18);
+        leaf.rotation.x = s * 0.22;
+        aframe.add(leaf);
+      }
+      aframe.position.set(SCX + 1.7, FY, z1 + 0.7);
+      group.add(aframe);
+      colliders.push({ minX: SCX + 1.4, maxX: SCX + 2.0, minZ: z1 + 0.4, maxZ: z1 + 1.0 });
+    }
   }
 
   // --- STREET-LEVEL FLAVOUR PROPS (benches, planters, crates, bins, lamps) ----

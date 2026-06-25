@@ -231,7 +231,9 @@ export function buildSkatepark() {
   addCollider(colliders, -4, 4, 8, 0.3);
 
   // === LEDGE — a long low grind ledge (thin, low collider) ================
-  const ledgeX = -16, ledgeZ = 16;
+  // Pulled south to z=15 so its back edge clears the skate-shop building front
+  // (z=16.25) instead of poking into the wall base.
+  const ledgeX = -16, ledgeZ = 15;
   const ledgeBody = box(10, 0.55, 0.8, concreteDark);
   ledgeBody.position.set(ledgeX, 0.275, ledgeZ);
   group.add(ledgeBody);
@@ -481,24 +483,29 @@ export function buildSkatepark() {
   // This SW marquee sits at the back (z=18); the player crosses the plaza from
   // -Z, so the neon FRONT must face -Z (toward the plaza), angled slightly toward
   // the plaza centre (+X). artPanel faces +Z, so rotate ~180° to point it at -Z.
-  neon.position.set(-22, 3.2, 18);
+  // Nudged in to x=-21 so even the angled panel + its support posts stay inside
+  // the [-23,23] building keep-out box (post A previously sat at x=-23.6).
+  neon.position.set(-21, 3.2, 18);
   neon.rotation.y = Math.PI - Math.PI / 6;
   group.add(neon);
   // Support posts straddle the sign in X and sit just BEHIND the -Z front face
   // (toward +Z) so they never poke through the readable face.
   const neonPostA = box(0.16, 2.4, 0.16, poleMat);
-  neonPostA.position.set(-23.6, 1.2, 18.6);
+  neonPostA.position.set(-22.6, 1.2, 18.6);
   group.add(neonPostA);
   const neonPostB = box(0.16, 2.4, 0.16, poleMat);
-  neonPostB.position.set(-20.4, 1.2, 18.2);
+  neonPostB.position.set(-19.4, 1.2, 18.2);
   group.add(neonPostB);
 
   // === A swaying pennant flag on a corner pole (ambient sway) =============
+  // Moved to the open SW corner: it previously stood on the parts-garage front
+  // corner (20,-22), flying above its roofline. The SW corner is clear of the
+  // bowl (x>=-21,z>=-20) and the halfpipe house, so the flag reads cleanly.
   const flagPole = box(0.1, 5.0, 0.1, poleMat);
-  flagPole.position.set(20, 2.5, -22);
+  flagPole.position.set(-22, 2.5, -22);
   group.add(flagPole);
   const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.9), flagMat);
-  flag.position.set(20.8, 4.4, -22);
+  flag.position.set(-21.2, 4.4, -22);
   group.add(flag);
 
   // === A couple of low planter benches to sit/grind (low colliders) ========
@@ -962,6 +969,94 @@ export function buildSkatepark() {
     shop.add(bulb);
   }
 
+  // === ENTERABLE SHOP #4 — RETRO ARCADE (back-rim infill) ==================
+  // Slots into the OPEN 10 m gap between the two back-rim storefronts (skate
+  // shop x[-16,-5], cafe x[5,16]); door GAP faces -Z so the player walks
+  // straight in from the open plaza. Footprint x[-4.125,4.125] z[16.375,22.625]
+  // — inside the keep-out box, ~0.9 m clear of each neighbour, shorter (h=3.2)
+  // than the flanking buildings so it reads as a nestled infill unit.
+  {
+    const aX = 0, aZ = 19.5, aW = 8, aD = 6, aH = 3.2;
+    const { shop, halfW, halfD, frontZ, backZ } =
+      makeShopShell(aX, aZ, aW, aD, aH, shopWallMat, shopFloorMat, shopRoofMat, 2.2, "-Z");
+
+    // Exterior marquee above the door, facing the plaza (-Z, so rotate 180°).
+    const aSign = artPanel(3.6, 0.95, "sign", {
+      text: "PIXEL ALLEY",
+      fg: "#4fd2ff",
+      bg: "#160e26",
+      template: 2,
+      file: "sign-arcade.png",
+      emissiveIntensity: 0.6,
+    });
+    aSign.position.set(0, aH + 0.55, frontZ - 0.18);
+    aSign.rotation.y = Math.PI;
+    shop.add(aSign);
+
+    // Floor rug down the middle.
+    const rug = box(2.6, 0.02, 4.0, shopRugMat, false);
+    rug.position.set(0, 0.09, 0.2);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // A row of arcade CABINETS along the back wall (body + glowing screen +
+    // coloured marquee + control deck). Reuses shared materials.
+    const cabXs = [-2.4, -0.8, 0.8, 2.4];
+    for (let i = 0; i < cabXs.length; i++) {
+      const cx = cabXs[i];
+      const cab = box(1.2, 1.9, 0.7, shopStoolMat);
+      cab.position.set(cx, 0.95, backZ - 0.55);
+      shop.add(cab);
+      const screen = box(0.85, 0.7, 0.06, winMat, false); // emissive glow (shared)
+      screen.position.set(cx, 1.35, backZ - 0.92);
+      shop.add(screen);
+      const marquee = box(1.2, 0.28, 0.72, deckProductMats[i % deckProductMats.length], false);
+      marquee.position.set(cx, 1.78, backZ - 0.55);
+      shop.add(marquee);
+      const ctrl = box(1.1, 0.1, 0.4, shopCounterTop, false);
+      ctrl.position.set(cx, 0.92, backZ - 1.0);
+      ctrl.rotation.x = 0.35;
+      shop.add(ctrl);
+    }
+
+    // Token / change COUNTER along the right wall, with two stools.
+    const counter = box(0.7, 1.0, 3.0, shopCounterMat);
+    counter.position.set(halfW - 0.55, 0.5, 0.4);
+    shop.add(counter);
+    const counterTop = box(0.8, 0.08, 3.1, shopCounterTop, false);
+    counterTop.position.set(halfW - 0.55, 1.04, 0.4);
+    shop.add(counterTop);
+    for (const sz of [-0.6, 0.8]) {
+      const seat = box(0.42, 0.08, 0.42, shopStoolMat);
+      seat.position.set(halfW - 1.4, 0.62, sz);
+      shop.add(seat);
+      const leg = box(0.1, 0.6, 0.1, poleMat);
+      leg.position.set(halfW - 1.4, 0.31, sz);
+      shop.add(leg);
+    }
+
+    // Inside wall signage on the LEFT wall, facing +X into the room.
+    const innerSign = artPanel(2.4, 0.7, "sign", {
+      text: "HIGH SCORE",
+      fg: "#ff4fa3",
+      bg: "#0c0c16",
+      template: 2,
+      emissiveIntensity: 0.5,
+    });
+    innerSign.position.set(-halfW + 0.16, 2.1, 0.2);
+    innerSign.rotation.y = Math.PI / 2;
+    shop.add(innerSign);
+
+    // Hanging bulb (shares shopBulbMat → flickers with the other shop bulbs).
+    const cord = box(0.03, 0.5, 0.03, poleMat, false);
+    cord.position.set(0, aH - 0.25, 0.2);
+    shop.add(cord);
+    const bulb = new THREE.Mesh(lampHeadGeo, shopBulbMat);
+    bulb.scale.setScalar(0.5);
+    bulb.position.set(0, aH - 0.55, 0.2);
+    shop.add(bulb);
+  }
+
   // === STREET FLAVOR — planters, crates, a market stall, signage ===========
   // Concrete planters with shrubs (low colliders) lining the open plaza.
   function makePlanter(px, pz) {
@@ -981,7 +1076,8 @@ export function buildSkatepark() {
     group.add(g);
     addCollider(colliders, px, pz, 1.4, 1.4);
   }
-  for (const [px, pz] of [[-9, 8], [13, -14], [-13, -2]]) makePlanter(px, pz);
+  // last two flank the new arcade doorway (cleanly off the central walk-in path).
+  for (const [px, pz] of [[-9, 8], [13, -14], [-13, -2], [-3, 14.8], [3, 14.8]]) makePlanter(px, pz);
 
   // A few stacked wooden crates as loose street clutter (low colliders).
   function makeCrateStack(cx, cz, ry) {

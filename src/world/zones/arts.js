@@ -1257,8 +1257,13 @@ export function buildArts() {
     emissiveIntensity: 0.5, file: "arts-billboard.png",
   });
   billboard.position.set(13, 5.4, -7);
-  billboard.rotation.y = -Math.PI * 0.62; // front faces the plaza centre
+  // FRONT faces the plaza centre (origin): outward normal points (-13,+7), and
+  // a panel's facing = atan2(normal.x, normal.z) (matches the shop-sign convention).
+  billboard.rotation.y = Math.atan2(-13, 7);
   group.add(billboard);
+  // Tight collider on the support POST only — the panel itself is overhead at
+  // y5.4 (well above head height), so the player walks UNDER the billboard board.
+  addCollider(colliders, 13, -7, 0.4, 0.4);
 
   // Flickering neon "GALLERY" sign on the opposite plaza rim.
   const neonPost = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3.4, 8), poleMat);
@@ -1270,19 +1275,28 @@ export function buildArts() {
     emissiveIntensity: 0.9, file: "arts-neon.png",
   });
   neon.position.set(-13, 4.4, 7);
-  neon.rotation.y = Math.PI * 0.38; // front faces the plaza centre
+  // FRONT faces the plaza centre (origin): outward normal points (+13,-7), facing
+  // = atan2(normal.x, normal.z).
+  neon.rotation.y = Math.atan2(13, -7);
   group.add(neon);
+  // Tight collider on the support POST only — neon panel is overhead at y4.4, so
+  // the player walks UNDER it.
+  addCollider(colliders, -13, 7, 0.4, 0.4);
 
-  // Swaying banner near plaza entrance (animated, no collider — thin/high).
+  // Swaying "ART WALK" banner flanking the NORTH lane mouth. Pulled OFF the N-S
+  // lane centreline (was x=0, where the panel hung down into the drivable lane) to
+  // x=4.8 — clear of the lane (|x|>4) yet still greeting players entering from the
+  // north road. Animated; no collider (thin pole, overhead panel). artPanel is
+  // double-sided so it reads from both approaches.
   const banner = artPanel(1.6, 3.4, "poster", {
     top: "ART", bottom: "WALK", foot: "CAFE CITY", glyph: "✦",
     accent: "#e2483a", bg: "#f4efe0", emissiveIntensity: 0.4, file: "arts-banner.png",
   });
   const bannerArm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 4.4, 8), poleMat);
-  bannerArm.position.set(0, 2.2, 13.5);
+  bannerArm.position.set(4.8, 2.2, 13.5);
   bannerArm.castShadow = true;
   group.add(bannerArm);
-  banner.position.set(0, 3.4, 13.5);
+  banner.position.set(4.8, 3.4, 13.5);
   group.add(banner);
 
   // --- Planter trees softening the corners (decorative, small colliders) ---
@@ -1337,6 +1351,31 @@ export function buildArts() {
     bin.position.set(bx, 0.45, bz);
     bin.castShadow = true;
     group.add(bin);
+  }
+
+  // --- Open-air market stalls + crate stacks (street-level flavour) ---------
+  // Two striped craft-market stalls flank the SOUTH lane mouth, in the open band
+  // between the corner buildings and the N-S lane (|x| > 4 clears the lane; X
+  // edges stay clear of Gallery A / Cafe footprints). The collider covers ONLY
+  // the low display TABLE — the canopy sits overhead at y2.4 so it never blocks
+  // movement (you can stand under the canopy overhang).
+  const stallSpots = [
+    { x: -5.8, z: -13.2, ry: 0.12, mat: awningMat },
+    { x: 5.8, z: -13.2, ry: -0.12, mat: awningMat2 },
+  ];
+  for (const s of stallSpots) {
+    group.add(makeStall(s.x, s.z, s.ry, s.mat));
+    addCollider(colliders, s.x, s.z, 2.2, 1.2); // table footprint only (canopy overhead stays clear)
+  }
+  // Stacked art-supply crates dressing the gallery / cafe plaza frontages (low,
+  // solid props clear of the lanes and just off the building faces).
+  const crateSpots = [
+    { x: 8.5, z: -9.2, ry: 0.3, n: 3 },
+    { x: -8.5, z: 9.2, ry: 0.6, n: 2 },
+  ];
+  for (const c of crateSpots) {
+    group.add(makeCrateStack(c.x, c.z, c.ry, c.n));
+    addCollider(colliders, c.x, c.z, 0.9, 0.9);
   }
 
   // Mark large faces / props for shadows where useful.

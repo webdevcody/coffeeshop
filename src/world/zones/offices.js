@@ -462,7 +462,13 @@ export function buildOffices() {
   box(0.4, 8, 0.4, metalDark, -4.5, 4, -22.7, true);
   box(0.4, 8, 0.4, metalDark, 4.5, 4, -22.7, true);
   box(11.5, 0.4, 0.4, metalDark, 0, 5.4, -22.7, true);
-  collide(0, -22.7, 11.5, 0.6);
+  // WALK-UNDER FIX: the panel (y≈8) and crossbar (y≈5.4) are far overhead, so register
+  // NO full-width collider for them — colliders are infinite-height in XZ and an 11.5 m
+  // AABB would wall off the ENTIRE south frontage (you couldn't walk OR drive under the
+  // billboard). Only the two thin, ground-standing support POSTS get a tight collider;
+  // the gap between them stays open so players walk/drive straight under the sign.
+  collide(-4.5, -22.7, 0.5, 0.5);
+  collide(4.5, -22.7, 0.5, 0.5);
 
   // A second small directional sign greeting cars that arrive from the SOUTH (-Z)
   // up the avenue. It sits on the lane SHOULDER (out of the open E-W/N-S corridors)
@@ -1042,6 +1048,44 @@ export function buildOffices() {
     // BIKE RACKS on the south plaza margin (clean rebuild: pure children, no box()).
     bikeRack(-15, -7, 0);
     bikeRack(15, -7, 0);
+  }
+
+  // ── MARKET STALLS: two awning vendor stalls in the open NORTH plaza, flanking
+  // the QuickPrint approach (mirroring the deli/café shoulders), adding lived-in
+  // street-market flavor. Placed with clear margins off the N-S drive lane (|x|≤5)
+  // and clear of the NW/NE corner buildings (x = -8.3 / +7.9) and the bollard line
+  // (z=7.2). Each AWNING is mounted overhead (y≈2.35) and registers NO collider, so a
+  // shopper walks straight under it to the counter; ONLY the chunky counter collides.
+  {
+    const stallWood = new THREE.MeshStandardMaterial({ color: "#6b4a2e", roughness: 0.8 });
+    const stallTop = new THREE.MeshStandardMaterial({ color: "#caa45a", roughness: 0.5, metalness: 0.2 });
+    const awningMat = new THREE.MeshStandardMaterial({ color: "#b23b34", roughness: 0.7, side: THREE.DoubleSide });
+    const crateMat = new THREE.MeshStandardMaterial({ color: "#c98a3a", roughness: 0.7, flatShading: true });
+    const postMat = new THREE.MeshStandardMaterial({ color: "#4a4f55", roughness: 0.5, metalness: 0.6 });
+    function marketStall(mx, mz, label, fileName) {
+      const cw = 2.0, cd = 1.2;                               // counter footprint (fits the shoulder)
+      box(cw, 1.0, cd, stallWood, mx, 0.5, mz, true);         // counter body
+      box(cw + 0.2, 0.1, cd + 0.2, stallTop, mx, 1.05, mz, true); // counter top lip
+      const ppx = cw / 2 - 0.1, ppz = cd / 2 - 0.1;
+      for (const sxp of [-ppx, ppx]) for (const szp of [-ppz, ppz]) {
+        box(0.1, 2.3, 0.1, postMat, mx + sxp, 1.15, mz + szp, true); // thin corner posts
+      }
+      // awning slab overhead, overhanging toward the customer side (-Z) — NO collider
+      box(cw + 0.5, 0.1, cd + 0.8, awningMat, mx, 2.35, mz - 0.25, true);
+      for (let i = -1; i <= 1; i++) {
+        box(0.45, 0.45, 0.45, crateMat, mx + i * 0.65, 1.33, mz, true); // crates of goods
+      }
+      const s = artPanel(1.8, 0.55, "sign", {
+        text: label, bg: "#0c2a28", fg: "#ffd24a", emissiveIntensity: 0.45, file: fileName,
+      });
+      s.position.set(mx, 1.95, mz - (cd / 2 + 0.55));
+      s.rotation.y = Math.PI; // readable face points -Z, toward the approaching plaza crowd
+      s.castShadow = false;
+      group.add(s);
+      collide(mx, mz, cw, cd); // tight: counter footprint only (awning overhead stays walk-under)
+    }
+    marketStall(-6.7, 6.0, "FARMERS", "sign-stall-farmers.png");
+    marketStall(6.5, 6.0, "FLOWERS", "sign-stall-flowers.png");
   }
 
   // ── Commit all instanced banks (one draw call each) ───────────────────────

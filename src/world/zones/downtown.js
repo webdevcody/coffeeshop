@@ -117,6 +117,16 @@ const ramenFloorMat = new THREE.MeshStandardMaterial({ color: "#4a2e22", roughne
 const ramenProductMat = new THREE.MeshStandardMaterial({ color: "#d8543a", roughness: 0.6 });   // bowls / sauce bottles
 const ramenLanternMat = new THREE.MeshStandardMaterial({ color: "#ff6a4a", emissive: "#ff3a22", emissiveIntensity: 0.8, roughness: 0.5 });
 const ramenRugMat = new THREE.MeshStandardMaterial({ color: "#5a1f24", roughness: 0.95 });
+// Bakery (warm crust browns + cream) — NW new shop "TOAST & CO".
+const bakeryWallMat = new THREE.MeshStandardMaterial({ color: "#4a3526", roughness: 0.9 });
+const bakeryFloorMat = new THREE.MeshStandardMaterial({ color: "#6b4a2c", roughness: 0.85 });
+const bakeryProductMat = new THREE.MeshStandardMaterial({ color: "#d8a24a", roughness: 0.65 }); // loaves / bagels
+const bakeryRugMat = new THREE.MeshStandardMaterial({ color: "#7a5a2f", roughness: 0.95 });
+// Record shop (charcoal + magenta) — SE new shop "WAX CITY".
+const recordWallMat = new THREE.MeshStandardMaterial({ color: "#241f2e", roughness: 0.9 });
+const recordFloorMat = new THREE.MeshStandardMaterial({ color: "#2e2838", roughness: 0.85 });
+const recordProductMat = new THREE.MeshStandardMaterial({ color: "#c83f6a", roughness: 0.6 }); // record sleeves
+const recordRugMat = new THREE.MeshStandardMaterial({ color: "#3a2440", roughness: 0.95 });
 
 // --- Extra street-furniture materials (lamps, stalls, crates, signage) ------
 const lampPostMat = new THREE.MeshStandardMaterial({ color: "#22242c", roughness: 0.5, metalness: 0.5, flatShading: true });
@@ -479,9 +489,11 @@ function makeCoffeeShop(W, D, theme = {}) {
   const menuLabel = theme.menu || "MENU";
   const menuFile = theme.menuFile || "sign-shop-menu.png";
 
-  // FLOOR — timber slab filling the footprint, top flush at y=0.
+  // FLOOR — timber slab filling the footprint. Its top sits at y=0.04, just
+  // ABOVE the district's plaza plane (y=0.02), so the warm timber reads inside
+  // the shop instead of the grey plaza bleeding up through it (z-fight fix).
   const floor = box(W, 0.2, D, floorMat, false);
-  floor.position.y = -0.1;
+  floor.position.y = -0.06;
   floor.receiveShadow = true;
   g.add(floor);
 
@@ -530,7 +542,7 @@ function makeCoffeeShop(W, D, theme = {}) {
   const rug = new THREE.Mesh(planeGeo, rugThemeMat);
   rug.rotation.x = -Math.PI / 2;
   rug.scale.set(W * 0.42, D * 0.34, 1);
-  rug.position.set(0, 0.012, D * 0.06);
+  rug.position.set(0, 0.055, D * 0.06); // above the raised timber floor (0.04)
   rug.receiveShadow = true;
   g.add(rug);
 
@@ -829,45 +841,22 @@ export function buildDowntown() {
   crownSign2.rotation.y = Math.PI / 2; // normal faces +X toward NS avenue
   group.add(crownSign2);
 
-  // --- Street dressing along the plaza edge of the avenue cross (visual) -----
-  // Bollards, planters and benches set back from the lanes (no colliders, low
-  // mass). Placed at ±9 m from each avenue centreline so the >6m through-lanes
-  // stay fully clear.
+  // --- Bollards lining the four avenue-edge sidewalks (visual, no colliders) --
+  // They sit in the ~0.5 m strip between the 11 m lanes (faces at ±5.5) and the
+  // tower faces (±6), so the drivable cross stays fully clear. The towers were
+  // pulled in to ±10.5, which shrank the central plaza, so the bulkier street
+  // furniture (benches, planters, lamps, a market stall and a directory pylon)
+  // is built AFTER the shops below, INSIDE the verified-open quadrant pockets —
+  // never on the old plaza spots that now fall inside the relocated towers.
   const planterGeo = new THREE.SphereGeometry(0.7, 8, 6); // shared shrub geo
-  for (const z of [-9, 9]) {
-    for (let x = -22; x <= 22; x += 11) {
-      if (Math.abs(x) < 7) continue; // keep the avenue cross clear
-      // bollard
-      const b = cyl(0.16, 0.9, bollardMat, false);
-      b.position.set(x, 0.45, z * 0.62);
-      group.add(b);
-    }
-  }
-  // Planters + shrubs along the EW plaza frontage.
-  for (const [px, pz] of [[-10, 9], [10, 9], [-10, -9], [10, -9], [-22, 9], [22, -9]]) {
-    const planter = box(2.0, 0.7, 1.0, planterMat);
-    planter.position.set(px, 0.35, pz);
-    group.add(planter);
-    const shrub = new THREE.Mesh(planterGeo, foliageMat);
-    shrub.scale.set(1.2, 0.9, 0.7);
-    shrub.position.set(px, 0.95, pz);
-    shrub.castShadow = true;
-    group.add(shrub);
-  }
-  // A few benches flanking the plaza.
-  for (const [bx, bz, br] of [[-13, 8, 0], [13, 8, 0], [-13, -8, 0], [13, -8, 0]]) {
-    const seat = box(2.2, 0.18, 0.6, benchMat);
-    seat.position.set(bx, 0.5, bz);
-    seat.rotation.y = br;
-    group.add(seat);
-    const back = box(2.2, 0.5, 0.12, benchMat);
-    back.position.set(bx, 0.78, bz + (bz < 0 ? -0.24 : 0.24));
-    back.rotation.y = br;
-    group.add(back);
-    for (const lx of [-0.9, 0.9]) {
-      const leg = box(0.14, 0.5, 0.5, benchMat, false);
-      leg.position.set(bx + lx, 0.25, bz);
-      group.add(leg);
+  for (const edge of [-5.78, 5.78]) {
+    for (const t of [-22, -11, 11, 22]) {
+      const bE = cyl(0.16, 0.9, bollardMat, false); // along an EW avenue edge
+      bE.position.set(t, 0.45, edge);
+      group.add(bE);
+      const bN = cyl(0.16, 0.9, bollardMat, false); // along an NS avenue edge
+      bN.position.set(edge, 0.45, t);
+      group.add(bN);
     }
   }
 
@@ -945,19 +934,35 @@ export function buildDowntown() {
     wallMat: ramenWallMat, floorMat: ramenFloorMat, productMat: ramenProductMat,
     rugMat: ramenRugMat, accent: "lanterns", menu: "RAMEN", menuFile: "sign-shop-ramen.png",
   }, "NOODLE BAR", "sign-noodlebar.png");
+  // 5) TOAST & CO — bakery filling the previously empty NW inner pocket, door
+  // +Z (faces the plaza), at (-10.5,-19) → footprint X[-14.5,-6.5] Z[-22.25,
+  // -15.75], a 0.75 m gap off the NW flagship and 1.2 m off the NW outer block.
+  placeShop(-10.5, -19, 8, 6.5, 0, {
+    wallMat: bakeryWallMat, floorMat: bakeryFloorMat, productMat: bakeryProductMat,
+    rugMat: bakeryRugMat, accent: "plants", menu: "BAKERY", menuFile: "sign-shop-bakery.png",
+  }, "TOAST & CO", "sign-toastco.png");
+  // 6) WAX CITY — record shop filling the previously empty SE inner pocket, door
+  // -Z (faces the plaza), at (10.5,19) → footprint X[6.5,14.5] Z[15.75,22.25].
+  placeShop(10.5, 19, 8, 6.5, Math.PI, {
+    wallMat: recordWallMat, floorMat: recordFloorMat, productMat: recordProductMat,
+    rugMat: recordRugMat, accent: "books", menu: "RECORDS", menuFile: "sign-shop-records.png",
+  }, "WAX CITY", "sign-waxcity.png");
 
-  // --- Extra street-level flavour around the now-lived-in quadrants ----------
-  // All props are decorative (NO colliders), reuse shared geos, and sit clear of
-  // the four shop footprints, the tower colliders, and the >6 m avenue lanes.
+  // --- Extra street-level flavour in the verified-open quadrant pockets -------
+  // The NW quadrant has an open ~6×8 m nook WEST of its flagship (x∈[-22,-16],
+  // z∈[-14,-6]) and the SE quadrant a mirrored one EAST of its flagship
+  // (x∈[16,22], z∈[6,14]); the NE/SW quadrants are filled by two shops each, so
+  // they take only slim avenue-edge lamps. EVERY prop below is decorative (NO
+  // colliders), reuses shared geos, sits inside the ±23 setback, clear of every
+  // building footprint and of the >6 m avenue lanes — so nothing clips a wall.
 
-  // Street lamps: a tall post + a glowing head. Heads join shopLights so they
-  // pulse warmly with the other emissive props (no extra update branch). Placed
-  // at plaza-corner setbacks (±8) and mid-quadrant edges, all off the lanes and
-  // out of the shop footprints.
+  // Street lamps (post + arm + glowing head). Heads join shopLights so they
+  // pulse warmly with the shop bulbs. All spots verified clear of buildings.
   const lampSpots = [
-    [-8, -8], [8, -8], [-8, 8], [8, 8],     // four plaza corners by the cross
-    [-8, -20], [8, -20], [-8, 20], [8, 20], // along the N/S inner kerbs
-    [-20, -8], [20, -8], [-20, 8], [20, 8], // along the E/W inner kerbs
+    [-21, -7], [-17, -12.5],   // NW-west pocket
+    [21, 7], [17, 12.5],       // SE-east pocket
+    [6.4, -17], [6.4, -21],    // NE avenue-west sidewalk strip
+    [-6.4, 17], [-6.4, 21],    // SW avenue-east sidewalk strip
   ];
   for (const [lx, lz] of lampSpots) {
     const post = cyl(0.12, 4.2, lampPostMat);
@@ -973,11 +978,39 @@ export function buildDowntown() {
     shopLights.push(hm);
   }
 
+  // Planters + shrubs tucked into the two pockets.
+  for (const [px, pz] of [[-18, -9], [-20.5, -12.5], [18, 9], [20.5, 12.5]]) {
+    const planter = box(2.0, 0.7, 1.0, planterMat);
+    planter.position.set(px, 0.35, pz);
+    group.add(planter);
+    const shrub = new THREE.Mesh(planterGeo, foliageMat);
+    shrub.scale.set(1.2, 0.9, 0.7);
+    shrub.position.set(px, 0.95, pz);
+    shrub.castShadow = true;
+    group.add(shrub);
+  }
+
+  // A bench in each pocket (seat + back + legs).
+  for (const [bx, bz] of [[-19, -7], [19, 7]]) {
+    const seat = box(2.2, 0.18, 0.6, benchMat);
+    seat.position.set(bx, 0.5, bz);
+    group.add(seat);
+    const back = box(2.2, 0.5, 0.12, benchMat);
+    back.position.set(bx, 0.78, bz + (bz < 0 ? -0.24 : 0.24));
+    group.add(back);
+    for (const lx of [-0.9, 0.9]) {
+      const leg = box(0.14, 0.5, 0.5, benchMat, false);
+      leg.position.set(bx + lx, 0.25, bz);
+      group.add(leg);
+    }
+  }
+
   // A covered MARKET STALL (striped canopy on poles + a produce table) in the
-  // open SW plaza corner, facing the cross. Sits at X[-9,-5]ish, Z[8,10] — clear
-  // of the SW bookshop (X[-15,-7] Z[15.75,22.25]) and the lanes.
+  // open NW pocket. The awning peak is ~2.55 m up with NO collider, so you walk
+  // straight under it; only the thin poles are physical (and they're collider-
+  // free too, by design — pure decoration).
   {
-    const sx = -7.5, sz = 13;
+    const sx = -19, sz = -11;
     const table = box(3.0, 0.9, 1.4, crateMat);
     table.position.set(sx, 0.45, sz);
     group.add(table);
@@ -1008,8 +1041,8 @@ export function buildDowntown() {
     group.add(im);
   }
 
-  // Stacked delivery CRATES beside two shop entrances (lived-in clutter).
-  for (const [cx, cz] of [[5.5, -16], [16, -5.5]]) {
+  // Stacked delivery CRATES in each pocket corner (lived-in clutter).
+  for (const [cx, cz] of [[-21, -9.5], [21, 9.5]]) {
     for (const [dx, dy, dz] of [[0, 0.35, 0], [0.05, 1.0, 0.1], [-0.6, 0.4, 0.4]]) {
       const crate = box(0.9, 0.7, 0.9, crateMat);
       crate.position.set(cx + dx, dy, cz + dz);
@@ -1018,8 +1051,8 @@ export function buildDowntown() {
     }
   }
 
-  // A few TRASH/RECYCLE bins tucked against kerbs.
-  for (const [bx, bz] of [[-6.4, -13], [6.4, 13], [13, -6.4]]) {
+  // TRASH/RECYCLE bins on the slim avenue sidewalks.
+  for (const [bx, bz] of [[6.0, -20], [-6.0, 20]]) {
     const bin = cyl(0.4, 1.0, trashMat);
     bin.position.set(bx, 0.5, bz);
     group.add(bin);
@@ -1028,10 +1061,11 @@ export function buildDowntown() {
     group.add(lid);
   }
 
-  // A DIRECTORY PYLON (lit wayfinding sign) at the SE plaza corner, angled to the
-  // cross. Off the lanes (|x|,|z| > 6) and clear of footprints.
+  // A DIRECTORY PYLON (lit wayfinding sign) at the mouth of the SE pocket, its
+  // readable face turned toward the avenue approach (-X). Thin 0.3 m post (no
+  // collider) and the panel sits high (~3.4 m), so you can walk right past it.
   {
-    const px = 8.5, pz = 8.5;
+    const px = 19, pz = 10;
     const postP = box(0.3, 3.0, 0.3, pylonMat);
     postP.position.set(px, 1.5, pz);
     group.add(postP);
@@ -1040,7 +1074,7 @@ export function buildDowntown() {
       emissive: "#1c6fb0", emissiveIntensity: 0.8, file: "sign-directory.png",
     });
     dir.position.set(px, 3.4, pz);
-    dir.rotation.y = -Math.PI / 4; // face the plaza diagonally
+    dir.rotation.y = -Math.PI / 2; // face -X toward the NS avenue / plaza
     group.add(dir);
   }
 

@@ -306,7 +306,7 @@ function makeKiosk(w, d, h, signText, signBg) {
 
 // --- ENTERABLE SHOP: a station NEWSSTAND / CAFE the player can walk INTO -------
 // Builds a real room (4 walls + floor + flat ceiling) with a ~2.2 m doorway gap
-// in the STREET-FACING (-Z, toward the plaza/lanes) wall, cozy themed interior
+// in the STREET-FACING (+Z, toward the plaza/lanes) wall, cozy themed interior
 // content, an exterior shop sign over the door, and INDIVIDUAL wall colliders
 // (back + two sides + the two short front segments flanking the door — and NO
 // collider across the doorway gap, so the player enters through the door).
@@ -494,10 +494,10 @@ function makeNewsstandShop(cx, cz) {
 // --- GENERIC ENTERABLE STATION SHOP ----------------------------------------
 // A second reusable enterable-room builder for the south plaza, themed via cfg.
 // Same contract as makeNewsstandShop: a real room (4 walls + floor + ceiling)
-// with a ~2.2 m DOORWAY gap in the STREET-FACING (-Z) wall, individual wall
-// colliders (back + two sides + the two front segments flanking the door — and
+// with a ~2.2 m DOORWAY gap in the STREET-FACING (+Z, plaza side) wall, individual
+// wall colliders (back + two sides + the two front segments flanking the door — and
 // NO collider across the doorway gap), an exterior sign over the door (facing
-// -Z, the plaza approach), and a cosy themed interior. Geometry is local to the
+// +Z, the plaza approach), and a cosy themed interior. Geometry is local to the
 // returned group; colliders are returned in WORLD/tile-local coords from cx,cz.
 // Returns { group, colliders }.
 //
@@ -862,7 +862,8 @@ export function buildTransit() {
 
   // CLOCK TOWER rising at the +X end of the concourse (a station landmark).
   // SETBACK: pulled in a touch (offset 3.2 from the +X end) so the tower body,
-  // its cornice cap AND the wider roof spire (radius 4.2) all stay inside X≤23.
+  // its cornice cap AND the wider roof spire (radius 4.0) all stay inside the
+  // [-23,23] band on BOTH axes (radius 4.2 reached Z≈23.1 off the +Z back).
   const TOWER_X = concX + CONC_W / 2 - 3.2;
   const TOWER_H = 18;
   const tower = box(6, TOWER_H, 6, MAT.concourse, true, true);
@@ -872,7 +873,7 @@ export function buildTransit() {
   towerCap.position.set(TOWER_X, TOWER_H + 0.4, CONC_Z);
   group.add(towerCap);
   // little pyramid-ish roof spire on the tower
-  const spire = new THREE.Mesh(new THREE.ConeGeometry(4.2, 3.2, 4), MAT.brick);
+  const spire = new THREE.Mesh(new THREE.ConeGeometry(4.0, 3.2, 4), MAT.brick);
   spire.position.set(TOWER_X, TOWER_H + 2.4, CONC_Z);
   spire.rotation.y = Math.PI / 4;
   spire.castShadow = true;
@@ -907,7 +908,9 @@ export function buildTransit() {
   // upper storey block. Visual-only (above head height, no colliders).
   const roofY = CONC_H + 0.1;                          // lower (front) roof deck level
   const frontRoofZ = CONC_FRONT + 1.6;                 // ≈17.2 — front of the upper step
-  const upperRoofY = CONC_H + upperH + 0.4;            // top of the upper storey
+  const upperRoofY = CONC_H + upperH + 0.55;           // upper-storey DECK = cornice-cap top
+  // (cornice cap top = CONC_H+upperH+0.2 + 0.35); clutter sits ON this surface so
+  // nothing buries itself inside the 0.7 m-thick cornice slab.
   // AC units sit on the LOWER front roof strip, clear of the upper storey.
   const acXs = [-18, -10, 6, 14];
   for (const ax of acXs) {
@@ -927,20 +930,20 @@ export function buildTransit() {
   }
   // a raised water tank on stubby legs — perched ON the upper storey roof
   const tankBody = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 2.4, 12), MAT.tank);
-  tankBody.position.set(concX - 6, upperRoofY + 1.5, upperZ);
+  tankBody.position.set(concX - 6, upperRoofY + 2.4, upperZ);
   tankBody.castShadow = true;
   group.add(tankBody);
   const tankCap = new THREE.Mesh(new THREE.ConeGeometry(1.7, 0.9, 12), MAT.rooftop);
-  tankCap.position.set(concX - 6, upperRoofY + 3.1, upperZ);
+  tankCap.position.set(concX - 6, upperRoofY + 4.05, upperZ);
   group.add(tankCap);
   for (const lx of [-1, 1]) for (const lz of [-1, 1]) {
     const leg = box(0.18, 1.2, 0.18, MAT.steel, false, false);
-    leg.position.set(concX - 6 + lx * 1.0, upperRoofY - 0.3, upperZ + lz * 1.0);
+    leg.position.set(concX - 6 + lx * 1.0, upperRoofY + 0.6, upperZ + lz * 1.0);
     group.add(leg);
   }
   // glowing skylight strip — set into the upper storey roof
   const skylight = box(8, 0.3, 2.2, MAT.litWin, false, false);
-  skylight.position.set(concX + 10, upperRoofY - 0.1, upperZ);
+  skylight.position.set(concX + 10, upperRoofY + 0.15, upperZ);
   group.add(skylight);
   // antenna mast
   const antenna = box(0.1, 4.0, 0.1, MAT.steel, false, false);

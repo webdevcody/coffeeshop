@@ -114,6 +114,15 @@ const produceMat = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness:
 const crateMat   = new THREE.MeshStandardMaterial({ color: "#9c6b3f", roughness: 0.9 });    // wooden crate / stall riser
 const fridgeMat  = new THREE.MeshStandardMaterial({ color: "#cfe3ea", roughness: 0.3, metalness: 0.4, emissive: "#7fb3c9", emissiveIntensity: 0.25 });
 
+// --- Enterable FLORIST palette (fresh sage + terracotta) ----------------------
+const florWall  = new THREE.MeshStandardMaterial({ color: "#e3ecd9", roughness: 0.92 });  // soft sage plaster
+const florFloor = new THREE.MeshStandardMaterial({ color: "#8a8f86", roughness: 0.88 });  // slate tile
+const florRoof  = new THREE.MeshStandardMaterial({ color: "#c5cdb9", roughness: 0.9 });
+const potMat    = new THREE.MeshStandardMaterial({ color: "#b5643c", roughness: 0.85 });  // terracotta pot
+const stemMat   = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.85 });  // green shrub
+const bloomMat  = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.8 });   // white base, tinted per-instance
+const bucketMat = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.5, metalness: 0.6 }); // galvanized bucket
+
 // --- Extra shared geometry for the new shops + street flavor ------------------
 const loafGeo    = new THREE.BoxGeometry(0.5, 0.22, 0.3);    // a bread loaf on a bakery tray
 const produceGeo = new THREE.IcosahedronGeometry(0.16, 0);   // a piece of fruit/veg in a grocer bin
@@ -121,6 +130,9 @@ const crateGeo   = new THREE.BoxGeometry(0.9, 0.7, 0.9);     // a stacked wooden
 const awnPostGeo = new THREE.CylinderGeometry(0.05, 0.05, 2.2, 8);  // market-stall corner post
 const lampPoleGeo = new THREE.CylinderGeometry(0.08, 0.1, 4.4, 8);  // street-lamp pole
 const lampHeadGeo = new THREE.SphereGeometry(0.28, 12, 10);        // lamp globe
+const potGeo     = new THREE.CylinderGeometry(0.16, 0.12, 0.26, 10); // a terracotta plant pot
+const bucketGeo  = new THREE.CylinderGeometry(0.22, 0.18, 0.5, 12);  // a flower-display bucket
+const bloomGeo   = new THREE.IcosahedronGeometry(0.14, 0);          // a flower bloom cluster
 
 // --- Shared geometry (reused) ------------------------------------------------
 const blobGeo   = new THREE.IcosahedronGeometry(0.8, 0);
@@ -621,7 +633,10 @@ export function buildShopping() {
   // ±23 setback, off the avenue seam road on the east edge.
   shelter.position.set(20.5, 0, -10.5);
   group.add(shelter);
-  addCollider(colliders, 20.5, -11, 4, 1.8);
+  // Collider covers ONLY the solid back (glass wall + posts + seat). The roof is an
+  // overhead panel (y≈2.5) so it gets NO footprint collider — players can step UNDER
+  // it and stand inside the shelter from the open street-facing front.
+  addCollider(colliders, 20.5, -11.05, 4, 0.7);
 
   // Bus-stop sign post by the shelter.
   const stopPole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 3, 8), poleMat);
@@ -796,7 +811,7 @@ export function buildShopping() {
     text: "BOUTIQUE", bg: "#5f0f40", fg: "#ffd6e0", emissiveIntensity: 0.4,
     file: "boutique-inner.png",
   });
-  innerSign.position.set(-1.0, 2.3, zSouth - 0.06);
+  innerSign.position.set(-1.0, 2.3, zSouth - 0.16);   // clear of the 0.25m wall so it reads from the room
   innerSign.rotation.y = Math.PI;   // face into the room (toward -Z)
   innerSign.castShadow = false;
   shop.add(innerSign);
@@ -956,7 +971,7 @@ export function buildShopping() {
     const inner = artPanel(2.0, 0.7, "sign", {
       text: "FRESH BREAD", bg: "#7d4a2c", fg: "#ffe6b0", emissiveIntensity: 0.4, file: "bakery-inner.png",
     });
-    inner.position.set(-1.0, 2.4, hd - 0.06); inner.rotation.y = Math.PI; inner.castShadow = false;
+    inner.position.set(-1.0, 2.4, hd - 0.16); inner.rotation.y = Math.PI; inner.castShadow = false;
     sh.group.add(inner);
 
     group.add(sh.group);
@@ -1037,7 +1052,7 @@ export function buildShopping() {
     const inner = artPanel(2.0, 0.7, "sign", {
       text: "FRESH PRODUCE", bg: "#1f6e3a", fg: "#e9ffe0", emissiveIntensity: 0.4, file: "grocer-inner.png",
     });
-    inner.position.set(-2.4, 2.4, hd - 0.06); inner.rotation.y = Math.PI; inner.castShadow = false;
+    inner.position.set(-2.4, 2.4, hd - 0.16); inner.rotation.y = Math.PI; inner.castShadow = false;
     sh.group.add(inner);
 
     group.add(sh.group);
@@ -1049,6 +1064,111 @@ export function buildShopping() {
     grocAwn.position.set(GX, GH + 0.05, GZ - hd - 0.5);
     grocAwn.rotation.y = Math.PI;
     group.add(grocAwn);
+  }
+
+  // ===== ENTERABLE FLORIST (south-east verge) ================================
+  // Footprint 6.5m × 6.5m, centre (17, 18.5) → X∈[13.75,20.25], Z∈[15.25,21.75].
+  // Clear of the grocer (left edge 13.75 vs grocer right 13), the corner planter
+  // (x=22,z=22), the drive lane (z>14) and the ±23 setback. Doorway faces the avenue.
+  {
+    const FW = 6.5, FD = 6.5, FH = 3.2, WT2 = 0.25, DOOR2 = 2.2;
+    const FX = 17.0, FZ = 18.5;
+    const sh = makeShell(FW, FD, FH, florWall, florRoof, florFloor, WT2, DOOR2);
+    sh.group.position.set(FX, 0, FZ);
+    const hw = sh.hw, hd = sh.hd;
+
+    // POTTING-BENCH counter along the back-right with a dark work top.
+    const cb = box(2.4, 1.0, 0.7, counterMat);
+    cb.position.set(hw - 1.5, 0.5, hd - 0.7); sh.group.add(cb);
+    const ct = box(2.6, 0.08, 0.85, counterTopMat, false);
+    ct.position.set(hw - 1.5, 1.02, hd - 0.7); sh.group.add(ct);
+
+    // Tiered DISPLAY SHELVES of potted plants along the west wall (instanced pots +
+    // instanced blooms keep the greenery cheap).
+    const POT_ROWS = 2, POT_COLS = 4;
+    const pots   = new THREE.InstancedMesh(potGeo, potMat, POT_ROWS * POT_COLS);
+    const blooms = new THREE.InstancedMesh(bloomGeo, bloomMat, POT_ROWS * POT_COLS);
+    pots.castShadow = pots.receiveShadow = true;
+    blooms.castShadow = true;
+    const bloomTints = ["#e8557f", "#f0a13a", "#efd23a", "#b466c4", "#e85a4a", "#ffffff"];
+    let pi = 0;
+    for (let s = 0; s < POT_ROWS; s++) {
+      const sy = 0.95 + s * 0.85;
+      const shelf = box(0.55, 0.08, 3.4, shelfMat, false);
+      shelf.position.set(-hw + 0.45, sy - 0.06, 0); sh.group.add(shelf);
+      for (let c = 0; c < POT_COLS; c++) {
+        const pz = -1.35 + c * 0.9;
+        dummy.position.set(-hw + 0.45, sy + 0.07, pz);
+        dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+        pots.setMatrixAt(pi, dummy.matrix);
+        dummy.position.set(-hw + 0.45, sy + 0.3, pz);
+        dummy.updateMatrix();
+        blooms.setMatrixAt(pi, dummy.matrix);
+        blooms.setColorAt(pi, new THREE.Color(bloomTints[(s * POT_COLS + c) % bloomTints.length]));
+        pi++;
+      }
+    }
+    pots.instanceMatrix.needsUpdate = true;
+    blooms.instanceMatrix.needsUpdate = true;
+    if (blooms.instanceColor) blooms.instanceColor.needsUpdate = true;
+    sh.group.add(pots, blooms);
+
+    // A cluster of FLOWER BUCKETS near the entrance (galvanized buckets + bloom tufts).
+    const bucketSpots = [[-1.2, -hd + 1.3], [-0.4, -hd + 1.5], [0.4, -hd + 1.3]];
+    const tufts = new THREE.InstancedMesh(bloomGeo, bloomMat, bucketSpots.length * 3);
+    tufts.castShadow = true;
+    let ti = 0;
+    for (let k = 0; k < bucketSpots.length; k++) {
+      const [bx, bz] = bucketSpots[k];
+      const bucket = new THREE.Mesh(bucketGeo, bucketMat);
+      bucket.position.set(bx, 0.25, bz);
+      bucket.castShadow = bucket.receiveShadow = true;
+      sh.group.add(bucket);
+      for (let f = 0; f < 3; f++) {
+        dummy.position.set(bx - 0.1 + f * 0.1, 0.62 + f * 0.04, bz);
+        dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+        tufts.setMatrixAt(ti, dummy.matrix);
+        tufts.setColorAt(ti, new THREE.Color(bloomTints[(k * 3 + f) % bloomTints.length]));
+        ti++;
+      }
+    }
+    tufts.instanceMatrix.needsUpdate = true;
+    if (tufts.instanceColor) tufts.instanceColor.needsUpdate = true;
+    sh.group.add(tufts);
+
+    // A tall potted SHRUB in the back-left corner.
+    const bigPot = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.24, 0.5, 12), potMat);
+    bigPot.position.set(-hw + 0.7, 0.25, hd - 0.8); bigPot.castShadow = true; sh.group.add(bigPot);
+    const shrub = new THREE.Mesh(blobGeo, stemMat);
+    shrub.position.set(-hw + 0.7, 0.95, hd - 0.8); shrub.scale.setScalar(0.7); shrub.castShadow = true;
+    sh.group.add(shrub);
+
+    // Warm pendant LIGHTS.
+    for (const [lx, lz] of [[-1.0, 0.2], [1.4, -0.6]]) {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.6, 6), poleMat);
+      cord.position.set(lx, FH - 0.3, lz); sh.group.add(cord);
+      const shade = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.3, 12, 1, true), lampShadeMat);
+      shade.position.set(lx, FH - 0.65, lz); sh.group.add(shade);
+    }
+
+    // Inner wall sign (sits in FRONT of the back wall so it reads from the room).
+    const inner = artPanel(2.2, 0.7, "sign", {
+      text: "FRESH FLOWERS", bg: "#2d6a4f", fg: "#d8f3dc", emissiveIntensity: 0.4, file: "florist-inner.png",
+    });
+    inner.position.set(-2.0, 2.4, hd - 0.16); inner.rotation.y = Math.PI; inner.castShadow = false;
+    sh.group.add(inner);
+
+    group.add(sh.group);
+    makeShellColliders(FX, FZ, FW, FD, WT2, DOOR2);
+    addStreetSign(FX, FZ, -hd, FH, 3.0, 1.0, {
+      text: "FLORIST", bg: "#2d6a4f", fg: "#ffd6e0", emissiveIntensity: 0.55, file: "florist-sign.png",
+    });
+    // a striped awning over the door, jutting toward the street (-Z), above head
+    // height (y≈3.25) so it carries NO collider and players walk straight under it.
+    const florAwn = makeAwning(3.0, awnTeal);
+    florAwn.position.set(FX, FH + 0.05, FZ - hd - 0.5);
+    florAwn.rotation.y = Math.PI;
+    group.add(florAwn);
   }
 
   // ===== STREET-LEVEL FLAVOR: market stall, crates, lamps, planters ==========
@@ -1087,7 +1207,7 @@ export function buildShopping() {
     addCollider(colliders, SX, SZ, 3.0, 1.4);
 
     // A couple of spare CRATE stacks dressing the verge corners.
-    for (const [cx, cz] of [[-10.5, 16.4], [14.5, 16.4]]) {
+    for (const [cx, cz] of [[-10.5, 16.4], [21.8, 18.0]]) {
       const cr1 = new THREE.Mesh(crateGeo, crateMat);
       cr1.position.set(cx, 0.4, cz); cr1.castShadow = true; cr1.receiveShadow = true; group.add(cr1);
       const cr2 = new THREE.Mesh(crateGeo, crateMat);
@@ -1099,7 +1219,7 @@ export function buildShopping() {
   // STREET LAMPS lining the open verge so it reads as a real avenue at dusk. Posts
   // sit on the south verge (z≈15) and on the north sidewalk (z≈-9), all inside the
   // setback and clear of the driving lane (z∈[-7,14]).
-  for (const [lx, lz] of [[-18, 15.0], [18, 15.0], [-18, -9.0], [18, -9.0]]) {
+  for (const [lx, lz] of [[-21, 15.0], [21, 15.0], [-18, -9.0], [18, -9.0]]) {
     const lamp = new THREE.Group();
     const pole = new THREE.Mesh(lampPoleGeo, poleMat);
     pole.position.set(0, 2.2, 0); pole.castShadow = true; lamp.add(pole);

@@ -410,12 +410,16 @@ export function buildArcade() {
   }
 
   // --- Big neon signs mounted on the buildings ------------------------------
+  // Mounted PROUD of the facade (avenue-facing X at ±6.58) so each sign sits in
+  // FRONT of the protruding cornice ledge (front face ±6.75) and the lit window
+  // panes (±6.82). Previously at ±6.94 the signs were tucked behind both, so the
+  // cornice band bisected them and the window grid poked through the panel.
   // "ARCADE" over the front-left building, facing the avenue (+X normal).
   const arcadeSign = artPanel(7, 4, "neon", {
     lines: ["ARCADE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade.png",
   });
-  arcadeSign.position.set(-6.94, 7, -16); // on the pulled-in front-left building
+  arcadeSign.position.set(-6.58, 7, -16); // on the pulled-in front-left building (proud of cornice)
   arcadeSign.rotation.y = Math.PI / 2; // face +X (toward avenue)
   arcadeSign.castShadow = false;
   group.add(arcadeSign);
@@ -426,7 +430,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-play.png",
   });
-  playSign.position.set(6.94, 7, 16); // on the pulled-in back-right building
+  playSign.position.set(6.58, 7, 16); // on the pulled-in back-right building (proud of cornice)
   playSign.rotation.y = -Math.PI / 2; // face -X (toward avenue)
   playSign.castShadow = false;
   group.add(playSign);
@@ -437,7 +441,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ffd23f", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade2.png",
   });
-  arcade2.position.set(6.94, 7, -16); // on the pulled-in front-right building
+  arcade2.position.set(6.58, 7, -16); // on the pulled-in front-right building (proud of cornice)
   arcade2.rotation.y = -Math.PI / 2;
   arcade2.castShadow = false;
   group.add(arcade2);
@@ -447,7 +451,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#9fff4f", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-play2.png",
   });
-  play2.position.set(-6.94, 7, 16); // on the pulled-in back-left building
+  play2.position.set(-6.58, 7, 16); // on the pulled-in back-left building (proud of cornice)
   play2.rotation.y = Math.PI / 2;
   play2.castShadow = false;
   group.add(play2);
@@ -468,7 +472,13 @@ export function buildArcade() {
   // Two support legs for the billboard frame.
   group.add(cyl(0.35, 9, matMetal, -5.5, 4.5, -23.0));
   group.add(cyl(0.35, 9, matMetal, 5.5, 4.5, -23.0));
-  colliders.push({ minX: -6, maxX: 6, minZ: -23.0, maxZ: -22.3 });
+  // WALK/DRIVE-UNDER: the billboard PANEL is mounted overhead (its bottom edge is
+  // ~5.5 m up) so it must register NO panel collider — colliders are infinite in
+  // height in XZ, and a full-width AABB here would wall off the entire avenue at
+  // ground level. Keep only a TIGHT collider around each thin support leg so the
+  // player can walk/drive straight under the billboard, passing between the posts.
+  colliders.push({ minX: -5.85, maxX: -5.15, minZ: -23.0, maxZ: -22.6 });
+  colliders.push({ minX: 5.15, maxX: 5.85, minZ: -23.0, maxZ: -22.6 });
 
   // --- Tall arcade cabinets along the curbs (standalone props) --------------
   // Placed beyond X = ±8 so they don't pinch the avenue. Reuse geometry/mats.

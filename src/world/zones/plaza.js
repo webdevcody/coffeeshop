@@ -952,6 +952,103 @@ function makeBookshop(cx, cz, colliders) {
   return shell;
 }
 
+// ===========================================================================
+// ENTERABLE TEA HOUSE  (a cosy tea room the player can walk into)
+// ===========================================================================
+// Doorway faces +Z (toward the fountain / open square). A service counter with a
+// brass samovar, side-wall shelves of instanced teapots + cups, two stools, a
+// rug, a menu board and the shell's two pendant lights.
+function makeTeaHouse(cx, cz, colliders) {
+  const shell = makeShopShell({
+    cx, cz, depth: 7, width: 6, wallH: 3.2, doorW: 2.2, dir: "+Z",
+    wallMat: M.shopWall, floorMat: M.shopFloor, trimMat: M.shopTrim,
+    sign: { text: "PLAZA TEA HOUSE", bg: "#3f7d54", fg: "#fff3cf", file: "plaza-sign-teahouse.png" },
+  }, colliders);
+  const g = shell.group;
+  const { xMin, xMax, zMin, zMax } = shell.interior;
+  const depth = depth0(xMin, xMax);
+  const width = width0(zMin, zMax);
+
+  // rug
+  const rug = mesh(new THREE.BoxGeometry(depth - 2.6, 0.03, width - 2.4), M.rug, false, true);
+  rug.position.set(cx, 0.07, cz);
+  g.add(rug);
+
+  // service counter along the back (-Z) wall
+  const cBase = mesh(new THREE.BoxGeometry(depth - 1.6, 1.0, 0.8), M.counter);
+  cBase.position.set(cx, 0.5, zMin + 0.7);
+  g.add(cBase);
+  const cTop = mesh(new THREE.BoxGeometry(depth - 1.4, 0.1, 1.0), M.counterTop, false);
+  cTop.position.set(cx, 1.05, zMin + 0.7);
+  g.add(cTop);
+  // a brass samovar urn on the counter
+  const urn = mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.6, 14), M.metal);
+  urn.position.set(xMax - 1.4, 1.4, zMin + 0.7);
+  const urnCap = mesh(new THREE.SphereGeometry(0.16, 12, 8), M.bollardCapMat, true, false);
+  urnCap.position.set(xMax - 1.4, 1.78, zMin + 0.7);
+  g.add(urn, urnCap);
+
+  // wall shelves on the +X side wall (inner face faces -X)
+  const shelfX = xMax - 0.35;
+  for (const sy of [1.2, 1.9, 2.6]) {
+    const shelf = mesh(new THREE.BoxGeometry(0.4, 0.06, width - 1.4), M.shelfWood, false);
+    shelf.position.set(shelfX, sy, cz);
+    g.add(shelf);
+  }
+
+  // two stools in front of the counter
+  for (const sx of [cx - 1.2, cx + 1.2]) {
+    const seat = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12), M.stool);
+    seat.position.set(sx, 0.6, zMin + 1.7);
+    g.add(seat);
+    const leg = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.6, 8), M.poleMat);
+    leg.position.set(sx, 0.3, zMin + 1.7);
+    g.add(leg);
+  }
+
+  // inner menu board on the back (-Z) wall; inner face turns +Z toward the room
+  const menu = artPanel(1.8, 0.9, "sign", {
+    text: "TEA & CAKES", bg: "#3f7d54", fg: "#fff3cf",
+    emissiveIntensity: 0.35, file: "plaza-teahouse-menu.png",
+  });
+  menu.position.set(cx, 2.5, zMin + 0.18);
+  menu.rotation.y = 0;
+  menu.castShadow = false;
+  g.add(menu);
+
+  // --- INSTANCED teapots (on the counter) + cups (on the shelves) -----------
+  const dummyL = new THREE.Object3D();
+  const potPlaces = [];
+  const cupPlaces = [];
+  for (let i = 0; i < 4; i++) potPlaces.push({ x: cx - 1.5 + i * 1.0, y: 1.28, z: zMin + 0.7 });
+  for (const sy of [1.2, 1.9, 2.6]) {
+    for (let i = 0; i < 5; i++) cupPlaces.push({ x: shelfX, y: sy + 0.12, z: cz - 1.6 + i * 0.8 });
+  }
+  const potMesh = new THREE.InstancedMesh(G.bun, M.vase, potPlaces.length);   // round teapot bodies
+  const cupMesh = new THREE.InstancedMesh(G.potRim, M.vase, cupPlaces.length); // little cups
+  potMesh.castShadow = true; potMesh.receiveShadow = false;
+  cupMesh.castShadow = false; cupMesh.receiveShadow = false;
+  for (let i = 0; i < potPlaces.length; i++) {
+    const p = potPlaces[i];
+    dummyL.position.set(p.x, p.y, p.z);
+    dummyL.rotation.set(0, 0, 0); dummyL.scale.set(1.3, 1.1, 1.3);
+    dummyL.updateMatrix();
+    potMesh.setMatrixAt(i, dummyL.matrix);
+  }
+  for (let i = 0; i < cupPlaces.length; i++) {
+    const p = cupPlaces[i];
+    dummyL.position.set(p.x, p.y, p.z);
+    dummyL.rotation.set(0, 0, 0); dummyL.scale.set(0.6, 0.6, 0.6);
+    dummyL.updateMatrix();
+    cupMesh.setMatrixAt(i, dummyL.matrix);
+  }
+  potMesh.instanceMatrix.needsUpdate = true;
+  cupMesh.instanceMatrix.needsUpdate = true;
+  g.add(potMesh, cupMesh);
+
+  return shell;
+}
+
 // tiny helpers so the shop fillers read in terms of their own bounds
 function width0(zMin, zMax) { return zMax - zMin; }
 function depth0(xMin, xMax) { return xMax - xMin; }
@@ -1039,7 +1136,8 @@ function makeNoticePillar() {
   const knob = mesh(new THREE.SphereGeometry(0.12, 10, 8), M.bollardCapMat, true, false);
   knob.position.y = 3.3;
   g.add(knob);
-  // poster facing +X (un-mirrored toward the avenue side; caller can rotate)
+  // poster on the drum's +Z face (un-mirrored); the caller rotates the whole
+  // pillar to aim that face wherever players approach from
   const poster = artPanel(1.4, 1.4, "sign", {
     text: "EVENTS", bg: "#b34a52", fg: "#fff3cf",
     emissiveIntensity: 0.4, file: "plaza-notice-events.png",
@@ -1337,8 +1435,8 @@ export function buildPlaza() {
   // Z[-23,-15], café X[-23,-15] Z[-5,13], tower X[-23,-12] Z[-23,-12].
   const planterPlaces = [
     [21, 21], [21, -2],     // south-east open corner / east edge (clear of hall maxX=22)
-    [-2, 21], [-13, 16],    // south edge / café-entrance flank (café maxZ=13)
-    [9, -13],               // hall-entrance flank, plaza side (hall minZ=-15)
+    [-2, 21], [-12, 16],    // south edge / bookshop-entrance flank (clear of its +X wall x=-13.5)
+    [16, -13],              // hall-entrance flank, plaza side (clear of the new Tea House maxX=10.5)
   ];
   for (const [x, z] of planterPlaces) {
     const pl = makePlanter(sway);
@@ -1417,6 +1515,17 @@ export function buildPlaza() {
   const bookshop = makeBookshop(-17, 19, colliders);
   group.add(bookshop.group);
 
+  // === ENTERABLE TEA HOUSE (north pocket, tucked beside the Town Hall) =======
+  // A walkable tea room filling the open pocket between the fountain ring and the
+  // hall's south front. Centre (7,-11) ⇒ footprint X[3.5,10.5] Z[-14,-8] — a 1 m
+  // gap to the hall front (Z=-15), clear of the NE lamp (12,-12), the relocated
+  // hall-flank planter (16,-13) and every other prop; within X,Z∈[-23,23]. Its
+  // DOORWAY faces +Z (toward the fountain / open square), so the player walks
+  // straight in from the centre. Each solid wall gets a collider; the doorway gap
+  // (and the overhead lintel + sign above it) get NONE — a clear walk-in.
+  const teahouse = makeTeaHouse(7, -11, colliders);
+  group.add(teahouse.group);
+
   // === EXTRA STREET-LEVEL FLAVOUR ==========================================
   // An open-air produce stall on the open SE flank near the café-to-plaza lane,
   // plus crate stacks, civic bollards lining the south kerb, a couple more
@@ -1430,9 +1539,9 @@ export function buildPlaza() {
 
   // crate stacks dressing shop entrances + open corners
   const cratePlaces = [
-    [-3.6, -8, 0],          // beside the bakery doorway (+X face at x=-4.5)
+    [-3.4, -10.6, 0],       // beside (NOT in front of) the bakery doorway: clear of its door gap at z≈-8
     [20, 4, 0.6],           // open east flank
-    [-12.6, 19, Math.PI / 2],// beside the bookshop doorway (+X face at x=-13.5)
+    [-12.3, 21, Math.PI / 2],// beside the bookshop doorway: clear of its door gap at z≈19
   ];
   for (const [x, z, ry] of cratePlaces) {
     const cs = makeCrateStack();
@@ -1464,6 +1573,7 @@ export function buildPlaza() {
   // a civic notice pillar by the east avenue side, poster facing +X (the avenue)
   const pillar = makeNoticePillar();
   pillar.position.set(20, 0, -6);
+  pillar.rotation.y = -Math.PI / 2;   // turn the poster (+Z face) to face -X, into the square
   group.add(pillar);
   addCollider(colliders, 20, -6, 1.2, 1.2);
 
@@ -1471,7 +1581,7 @@ export function buildPlaza() {
   let t = 0;
   const baseSign = signPanels.map((p) => p.material.emissiveIntensity ?? 0.55);
   // All enterable-shop pendant/lamp emissives, pulsed together as a warm glow.
-  const shopLights = kiosk.lights.concat(bakery.lights, bookshop.lights);
+  const shopLights = kiosk.lights.concat(bakery.lights, bookshop.lights, teahouse.lights);
   const update = (dt) => {
     t += dt;
     // Rising/falling water jet from the upper bowl.

@@ -1204,14 +1204,18 @@ export function buildPark() {
   // Solid footprint collider matching the pavilion's full plan (incl. base).
   addCollider(colliders, px, pz, pavW + 0.5, pavD + 0.5);
 
-  // Welcome sign mounted FLUSH on the pavilion's front (+X) wall, just above the
-  // porch roof, reading outward toward the green so the text is never mirrored.
+  // Welcome sign mounted over the porch entrance on the pavilion's front (+X)
+  // side, reading outward toward the green so the text is never mirrored. It sits
+  // just IN FRONT OF and ABOVE the porch-roof front fascia (x≈-12.85, bottom edge
+  // at y≈3.4) so it clears BOTH the porch roof slab (top y≈3.29) and the
+  // overhanging hipped roof eave — nothing clips the panel. It is well above head
+  // height with NO collider, so players walk straight under it into the porch.
   const sign = artPanel(2.4, 1.4, "billboard", {
     title: "CITY PARK", sub: "Est. 1908", accent: "#ffd86b",
     a: "#2c6e3f", b: "#123a22", glyph: "❀",
     emissiveIntensity: 0.55, file: "billboard-park.png",
   });
-  sign.position.set(px + pavW / 2 + 0.08, 0.5 + pavWallH - 0.2, pz);
+  sign.position.set(px + pavW / 2 + 1.55, 0.5 + pavWallH, pz);
   sign.rotation.y = Math.PI / 2; // artPanel faces +Z at ry=0; turn it to face +X
   group.add(sign);
 
@@ -1274,12 +1278,14 @@ export function buildPark() {
 
   // Outdoor shop SIGN above the door on the OUTSIDE front (−Z) wall, facing the
   // street (−Z). artPanel faces +Z at ry=0, so ry=π turns it to face −Z without
-  // mirroring the text (a rotation, not a reflection — reads un-mirrored).
+  // mirroring the text (a rotation, not a reflection — reads un-mirrored). Raised
+  // so its bottom edge clears the flat roof slab top (y = kWallH + 0.2) instead of
+  // being buried in the eave — it now reads cleanly above the storefront roofline.
   const kioskSign = artPanel(3.0, 1.0, "sign", {
     text: "SCOOPS", bg: "#e2604a", fg: "#fff3cf",
     accent: "#ffd86b", emissiveIntensity: 0.55, file: "sign-park-kiosk.png",
   });
-  kioskSign.position.set(kx, kWallH + 0.55, kz - kHD - 0.06);
+  kioskSign.position.set(kx, kWallH + 0.8, kz - kHD - 0.06);
   kioskSign.rotation.y = Math.PI; // face −Z (the street/lane)
   group.add(kioskSign);
 
@@ -1307,7 +1313,7 @@ export function buildPark() {
     text: "GREENHOUSE", bg: "#3f9d5a", fg: "#f4ffe6",
     accent: "#f0c64a", emissiveIntensity: 0.55, file: "sign-park-garden.png",
   });
-  gardenSign.position.set(gcx, gcWallH + 0.55, gcz - gcHD - 0.06);
+  gardenSign.position.set(gcx, gcWallH + 0.8, gcz - gcHD - 0.06); // bottom clears the roof slab
   gardenSign.rotation.y = Math.PI; // face −Z (the green)
   group.add(gardenSign);
 
@@ -1333,7 +1339,7 @@ export function buildPark() {
     text: "TEA HOUSE", bg: "#7a4a86", fg: "#f7e9c8",
     accent: "#ffd86b", emissiveIntensity: 0.55, file: "sign-park-tea.png",
   });
-  teaSign.position.set(tcx, tcWallH + 0.55, tcz - tcHD - 0.06);
+  teaSign.position.set(tcx, tcWallH + 0.8, tcz - tcHD - 0.06); // bottom clears the roof slab
   teaSign.rotation.y = Math.PI; // face −Z (the green)
   group.add(teaSign);
 

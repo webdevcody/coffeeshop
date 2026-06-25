@@ -251,8 +251,8 @@ export function buildAutoPlaza() {
 
   // Concrete forecourt apron under the gas canopy (front-left) for contrast.
   // Sized/placed to stay inside the setback so it doesn't read under the seam road.
-  const apron = flat(17, 16, matConcrete);
-  apron.position.set(-13.5, 0.02, -16);
+  const apron = flat(17, 14, matConcrete);
+  apron.position.set(-13.5, 0.02, -15); // depth 14 → z∈[-22,-8], south edge clears the -Z seam (was -24)
   group.add(apron);
 
   // Concrete pad under the showroom / parking (back, left-of-centre) ----------
@@ -593,8 +593,10 @@ export function buildAutoPlaza() {
   // === TRIANGULAR PENNANT STRING strung over the lot ========================
   // Two slim poles at the lot corners with a sagging pennant line between them.
   // Visual-only (poles are thin; placed at the back lot edge, clear of lanes).
-  const penA = new THREE.Vector3(startX - 1, 5.0, STALL_Z - 4.5);
-  const penB = new THREE.Vector3(startX + 6 * stallW + 1, 5.0, STALL_Z - 4.5);
+  // z = STALL_Z - 3 (=17): NORTH of the tyre-shop roof (z≤16.5) so the sagging
+  // pennants hang over the parking lot instead of dipping through that roof slab.
+  const penA = new THREE.Vector3(startX - 1, 5.0, STALL_Z - 3);
+  const penB = new THREE.Vector3(startX + 6 * stallW + 1, 5.0, STALL_Z - 3);
   for (const p of [penA, penB]) {
     const pole = box(0.14, p.y, 0.14, matSteel);
     pole.position.set(p.x, p.y / 2, p.z);
