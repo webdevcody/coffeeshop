@@ -79,7 +79,7 @@ const ambient = new AmbientBoards({
 let local = null;
 let joined = false;
 let lastStateSent = 0;
-let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false };
+let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
 
 // Where everyone is, so voice (and screen share) can scope to the people you're
 // actually with — table-mates when seated, nearby players otherwise.
@@ -143,7 +143,7 @@ network.on("player-left", (m) => {
   updateCount();
 });
 network.on("state", (m) => {
-  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY);
+  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held);
 });
 // A remote player restyled themselves (skin / hair / clothing).
 network.on("appearance", (m) => {
@@ -488,18 +488,26 @@ function maybeSendState() {
   const ry = +local.facing.toFixed(3);
   const moving = local.moving;
   const sitting = local.sitting;
-  // Only send if something changed (or we're moving) to save bandwidth.
+  // Ride tag (null | "car" | "skate") so remotes render the car/board mesh.
+  const ride = rides.ride;
+  // Held item id (null | item id) so remotes render the item in this player's hand.
+  const held = local.heldId();
+  // Only send if something changed (or we're moving) to save bandwidth. The ride
+  // tag and held id are in the comparison so entering/exiting a vehicle or
+  // buying/dropping an item forces an immediate send.
   if (
     x === lastSent.x &&
     z === lastSent.z &&
     ry === lastSent.ry &&
     moving === lastSent.moving &&
-    sitting === lastSent.sitting
+    sitting === lastSent.sitting &&
+    ride === lastSent.ride &&
+    held === lastSent.held
   ) {
     return;
   }
-  network.sendState(x, z, ry, moving, sitting, local.seatY);
-  lastSent = { x, z, ry, moving, sitting };
+  network.sendState(x, z, ry, moving, sitting, local.seatY, ride, held);
+  lastSent = { x, z, ry, moving, sitting, ride, held };
   lastStateSent = now;
 }
 

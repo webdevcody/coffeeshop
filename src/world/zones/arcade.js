@@ -113,14 +113,30 @@ export function buildArcade() {
   group.add(box(0.5, 0.18, 60, matCurb, 6.25, 0.06, 0, false));
 
   // --- Arcade buildings: two rows flanking the avenue -----------------------
-  // Each building footprint sits beyond X = ±6 so the lane stays clear.
-  // Buildings sit at z = ±18 on each side; the facade faces the avenue.
+  // Each building is a SUBSTANTIAL full-volume mass (real width AND depth AND
+  // height) that fills its quadrant of the plot — never a thin facade. The
+  // avenue-facing wall is at X = ±7 (the lane X∈[-6,6] + curbs stay clear); the
+  // mass runs deep (14 m) toward the tile edge so it reads solid from the back
+  // too, and an attached ANNEX wing toward the tile edge gives each block a
+  // stepped multi-volume silhouette. Centers/depths are chosen so the four
+  // blocks nearly tile each side of the avenue, leaving only the plaza cross
+  // lane (Z∈[-6,6]) and the wide sidewalks open.
   const buildMats = [matBuildA, matBuildB];
+  // w = depth along the AVENUE wall's tangent is `d` (Z extent); `w` is the X
+  // extent (how far the mass reaches back from the avenue). facadeX = b.x +
+  // facing*(w/2) is the avenue wall. Annex sits on the tile-edge side (away from
+  // the avenue), lower/taller for stepped massing.
   const buildSpots = [
-    { x: -13, z: -18, w: 12, d: 12, facing: 1 },  // faces +X (toward avenue)
-    { x: -13, z: 18, w: 12, d: 12, facing: 1 },
-    { x: 13, z: -18, w: 12, d: 12, facing: -1 },  // faces -X (toward avenue)
-    { x: 13, z: 18, w: 12, d: 12, facing: -1 },
+    // Left row (faces +X toward avenue). Avenue wall at x=-7 => b.x = -7 - w/2.
+    { x: -14, z: -19, w: 14, d: 14, facing: 1,
+      annex: { dx: -9.5, dz: 0, w: 5, d: 10, h: 13 } },   // X[-21,-7] Z[-26,-12]
+    { x: -14, z: 19, w: 14, d: 14, facing: 1,
+      annex: { dx: -9.5, dz: 0, w: 5, d: 10, h: 7 } },     // X[-21,-7] Z[12,26]
+    // Right row (faces -X toward avenue). Avenue wall at x=7 => b.x = 7 + w/2.
+    { x: 14, z: -19, w: 14, d: 14, facing: -1,
+      annex: { dx: 9.5, dz: 0, w: 5, d: 10, h: 7 } },      // X[7,21] Z[-26,-12]
+    { x: 14, z: 19, w: 14, d: 14, facing: -1,
+      annex: { dx: 9.5, dz: 0, w: 5, d: 10, h: 13 } },     // X[7,21] Z[12,26]
   ];
 
   // Reusable matrix/objects for InstancedMesh writes (no per-frame allocation).
@@ -140,8 +156,39 @@ export function buildArcade() {
     const facadeX = b.x + b.facing * (b.w / 2); // inner face X toward avenue
     const fnorm = b.facing; // +1 means face points toward +X
 
-    // Main mass.
+    // Main mass — a full WxDxH volume that reads solid from every side.
     group.add(box(b.w, h, b.d, mat, b.x, h / 2, b.z));
+
+    // --- ANNEX wing: a second stacked volume toward the tile edge -----------
+    // Gives the block a stepped multi-volume silhouette (taller or shorter than
+    // the main mass) and pushes real building DEPTH back across the plot, so the
+    // structure never reads as a single slab. Footprint folded into the
+    // building's collider below.
+    const an = b.annex;
+    const anX = b.x + an.dx;
+    const anZ = b.z + an.dz;
+    group.add(box(an.w, an.h, an.d, buildMats[(i + 1) % 2], anX, an.h / 2, anZ));
+    // A glowing trim band capping the annex parapet.
+    group.add(box(an.w + 0.2, 0.35, an.d + 0.2, trim, anX, an.h - 0.5, anZ, false));
+    // Where the annex is TALLER than the main mass it forms a back tower with a
+    // rooftop neon blade; where shorter it forms a setback terrace. Either way a
+    // small vent box sits on its roof for clutter.
+    group.add(box(1.2, 0.7, 1.2, matRoof, anX, an.h + 0.35, anZ, true));
+    if (an.h > h) {
+      const blade = box(0.25, 2.6, 0.25, trim, anX, an.h + 1.3, anZ - 0.0, false);
+      group.add(blade);
+    }
+    // Lit windows on the annex's tile-edge-facing wall (so the BACK reads solid).
+    {
+      const anEdgeX = anX + b.facing * (-an.w / 2) - b.facing * 0.06; // outward (away from avenue) X wall
+      const anRows = Math.max(1, Math.floor((an.h - 2.5) / 1.6));
+      for (let r = 0; r < anRows; r++) {
+        const wy = 2.0 + r * 1.6;
+        for (let k = -1; k <= 1; k++) {
+          winPlacements.push({ x: anEdgeX, y: wy, z: anZ + k * 2.6, ry: 0, w: 1.0, h: 0.9 });
+        }
+      }
+    }
 
     // --- Cornice / parapet trim band near the top (existing look kept) ------
     group.add(box(b.w + 0.3, 0.5, b.d + 0.3, trim, b.x, h - 1.2, b.z, false));
@@ -192,8 +239,11 @@ export function buildArcade() {
     group.add(arch);
     // Dark doorway recess inside the arch.
     group.add(box(0.1, 3.0, 1.8, matStore, facadeX + fnorm * 0.28, 1.6, b.z, false));
-    // Glowing threshold strip on the ground at the entrance.
-    group.add(box(1.4, 0.05, 1.8, trim, facadeX + fnorm * 1.0, 0.06, b.z, false));
+    // Glowing threshold strip on the ground at the entrance. Kept on the
+    // sidewalk: with the facade at X=±7 and the curb at X=±6.25, a strip
+    // centered at facadeX+fnorm*0.35 (=±6.65) with width 0.8 spans only out to
+    // ±6.25, so it never juts into the drivable lane (X in [-6,6]).
+    group.add(box(0.8, 0.05, 1.8, trim, facadeX + fnorm * 0.35, 0.06, b.z, false));
 
     // --- Movie-style POSTERS flanking the entrance (artPanel) ---------------
     const posterDefs = [
@@ -216,25 +266,31 @@ export function buildArcade() {
     }
 
     // --- Upper-floor window GRID (queued for InstancedMesh) -----------------
-    // Lit windows on the avenue-facing face above the marquee.
+    // Lit windows on the avenue-facing face above the marquee. The instanced
+    // pane is thin along X by default (scale 0.12 in X => its broad faces face
+    // ±X), so the FRONT facade (which faces the X-aligned avenue) wants ry=0 and
+    // a SIDE wall (which faces ±Z) wants ry=PI/2 to lie flat. (These were
+    // previously swapped, making every pane read edge-on.)
     const winBottom = marqY + 1.4;
     const rows = Math.floor((h - 1.6 - winBottom) / 1.6);
     for (let r = 0; r < rows; r++) {
       const wy = winBottom + 0.8 + r * 1.6;
       for (let k = -1; k <= 1; k++) {
         const wz = b.z + k * 3.0;
-        winPlacements.push({ x: facadeX + fnorm * 0.18, y: wy, z: wz, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+        // Front pane sits just proud of the avenue-facing wall, normal along ±X.
+        winPlacements.push({ x: facadeX + fnorm * 0.18, y: wy, z: wz, ry: 0, w: 1.2, h: 0.9 });
       }
     }
-    // A couple of windows on the side faces for believability.
-    // These sit on the -Z wall (which faces along Z). The front windows above
-    // use ry=PI/2 to face the X-aligned avenue; ry=0 here turns the broad pane
-    // face toward ±Z so they read flat against the side wall (not edge-on).
+    // Windows on BOTH Z side walls so the mass reads solid from front, side AND
+    // back angles (not just the avenue facade). Panes on a ±Z wall need ry=PI/2.
     for (let r = 0; r < rows; r++) {
       const wy = winBottom + 0.8 + r * 1.6;
-      const sideZ = b.z - b.d / 2 - 0.05; // -Z face
-      winPlacements.push({ x: b.x - 2.5, y: wy, z: sideZ, ry: 0, w: 1.2, h: 0.9 });
-      winPlacements.push({ x: b.x + 2.5, y: wy, z: sideZ, ry: 0, w: 1.2, h: 0.9 });
+      const zN = b.z - b.d / 2 - 0.05; // -Z wall
+      const zP = b.z + b.d / 2 + 0.05; // +Z wall
+      for (const wx of [b.x - 3.5, b.x, b.x + 3.5]) {
+        winPlacements.push({ x: wx, y: wy, z: zN, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+        winPlacements.push({ x: wx, y: wy, z: zP, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+      }
     }
 
     // --- ROOFTOP neon + clutter --------------------------------------------
@@ -264,10 +320,17 @@ export function buildArcade() {
     antTip.castShadow = false;
     group.add(antTip);
 
-    colliders.push({
-      minX: b.x - b.w / 2, maxX: b.x + b.w / 2,
-      minZ: b.z - b.d / 2, maxZ: b.z + b.d / 2,
-    });
+    // Collider = merged AABB of the main mass AND its annex wing, so the solid
+    // footprint matches the full enlarged building.
+    {
+      const anX2 = b.x + an.dx, anZ2 = b.z + an.dz;
+      colliders.push({
+        minX: Math.min(b.x - b.w / 2, anX2 - an.w / 2),
+        maxX: Math.max(b.x + b.w / 2, anX2 + an.w / 2),
+        minZ: Math.min(b.z - b.d / 2, anZ2 - an.d / 2),
+        maxZ: Math.max(b.z + b.d / 2, anZ2 + an.d / 2),
+      });
+    }
   });
   neonMats.push(matTrim);
 
@@ -307,9 +370,13 @@ export function buildArcade() {
     g.add(band);
     return g;
   }
+  // Sit in the open plaza band (Z∈[-12,12] minus the cross lane Z∈[-6,6]); X=±9.5
+  // is clear of the avenue (X∈[-6,6]) and of the buildings (which start at X=±7
+  // only outside this band), and z=±10 keeps them off the cross lane and out of
+  // the building masses (which begin at Z=±12).
   const boothSpots = [
-    { x: -9.5, z: -11.5, faceX: 1 },
-    { x: 9.5, z: 11.5, faceX: -1 },
+    { x: -9.5, z: -10, faceX: 1 },
+    { x: 9.5, z: 10, faceX: -1 },
   ];
   for (const s of boothSpots) {
     group.add(ticketBooth(s.x, s.z, s.faceX));
@@ -322,7 +389,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade.png",
   });
-  arcadeSign.position.set(-7.05, 7, -18);
+  arcadeSign.position.set(-6.94, 7, -19);
   arcadeSign.rotation.y = Math.PI / 2; // face +X (toward avenue)
   arcadeSign.castShadow = false;
   group.add(arcadeSign);
@@ -333,7 +400,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-play.png",
   });
-  playSign.position.set(7.05, 7, 18);
+  playSign.position.set(6.94, 7, 19);
   playSign.rotation.y = -Math.PI / 2; // face -X (toward avenue)
   playSign.castShadow = false;
   group.add(playSign);
@@ -344,7 +411,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ffd23f", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade2.png",
   });
-  arcade2.position.set(7.05, 7, -18);
+  arcade2.position.set(6.94, 7, -19);
   arcade2.rotation.y = -Math.PI / 2;
   arcade2.castShadow = false;
   group.add(arcade2);
@@ -354,7 +421,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#9fff4f", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-play2.png",
   });
-  play2.position.set(-7.05, 7, 18);
+  play2.position.set(-6.94, 7, 19);
   play2.rotation.y = Math.PI / 2;
   play2.castShadow = false;
   group.add(play2);
@@ -394,13 +461,21 @@ export function buildArcade() {
     g.add(box(0.06, 3.4, 0.06, matTrimCyan, -0.82, 1.8, 0.5, false));
     return g;
   }
-  // Original 4 cabinets + more lined along both curbs (all beyond X=±8).
+  // Cabinets line the OPEN plaza band (Z∈[-12,12]) on both sides of the avenue,
+  // at X=±8.5/±11 — clear of the avenue (X∈[-6,6]), clear of the cross lane
+  // (Z∈[-6,6]), and clear of the enlarged building masses (which occupy Z∈[-26,
+  // -12] and Z∈[12,26]). They face the avenue (rotY toward ∓X). Placed in two
+  // gentle rows so the plaza reads as a busy arcade midway.
+  // Cabinets stay in the open plaza band: 7 <= |z| <= 11 (clears the cross lane
+  // at |z|=6 and the building masses at |z|=12), at X=±8.5/±11.5 (clears the
+  // avenue). Booths sit at (∓9.5, ∓10); every cabinet keeps >=1.8 m from them.
   const cabSpots = [
-    [-8.5, -26, Math.PI], [-8.5, 26, Math.PI],
-    [8.5, -26, 0], [8.5, 26, 0],
-    [-8.5, -10, Math.PI], [-8.5, 10, Math.PI],
-    [8.5, -10, 0], [8.5, 10, 0],
-    [-8.5, -2, Math.PI], [8.5, 2, 0],
+    // inner row at X=±8.5
+    [-8.5, -7, Math.PI], [-8.5, 7, Math.PI], [-8.5, 11, Math.PI],
+    [8.5, -7, 0], [8.5, 7, 0], [8.5, -11, 0],
+    // outer row at X=±11.5, further from the avenue
+    [-11.5, -10, Math.PI], [-11.5, 10, Math.PI],
+    [11.5, 10, 0], [11.5, -10, 0],
   ];
   for (const [x, z, r] of cabSpots) {
     group.add(cabinet(x, z, r));

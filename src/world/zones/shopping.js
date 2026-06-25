@@ -152,16 +152,19 @@ function makeBin() {
   return g;
 }
 
-// One storefront BAY: bulkhead riser, recessed door, big display window,
-// glass apron + flat roof parapet trim. (width is the bay's full span.)
-function makeShopBay(width, wallMat) {
+// One storefront BAY FACADE: the detailed shopfront treatment (bulkhead riser,
+// recessed door, big display windows, glass apron) applied to the FRONT face of
+// the deep building mass. The mass itself supplies the solid wall/depth, so this
+// only adds the shallow details that sit proud of (z>0) the mass front (z=0).
+// When `entrance` is true the ground floor is left OPEN (no shopfront glazing or
+// door) so the glass mall portal can occupy that volume cleanly.
+function makeShopBay(width, wallMat, entrance = false) {
   const g = new THREE.Group();
-  const H = 8;            // two storeys tall now
   const GF = 3.4;         // ground-floor height
-  // main wall slab (full height)
-  const wall = box(width, H, 0.4, wallMat);
-  wall.position.set(0, H / 2, 0);
-  g.add(wall);
+  if (entrance) {
+    // ground floor handled by the glass portal — nothing to add on the facade
+    return g;
+  }
   // dark stall bulkhead band above the shopfront glazing
   const bulk = box(width, 0.5, 0.5, stallMat, false);
   bulk.position.set(0, GF - 0.1, 0.18);
@@ -189,10 +192,6 @@ function makeShopBay(width, wallMat) {
   const dframe = box(doorW + 0.24, 2.7, 0.16, doorMat, false);
   dframe.position.set(0, 1.35, 0.12);
   g.add(dframe);
-  // parapet trim cap across the roofline
-  const trim = box(width + 0.2, 0.6, 0.6, trimMat);
-  trim.position.set(0, H + 0.2, 0.1);
-  g.add(trim);
   return g;
 }
 
@@ -207,6 +206,40 @@ function makeAwning(width, mat) {
   valance.position.set(0, -0.42, 0.85);
   g.add(valance);
   return g;
+}
+
+// A SUBSTANTIAL building mass for one storefront unit: a full solid block with
+// real WIDTH, DEPTH and HEIGHT so the structure reads as a true city building
+// from every angle (front, sides AND back), not a flat facade card.
+//   width  — full street-facing span (X)
+//   depth  — how far the block runs back from its front face toward -Z
+//   H      — building height
+//   wallMat— body material (its branded colour)
+// The block is built so its FRONT face sits at z = 0 in the group's local space
+// (callers position the group at the front line) and the body extends to -depth.
+// Returns { group, roofY, backZ } so callers can sit rooftop clutter on it.
+function makeBuildingMass(width, depth, H, wallMat) {
+  const g = new THREE.Group();
+  // solid core volume — front face at z=0, body running back to z=-depth
+  const body = box(width, H, depth, wallMat);
+  body.position.set(0, H / 2, -depth / 2);
+  g.add(body);
+  // flat roof cap so the top reads as a real roof, slightly oversized for a lip
+  const roof = box(width + 0.3, 0.4, depth + 0.3, roofMat, false);
+  roof.position.set(0, H + 0.2, -depth / 2);
+  roof.receiveShadow = true;
+  g.add(roof);
+  // a parapet rim around the roof edge (front + two sides) so the silhouette
+  // reads like a built-up commercial block, not a plain box.
+  const parF = box(width + 0.3, 0.55, 0.3, corniceMat, false);
+  parF.position.set(0, H + 0.45, 0.0);
+  g.add(parF);
+  for (const sx of [-(width + 0.3) / 2 + 0.15, (width + 0.3) / 2 - 0.15]) {
+    const parS = box(0.3, 0.55, depth + 0.3, corniceMat, false);
+    parS.position.set(sx, H + 0.45, -depth / 2);
+    g.add(parS);
+  }
+  return { group: g, roofY: H + 0.4, backZ: -depth };
 }
 
 export function buildShopping() {
@@ -250,8 +283,10 @@ export function buildShopping() {
   // Each "unit" is a branded block; we further split each block into several
   // identical shop bays so the facade reads as a row of individual shops.
   const Z_FRONT = -21.8;   // front face of the storefront walls
+  // entranceBay (optional): index of the bay replaced by the glass mall portal,
+  // so the portal is the ONLY mass there (no shop bay sharing the same volume).
   const units = [
-    { x: -16, w: 16, wall: wallA, awn: awnRed,   sign: "MALL", bg: "#b8402f", emis: "#ff5a3c", bays: 3 },
+    { x: -16, w: 16, wall: wallA, awn: awnRed,   sign: "MALL", bg: "#b8402f", emis: "#ff5a3c", bays: 3, entranceBay: 1 },
     { x:   1, w: 13, wall: wallB, awn: awnTeal,  sign: "MART", bg: "#1f7a73", emis: "#3fe0d4", bays: 3 },
     { x:  16, w: 14, wall: wallC, awn: awnAmber, sign: "CAFE", bg: "#caa24a", emis: "#ffd070", bays: 3 },
   ];
@@ -276,43 +311,62 @@ export function buildShopping() {
   columns.castShadow = columns.receiveShadow = true;
   let wi = 0, ci = 0;
 
+  const H = 8;                 // building height (two storeys)
+  const DEPTH = 7.0;           // how far each block runs back from the street face
+  // (rear wall lands at Z_FRONT - DEPTH = -28.8, comfortably inside the tile)
+
   for (const u of units) {
     const bayW = u.w / u.bays;
     const left = u.x - u.w / 2;
 
-    // individual shop bays across the unit's span
+    // SUBSTANTIAL solid building mass for the whole unit: full width, real depth
+    // and height so the block reads solid from the front, the sides AND the back.
+    const mass = makeBuildingMass(u.w, DEPTH, H, u.wall);
+    mass.group.position.set(u.x, 0, Z_FRONT);
+    group.add(mass.group);
+
+    // individual shop-bay facades dressed onto the mass front face
     for (let b = 0; b < u.bays; b++) {
       const bx = left + bayW * (b + 0.5);
-      const bay = makeShopBay(bayW - 0.12, u.wall);
-      bay.position.set(bx, 0, Z_FRONT - 0.2);
+      const isEntrance = b === u.entranceBay;
+      const bay = makeShopBay(bayW - 0.12, u.wall, isEntrance);
+      bay.position.set(bx, 0, Z_FRONT);
       group.add(bay);
 
-      // striped awning over each bay's shopfront
-      const awn = makeAwning(bayW - 0.5, u.awn);
-      awn.position.set(bx, 3.2, Z_FRONT + 0.85);
-      group.add(awn);
+      // The entrance bay gets no awning / fascia sign — the glass mall portal and
+      // the cornice-mounted MALL sign already mark it, and stacking an awning here
+      // would clip the portal frame.
+      if (!isEntrance) {
+        // striped awning over each bay's shopfront
+        const awn = makeAwning(bayW - 0.5, u.awn);
+        awn.position.set(bx, 3.2, Z_FRONT + 0.85);
+        group.add(awn);
 
-      // small hanging artPanel "sign" projecting from each bay (perpendicular)
-      const hangSign = artPanel(1.0, 0.7, "sign", {
-        text: ["SHOP", "SALE", "OPEN", "DELI", "GIFTS", "WEAR", "FOOD", "BOOKS", "TOYS"][(ci + b) % 9],
-        bg: u.bg, fg: "#ffffff", emissiveIntensity: 0.4,
-        file: `shop-hang-${u.sign.toLowerCase()}-${b}.png`,
-      });
-      hangSign.rotation.y = Math.PI / 2;            // face down the sidewalk (±X)
-      hangSign.position.set(bx + bayW / 2 - 0.1, 2.7, Z_FRONT + 0.95);
-      hangSign.castShadow = false;
-      group.add(hangSign);
-      signPanels.push(hangSign);
+        // small fascia "sign" for each bay, hung flat under the awning and facing
+        // the street (+Z) so the text reads correctly to anyone on the avenue.
+        // (Previously rotated 90° to face ±X, which showed the mirrored BACK of
+        //  the panel to players approaching from the street/west — the bug.)
+        const hangSign = artPanel(Math.min(bayW - 1.0, 1.6), 0.62, "sign", {
+          text: ["SHOP", "SALE", "OPEN", "DELI", "GIFTS", "WEAR", "FOOD", "BOOKS", "TOYS"][(ci + b) % 9],
+          bg: u.bg, fg: "#ffffff", emissiveIntensity: 0.4,
+          file: `shop-hang-${u.sign.toLowerCase()}-${b}.png`,
+        });
+        hangSign.position.set(bx, 2.95, Z_FRONT + 0.42);   // centred, faces +Z (street)
+        hangSign.castShadow = false;
+        group.add(hangSign);
+        signPanels.push(hangSign);
+      }
 
-      // upper-floor windows for this bay (instanced panes + frames)
+      // upper-floor windows for this bay (instanced panes + frames), set into the
+      // mass FRONT face (z just proud of Z_FRONT so they read, not embedded).
       for (let r = 0; r < UP_ROWS; r++) {
         const wy = 6.0;
         for (const wx of [bx - bayW * 0.22, bx + bayW * 0.22]) {
-          dummy.position.set(wx, wy, Z_FRONT - 0.12);
+          dummy.position.set(wx, wy, Z_FRONT + 0.07);
           dummy.rotation.set(0, 0, 0);
           dummy.updateMatrix();
           winPanes.setMatrixAt(wi, dummy.matrix);
-          dummy.position.z = Z_FRONT + 0.0;
+          dummy.position.z = Z_FRONT + 0.04;
           dummy.updateMatrix();
           winFrames.setMatrixAt(wi, dummy.matrix);
           wi++;
@@ -325,8 +379,10 @@ export function buildShopping() {
     cornice.position.set(u.x, 4.4, Z_FRONT + 0.25);
     group.add(cornice);
 
-    // solid footprint collider for the whole unit (tight to wall + window depth)
-    addCollider(colliders, u.x, Z_FRONT - 0.2, u.w, 1.2);
+    // solid footprint collider for the whole DEEP unit block (full mass volume:
+    // front face at Z_FRONT back to BACK_Z), so the building blocks like a real
+    // building, not just a thin facade line.
+    addCollider(colliders, u.x, Z_FRONT - DEPTH / 2, u.w, DEPTH);
 
     // big shop sign (artPanel "sign") mounted on the cornice, facing +Z
     const signW = Math.min(u.w - 2.0, 9);
@@ -360,43 +416,56 @@ export function buildShopping() {
   columns.instanceMatrix.needsUpdate = true;
   group.add(winPanes, winFrames, columns);
 
-  // --- Rooftop clutter on the storefront block (visual only, atop the parapet) -
+  // --- Rooftop clutter sitting on the REAL roofs of the deep blocks (roof top is
+  // at y≈8.4, decking spans z∈[-22,-28.8]). Spread across the depth so the roofs
+  // read as occupied surfaces, not a thin parapet line.
   const rooftop = new THREE.Group();
-  // a few AC condenser units + vent pipes scattered on the roof (y≈8.4)
-  for (const [rx, rz] of [[-18, -22.4], [-12, -23.1], [2, -22.6], [18, -23.0]]) {
+  // a few AC condenser units + vent pipes scattered back across the roof deck
+  for (const [rx, rz] of [[-18, -23.5], [-12, -26.5], [2, -24.0], [18, -26.0]]) {
     const ac = new THREE.Mesh(acGeo, metalMat);
-    ac.position.set(rx, 8.55, rz);
+    ac.position.set(rx, 8.75, rz);
     ac.castShadow = true;
     rooftop.add(ac);
   }
-  for (const [px, pz] of [[-8, -22.8], [6, -23.2], [20, -22.7]]) {
+  for (const [px, pz] of [[-8, -25.5], [6, -27.0], [20, -23.5]]) {
     const pipe = new THREE.Mesh(pipeGeo, metalMat);
-    pipe.position.set(px, 9.0, pz);
+    pipe.position.set(px, 9.2, pz);
     pipe.castShadow = true;
     rooftop.add(pipe);
   }
   // a small water tank on a low cradle
   const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.4, 12), metalMat);
-  tank.position.set(-20, 9.1, -23.2);
+  tank.position.set(-20, 9.1, -26.0);
   tank.castShadow = true;
   rooftop.add(tank);
   // a thin antenna mast
   const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 3.0, 6), poleMat);
-  antenna.position.set(10, 9.9, -23.4);
+  antenna.position.set(10, 9.9, -27.0);
   antenna.castShadow = true;
   rooftop.add(antenna);
   rooftop.traverse((o) => { if (o.isMesh) o.receiveShadow = true; });
   group.add(rooftop);
 
-  // --- Mall entrance: a raised glass portal + rotating pylon sign ------------
-  // Portal sits at the MALL unit; pylon stands on the sidewalk in front of it.
-  const portal = box(5, 4, 0.3, glass);
-  portal.position.set(-16, 2, Z_FRONT + 0.05);
+  // --- Mall entrance: a glass portal filling the MALL's open entrance bay ----
+  // The MALL centre bay (entranceBay:1, x=-16) is built wall-only, so this glass
+  // storefront is the SOLE mass in that volume (no shop bay clipping through it).
+  const portal = box(4.6, 3.6, 0.25, glass);
+  portal.position.set(-16, 1.8, Z_FRONT + 0.18);
   portal.castShadow = false;
   group.add(portal);
-  const portalFrame = box(5.6, 0.5, 0.5, trimMat);
-  portalFrame.position.set(-16, 4.1, Z_FRONT + 0.05);
-  group.add(portalFrame);
+  // a clean entrance lintel + side jambs framing the glazed portal
+  const portalLintel = box(5.0, 0.5, 0.5, trimMat);
+  portalLintel.position.set(-16, 3.85, Z_FRONT + 0.18);
+  group.add(portalLintel);
+  for (const jx of [-16 - 2.35, -16 + 2.35]) {
+    const jamb = box(0.3, 3.9, 0.5, trimMat);
+    jamb.position.set(jx, 1.95, Z_FRONT + 0.18);
+    group.add(jamb);
+  }
+  // a low entry step so the portal reads as a real doorway, not floating glass
+  const portalStep = box(4.8, 0.18, 1.0, corniceMat);
+  portalStep.position.set(-16, 0.09, Z_FRONT + 0.55);
+  group.add(portalStep);
 
   // Rotating pylon sign (totem) — billboard text on a pole, spins slowly.
   const pylonPole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 6, 10), poleMat);

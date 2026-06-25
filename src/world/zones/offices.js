@@ -148,36 +148,37 @@ export function buildOffices() {
   const rails = makeBank(railGeo, railMat);       // rooftop parapet rail tubes
   const vents = makeBank(cylGeo, ventMat);        // rooftop vent caps
 
-  // Curtain-wall mullion grid on one face. Lays a slim outer frame plus a grid of
-  // vertical + horizontal bars over the textured glass panel — all instanced.
-  // `face`: "+z" | "-z" | "+x" | "-x". cols/rows chosen so cells read ~floor-sized.
-  function curtainWall(cx, cz, w, h, baseY, face, cols, rows) {
+  // Curtain-wall mullion grid on one face. Lays a grid of vertical + horizontal
+  // bars over the glass panel — all instanced. `face`: "+z" | "-z" | "+x" | "-x".
+  // `w` is the in-plane span of THIS face; `halfDepth` is the tower's half-extent
+  // along the face NORMAL (so bars sit on the real wall plane, not buried at center).
+  // cols/rows chosen so cells read ~floor-sized.
+  function curtainWall(cx, cz, w, h, baseY, face, cols, rows, halfDepth) {
     const bar = 0.12;            // bar cross-section
-    const depthFront = 0.08;     // how far bars sit proud of the glass
+    const proud = 0.06;          // how far bars sit proud of the glass surface
     const along = (face === "+z" || face === "-z") ? "x" : "z";
     const faceSign = (face === "+z" || face === "+x") ? 1 : -1;
     const yMid = baseY + h / 2;
-    // surface offset from tower center along its normal axis
-    const half = (face === "+z" || face === "-z") ? 0 : 0; // placeholder
+    // Offset from tower center to the wall plane along the face normal.
+    const off = faceSign * (halfDepth + proud);
     // vertical bars (cols+1 dividers)
     for (let i = 0; i <= cols; i++) {
       const u = -w / 2 + (w * i) / cols;
       if (along === "x") {
-        mullions.add(cx + u, yMid, cz + faceSign * (depthFront), bar, h, bar);
+        mullions.add(cx + u, yMid, cz + off, bar, h, bar);
       } else {
-        mullions.add(cx + faceSign * (depthFront), yMid, cz + u, bar, h, bar);
+        mullions.add(cx + off, yMid, cz + u, bar, h, bar);
       }
     }
     // horizontal bars (rows+1 floor lines)
     for (let j = 0; j <= rows; j++) {
       const v = baseY + (h * j) / rows;
       if (along === "x") {
-        mullions.add(cx, v, cz + faceSign * (depthFront), w, bar, bar);
+        mullions.add(cx, v, cz + off, w, bar, bar);
       } else {
-        mullions.add(cx + faceSign * (depthFront), v, cz, bar, bar, w);
+        mullions.add(cx + off, v, cz, bar, bar, w);
       }
     }
-    void half;
   }
 
   // A ring of parapet rail posts + a top tube around a rooftop rectangle.
@@ -236,35 +237,61 @@ export function buildOffices() {
   // makeTower draws the slab body + a window-grid of thin mullion ribs + roof cap.
   // `front` is the facing toward the central plaza, where the entrance canopy +
   // lobby glazing go. SW/SE blocks face +Z (toward center); NW block faces -Z.
+  // A full glass office block: a SOLID podium base (2 storeys, slightly wider than
+  // the tower so the building reads grounded with real depth on every side), the
+  // glass tower mass above it, a projecting entrance volume (a real box with depth
+  // behind the facade — NOT a standing card) on the plaza-facing front, and a
+  // detailed roof. Footprints are sized to fill the quadrant plot.
   function makeTower(cx, cz, w, d, h, glassMat, front = "+z") {
-    const yC = h / 2;
-    box(w, h, d, glassMat, cx, yC, cz); // glass body
-    // Window-grid art panel on the front face reads as floors/bays through glass…
-    const grid = makeGridPanel(w * 0.94, h * 0.92);
     const fSign = front === "+z" ? 1 : -1;
+
+    // ── PODIUM: a solid masonry base, wider/deeper than the tower (full volume) ─
+    const podH = 5.0;
+    const podW = w + 2.4, podD = d + 2.4;
+    box(podW, podH, podD, concrete, cx, podH / 2, cz, true); // solid podium block
+    // podium ground-floor glazing wraps all four sides (real recessed band, not a card)
+    box(podW * 0.9, 3.2, 0.18, lobbyGlass, cx, 1.8, cz + (podD / 2 + 0.02), false);
+    box(podW * 0.9, 3.2, 0.18, lobbyGlass, cx, 1.8, cz - (podD / 2 + 0.02), false);
+    box(0.18, 3.2, podD * 0.9, lobbyGlass, cx + (podW / 2 + 0.02), 1.8, cz, false);
+    box(0.18, 3.2, podD * 0.9, lobbyGlass, cx - (podW / 2 + 0.02), 1.8, cz, false);
+    // podium cap / cornice ledge
+    box(podW + 0.4, 0.45, podD + 0.4, metalDark, cx, podH + 0.1, cz, true);
+
+    // ── TOWER: the main glass mass, set on the podium ─────────────────────────
+    const towerH = h - podH;          // glass rises above the podium
+    const baseY = podH;               // tower starts at podium top
+    const yC = baseY + towerH / 2;
+    box(w, towerH, d, glassMat, cx, yC, cz); // glass body (substantial W×D×H volume)
+    // Window-grid art panel on the front face reads as floors/bays through glass…
+    const grid = makeGridPanel(w * 0.94, towerH * 0.92);
     grid.position.set(cx, yC, cz + fSign * (d / 2 + 0.05));
     if (fSign < 0) grid.rotation.y = Math.PI;
     group.add(grid);
     // …overlaid with a real instanced curtain-wall mullion grid on ALL FOUR faces.
     const cols = Math.max(3, Math.round(w / 3));
     const colsD = Math.max(3, Math.round(d / 3));
-    const rows = Math.max(4, Math.round(h / 3.2));
-    curtainWall(cx, cz, w, h, 0.2, "+z", cols, rows);
-    curtainWall(cx, cz, w, h, 0.2, "-z", cols, rows);
-    curtainWall(cx, cz, d, h, 0.2, "+x", colsD, rows);
-    curtainWall(cx, cz, d, h, 0.2, "-x", colsD, rows);
+    const rows = Math.max(4, Math.round(towerH / 3.2));
+    // +z/-z faces span W, sit on the Z wall plane (halfDepth = d/2).
+    curtainWall(cx, cz, w, towerH, baseY, "+z", cols, rows, d / 2);
+    curtainWall(cx, cz, w, towerH, baseY, "-z", cols, rows, d / 2);
+    // +x/-x faces span D, sit on the X wall plane (halfDepth = w/2).
+    curtainWall(cx, cz, d, towerH, baseY, "+x", colsD, rows, w / 2);
+    curtainWall(cx, cz, d, towerH, baseY, "-x", colsD, rows, w / 2);
 
-    // ── Entrance canopy + lobby glazing on the front face (ground level) ──────
-    const cz0 = cz + fSign * (d / 2);
-    const canopyW = Math.min(w * 0.55, 6);
-    // flat canopy slab projecting ~1.8m out, on two slim drop posts
-    box(canopyW, 0.18, 1.8, canopyMat, cx, 3.1, cz0 + fSign * 0.9, true);
-    box(0.14, 3.0, 0.14, metalDark, cx - canopyW / 2 + 0.2, 1.5, cz0 + fSign * 1.7, true);
-    box(0.14, 3.0, 0.14, metalDark, cx + canopyW / 2 - 0.2, 1.5, cz0 + fSign * 1.7, true);
-    // bright lobby glazing band at the base of the front face (double-height)
-    box(w * 0.92, 4.4, 0.12, lobbyGlass, cx, 2.3, cz0 + fSign * 0.07, false);
-    // entrance doors (dark recessed slab) centered under the canopy
-    box(canopyW * 0.8, 2.6, 0.1, metalDark, cx, 1.3, cz0 + fSign * 0.12, false);
+    // ── ENTRANCE PAVILION: a real projecting volume (depth behind the facade) ──
+    // A solid 1-storey box stepping out from the podium toward the avenue, so the
+    // street front is a 3D building, not a flat card. Sits flush on the podium face.
+    const entW = Math.min(w * 0.6, 7);
+    const entD = 3.2;                 // genuine depth of the entrance wing
+    const entZ = cz + fSign * (podD / 2 + entD / 2 - 0.05);
+    box(entW, 3.6, entD, concrete, cx, 1.8, entZ, true);          // entrance mass
+    box(entW * 0.86, 2.9, 0.16, lobbyGlass, cx, 1.65, entZ + fSign * (entD / 2 + 0.02), false); // glazed front
+    box(entW * 0.5, 2.6, 0.12, metalDark, cx, 1.4, entZ + fSign * (entD / 2 + 0.04), false);    // doors
+    // flat canopy slab cantilevering over the entrance front on two slim posts
+    const canFz = entZ + fSign * (entD / 2);
+    box(entW + 1.0, 0.2, 1.6, canopyMat, cx, 3.7, canFz + fSign * 0.7, true);
+    box(0.16, 3.5, 0.16, metalDark, cx - entW / 2 - 0.1, 1.75, canFz + fSign * 1.35, true);
+    box(0.16, 3.5, 0.16, metalDark, cx + entW / 2 + 0.1, 1.75, canFz + fSign * 1.35, true);
 
     // ── Roof: parapet cornice band, HVAC plant, vent rows, rail ───────────────
     box(w * 1.04, 0.55, d * 1.04, metalDark, cx, h + 0.28, cz, true); // cornice/parapet band
@@ -288,26 +315,56 @@ export function buildOffices() {
     }
     // PARAPET RAIL ring around the roof perimeter (instanced posts + tubes)
     parapetRail(cx, cz, w * 1.02, d * 1.02, roofY, 0.95);
-    collide(cx, cz, w, d);
+    // Collider matches the WIDEST footprint (the podium) and extends to cover the
+    // projecting entrance wing on the front, so the whole mass is solid to players.
+    const colMinZ = fSign > 0 ? cz - podD / 2 : cz - podD / 2 - entD;
+    const colMaxZ = fSign > 0 ? cz + podD / 2 + entD : cz + podD / 2;
+    colliders.push({ minX: cx - podW / 2, maxX: cx + podW / 2, minZ: colMinZ, maxZ: colMaxZ });
   }
 
-  makeTower(-18, -18, 13, 11, 19, glassA, "+z"); // SW block (tallest)
-  makeTower(18, -18, 12, 12, 16, glassB, "+z");  // SE block
-  makeTower(-18, 18, 11, 13, 17.5, glassC, "-z"); // NW block (faces plaza)
-  // A low pavilion / lobby block in the NE quadrant (4th, lower mass)
-  box(13, 6, 11, glassB, 18, 3, 18, true);
-  box(13.4, 0.4, 11.4, metalDark, 18, 6.2, 18, true);
-  // pavilion gets its own curtain wall + entrance canopy facing the plaza (-z/-x)
-  curtainWall(18, 18, 13, 6, 0.2, "-z", 5, 2);
-  curtainWall(18, 18, 13, 6, 0.2, "+z", 5, 2);
-  curtainWall(18, 18, 11, 6, 0.2, "-x", 4, 2);
-  curtainWall(18, 18, 11, 6, 0.2, "+x", 4, 2);
-  box(5, 0.16, 1.6, canopyMat, 18, 3.0, 18 - 5.5 - 0.6, true); // canopy toward plaza (-z)
-  box(11.6, 3.6, 0.12, lobbyGlass, 18, 1.9, 18 - 5.5 + 0.07, false); // lobby glazing
-  parapetRail(18, 18, 13.2, 11.2, 6.4, 0.7); // pavilion parapet rail
-  vents.add(18 - 3, 6.7, 18 + 4, 0.4, 0.5, 0.4); // rooftop vent caps
-  vents.add(18 + 3, 6.7, 18 + 4, 0.4, 0.5, 0.4);
-  collide(18, 18, 13, 11);
+  // Footprints enlarged to fill each quadrant plot. With the wider podium + the
+  // projecting entrance wing, the inner (plaza-facing) edges still leave a clear
+  // central cross: N-S lane ≈ 20 m, E-W lane ≈ 15 m (both well over the 6 m min).
+  makeTower(-18, -18, 14, 12, 20, glassA, "+z"); // SW block (tallest)
+  makeTower(18, -18, 13, 13, 17, glassB, "+z");  // SE block
+  makeTower(-18, 18, 12, 14, 18.5, glassC, "-z"); // NW block (faces plaza)
+  // ── NE quadrant: a lower-rise office pavilion — a FULL 3-storey volume (not a
+  // facade). Solid concrete base + glass upper, projecting glazed entrance toward
+  // the plaza (-z). Sized to fill the plot like the towers. ────────────────────
+  {
+    const px = 18, pz = 18;          // plot center
+    const pvW = 14, pvD = 13, pvH = 9;  // substantial footprint + height
+    const baseH = 3.2;               // solid masonry ground floor
+    box(pvW + 1.2, baseH, pvD + 1.2, concrete, px, baseH / 2, pz, true);     // wide solid base
+    box(pvW, pvH - baseH, pvD, glassB, px, baseH + (pvH - baseH) / 2, pz, true); // glass upper mass
+    box(pvW + 1.0, 0.5, pvD + 1.0, metalDark, px, pvH + 0.1, pz, true);      // roof cornice
+    // curtain wall on the glass upper, on all four real wall planes
+    curtainWall(px, pz, pvW, pvH - baseH, baseH, "-z", 5, 2, pvD / 2);
+    curtainWall(px, pz, pvW, pvH - baseH, baseH, "+z", 5, 2, pvD / 2);
+    curtainWall(px, pz, pvD, pvH - baseH, baseH, "-x", 4, 2, pvW / 2);
+    curtainWall(px, pz, pvD, pvH - baseH, baseH, "+x", 4, 2, pvW / 2);
+    // ground-floor glazing wrap on the solid base (recessed band, real depth)
+    box(pvW * 0.9, 2.4, 0.16, lobbyGlass, px, 1.5, pz - (pvD / 2 + 0.02), false); // plaza side (-z)
+    box(0.16, 2.4, pvD * 0.9, lobbyGlass, px - (pvW / 2 + 0.02), 1.5, pz, false); // plaza side (-x)
+    // projecting glazed entrance volume toward the plaza (-z) — a real box with depth
+    const entD = 3.0, entZ = pz - (pvD / 2 + entD / 2 - 0.05);
+    box(7, 3.2, entD, concrete, px, 1.6, entZ, true);
+    box(6, 2.6, 0.16, lobbyGlass, px, 1.45, entZ - (entD / 2 + 0.02), false);
+    box(3.4, 2.4, 0.12, metalDark, px, 1.3, entZ - (entD / 2 + 0.04), false); // doors
+    box(8, 0.18, 1.5, canopyMat, px, 3.3, entZ - (entD / 2 + 0.6), true);     // entrance canopy
+    box(0.16, 3.1, 0.16, metalDark, px - 3.6, 1.6, entZ - (entD / 2 + 1.2), true);
+    box(0.16, 3.1, 0.16, metalDark, px + 3.6, 1.6, entZ - (entD / 2 + 1.2), true);
+    // roof detail
+    parapetRail(px, pz, pvW + 1.0, pvD + 1.0, pvH + 0.35, 0.85);
+    box(pvW * 0.3, 1.3, pvD * 0.34, hvacMat, px + 2, pvH + 1.0, pz + 2.5, true); // HVAC plant
+    vents.add(px - 3, pvH + 0.55, pz + 4, 0.4, 0.5, 0.4);
+    vents.add(px + 3, pvH + 0.55, pz + 4, 0.4, 0.5, 0.4);
+    // collider covers the wide base footprint + the projecting entrance toward -z
+    colliders.push({
+      minX: px - (pvW + 1.2) / 2, maxX: px + (pvW + 1.2) / 2,
+      minZ: pz - (pvD + 1.2) / 2 - entD, maxZ: pz + (pvD + 1.2) / 2,
+    });
+  }
 
   // ── Reflecting pool (plaza centerpiece — flat, walk-around, not a collider) ─
   // Placed slightly off the exact center so cars can still skim the cross; it sits
@@ -392,7 +449,11 @@ export function buildOffices() {
   box(11.5, 0.4, 0.4, metalDark, 0, 5.4, -28.2, true);
   collide(0, -28.2, 11.5, 0.6);
 
-  // A second small directional sign near the entrance cross.
+  // A second small directional sign greeting cars that arrive from the SOUTH (-Z)
+  // up the avenue. It sits on the lane SHOULDER (out of the open E-W/N-S corridors)
+  // and its readable face is rotated to point toward the approach (-Z), so the text
+  // is NOT mirrored to an arriving player. Mounted on a short post with a base.
+  const waySignX = -9, waySignZ = -7;
   const waySign = artPanel(2.6, 1.4, "sign", {
     text: "OFFICE PARK",
     bg: "#2f6f63",
@@ -400,14 +461,21 @@ export function buildOffices() {
     emissiveIntensity: 0.4,
     file: "sign-officepark.png",
   });
-  waySign.position.set(-12, 2.2, -3);
+  waySign.position.set(waySignX, 2.2, waySignZ);
+  waySign.rotation.y = Math.PI; // readable face points -Z, toward the southern approach
   waySign.castShadow = true;
   group.add(waySign);
+  // sign post + base so it reads as a planted wayfinding sign, not a floating panel
+  box(0.16, 2.2, 0.16, metalDark, waySignX, 1.1, waySignZ, true);
+  box(0.6, 0.3, 0.6, concrete, waySignX, 0.15, waySignZ, true);
+  collide(waySignX, waySignZ, 0.6, 0.6); // small post footprint
 
   // ── Landscaping: trees on the grass pads + low planter hedges ─────────────
-  // A few conifer-ish trees (trunk + 2 foliage cones) reused geometry.
+  // A few conifer-ish trees (trunk + 2 foliage cones) reused geometry. Placed in
+  // the OUTER plot corners / tile margins, clear of the enlarged building masses.
   const treeSpots = [
-    [-24, -10], [24, -10], [-24, 24], [24, 24], [-10, 26],
+    [-27, -27], [27, -27], [-27, 27], [27, 27], // far quadrant corners
+    [-27, -2], [27, -2],                         // E/W tile-edge margins
   ];
   for (const [tx, tz] of treeSpots) {
     const trunk = new THREE.Mesh(poleGeo, trunkMat);
@@ -424,8 +492,11 @@ export function buildOffices() {
     collide(tx, tz, 0.6, 0.6);
   }
 
-  // Low planter bench under the billboard approach (decorative, low → no collide)
-  box(8, 0.45, 1.0, planterMat, 0, 0.22, -22, true);
+  // Low benches flanking the billboard approach (decorative, low → no collide).
+  // Pulled onto the SHOULDERS (|x| ≥ 7) so the central N-S drive lane (|x| ≤ 5)
+  // stays clear instead of a single slab sitting across the road.
+  box(2.8, 0.45, 1.0, planterMat, -6.85, 0.22, -22, true);
+  box(2.8, 0.45, 1.0, planterMat, 6.85, 0.22, -22, true);
 
   // ── Planter beds: raised stone troughs with soil + a clipped hedge cap ──────
   // Placed along the plaza margins (NOT in the open cross lanes). Low → no collide.

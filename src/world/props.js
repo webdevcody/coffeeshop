@@ -62,8 +62,10 @@ export function makeCounter(length = 6) {
   const g = new THREE.Group();
   const body = mesh(new THREE.BoxGeometry(length, 1.05, 0.85), darkWood);
   body.position.y = 0.525;
+  // Overlap the worktop slightly into the body (bottom at 1.02 vs body top
+  // 1.05) so the seam is buried rather than two coincident faces z-fighting.
   const top = mesh(new THREE.BoxGeometry(length + 0.18, 0.08, 1.02), wood);
-  top.position.y = 1.09;
+  top.position.y = 1.06;
   // front panel accent
   const panel = mesh(new THREE.BoxGeometry(length - 0.2, 0.7, 0.04), wood);
   panel.position.set(0, 0.5, 0.43);
@@ -76,8 +78,11 @@ export function makeStool() {
   const g = new THREE.Group();
   const seat = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 18), wood);
   seat.position.y = 0.78;
+  // Lift the post so its base is buried inside the foot (bottom at ~0.013)
+  // instead of sharing the floor plane with the foot's underside; top still
+  // penetrates the seat disc.
   const post = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.78, 12), chrome);
-  post.position.y = 0.39;
+  post.position.y = 0.4;
   const foot = mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.04, 18), chrome);
   foot.position.y = 0.02;
   g.add(seat, post, foot);
@@ -176,12 +181,16 @@ export function makeRug(w = 5, d = 4, color = "#9e3b3b") {
   const rug = mesh(new THREE.BoxGeometry(w, 0.02, d), new THREE.MeshStandardMaterial({ color, roughness: 1 }), false);
   rug.position.y = 0.011;
   rug.receiveShadow = true;
+  // Inset field as a thin slab whose underside is buried just inside the rug
+  // (bottom ~0.018, below the rug top at 0.021) so neither face is coincident
+  // with the floor or the rug surface — its top alone reads as the lighter band.
   const border = mesh(
-    new THREE.BoxGeometry(w - 0.5, 0.022, d - 0.5),
+    new THREE.BoxGeometry(w - 0.5, 0.008, d - 0.5),
     new THREE.MeshStandardMaterial({ color: "#e9dcc3", roughness: 1 }),
     false
   );
-  border.position.y = 0.012;
+  border.position.y = 0.022;
+  border.receiveShadow = true;
   g.add(rug, border);
   return g;
 }

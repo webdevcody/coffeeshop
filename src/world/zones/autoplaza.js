@@ -308,20 +308,28 @@ export function buildAutoPlaza() {
   addCollider(colliders, SHOW.x, SHOW.z, SHOW.w + 0.4, SHOW.d + 0.4);
 
   // === SERVICE BAY with a ribbed ROLLER DOOR (east of the showroom) =========
-  // Sits against the showroom's +X side; faces -Z like the showroom.
+  // Abuts the showroom's east (+X) wall and shares it — the bay has NO west wall
+  // of its own, so the two masses meet flush instead of interpenetrating. Its
+  // left (west) face lines up just outside the showroom's east parapet; faces -Z
+  // like the showroom. The bay roof sits lower than the showroom roof so the two
+  // read as one taller hall + one attached lower service hall.
   const BAY = { w: 5.2, d: 9, h: 4.4 };
-  const bayX = SHOW.x + SHOW.w / 2 + BAY.w / 2 + 0.1; // ≈ 24.25
-  const bayZ = SHOW.z + (SHOW.d - BAY.d) / 2;         // align back walls
+  // Showroom solid mass reaches x = SHOW.x + SHOW.w/2 + 0.175 (side wall + east
+  // parapet). Seat the bay's left face just clear of that so nothing overlaps.
+  const bayLeft = SHOW.x + SHOW.w / 2 + 0.2; // ≈ 24.2 (world)
+  const bayX = bayLeft + BAY.w / 2;          // ≈ 26.8
+  const bayZ = SHOW.z + (SHOW.d - BAY.d) / 2; // align back walls
   const bay = new THREE.Group();
   const bBack = box(BAY.w, BAY.h, 0.3, matWall2);
   bBack.position.set(0, BAY.h / 2, BAY.d / 2);
   const bRight = box(0.3, BAY.h, BAY.d, matWall2);
   bRight.position.set(BAY.w / 2, BAY.h / 2, 0);
-  const bLeft = box(0.3, BAY.h, BAY.d, matWall2);
-  bLeft.position.set(-BAY.w / 2, BAY.h / 2, 0);
-  bay.add(bBack, bRight, bLeft);
-  const bRoof = box(BAY.w + 0.3, 0.35, BAY.d + 0.2, matRoof);
-  bRoof.position.set(0, BAY.h + 0.17, 0);
+  // West side is closed by the showroom's east wall — no duplicate wall here.
+  bay.add(bBack, bRight);
+  // Roof overhangs the front/right/back only (NOT the west edge), so it never
+  // clips the taller showroom parapet next door.
+  const bRoof = box(BAY.w, 0.35, BAY.d + 0.2, matRoof);
+  bRoof.position.set(0.1, BAY.h + 0.17, 0);
   bay.add(bRoof);
   // Roller-door header lintel.
   const lintel = box(BAY.w - 0.3, 0.5, 0.4, matTrim, false);
@@ -349,7 +357,9 @@ export function buildAutoPlaza() {
   bay.add(svcSign);
   bay.position.set(bayX, 0, bayZ);
   group.add(bay);
-  addCollider(colliders, bayX, bayZ, BAY.w + 0.3, BAY.d + 0.2);
+  // Footprint: from the shared showroom wall (bayLeft) to the bay's east wall.
+  // Butts the showroom collider (which ends at x≈24.2) edge-to-edge, no overlap.
+  addCollider(colliders, bayX, bayZ, BAY.w, BAY.d + 0.2);
 
   // === TALL PYLON SIGN ("AUTO") — front-right, near the entrance ============
   const PYL = { x: 22, z: -18 };
@@ -419,6 +429,74 @@ export function buildAutoPlaza() {
   }
   gas.position.set(GAS.x, 0, GAS.z);
   group.add(gas);
+
+  // === CONVENIENCE STORE (kiosk) — left of the canopy, faces the forecourt ===
+  // A real, full-volume building (not a facade): four solid walls + roof so it
+  // reads solid from the street, the forecourt AND the back. Its glazed
+  // STOREFRONT + "MART" sign face +X toward the pumps / central drive lane; the
+  // back (-X), sides and roof are closed. Footprint X∈[-29.8,-23.8], Z∈[-17.5,-8.5]
+  // (6 m wide × 9 m deep) — its +X front wall sits ~0.8 m clear of the canopy
+  // deck's left edge (x≈-23) so nothing clips the canopy, and the back/roof stay
+  // inside the tile edge (x=-30).
+  const STORE = { x: -26.8, z: -13, w: 6, d: 9, h: 4.2 };
+  const store = new THREE.Group();
+  // Solid shell: back wall (-X face), two side walls (±Z), thick enough to read.
+  const stBack = box(0.3, STORE.h, STORE.d, matWall2);
+  stBack.position.set(-STORE.w / 2, STORE.h / 2, 0);
+  const stSideN = box(STORE.w, STORE.h, 0.3, matWall2);
+  stSideN.position.set(0, STORE.h / 2, STORE.d / 2);
+  const stSideS = box(STORE.w, STORE.h, 0.3, matWall2);
+  stSideS.position.set(0, STORE.h / 2, -STORE.d / 2);
+  store.add(stBack, stSideN, stSideS);
+  // Glazed storefront across the +X front (the readable, detailed face).
+  const stGlass = box(0.16, STORE.h - 1.0, STORE.d - 0.8, matGlass, false);
+  stGlass.position.set(STORE.w / 2, (STORE.h - 1.0) / 2 + 0.3, 0);
+  store.add(stGlass);
+  // Bulkhead band above the glazing + a low sill kicker below it.
+  const stSill = box(0.4, 0.4, STORE.d, matFrame);
+  stSill.position.set(STORE.w / 2, 0.2, 0);
+  const stHead = box(0.4, 0.7, STORE.d, matWall);
+  stHead.position.set(STORE.w / 2, STORE.h - 0.35, 0);
+  store.add(stSill, stHead);
+  // Storefront mullions (instanced vertical posts in the glazing).
+  {
+    const innerD = STORE.d - 0.8;
+    const cols = 5;
+    const items = [];
+    for (let c = 0; c < cols; c++) {
+      const z = -innerD / 2 + (c / (cols - 1)) * innerD;
+      items.push({ pos: [STORE.w / 2 + 0.02, (STORE.h - 1.0) / 2 + 0.3, z], scale: [0.16, STORE.h - 1.0, 0.14] });
+    }
+    instance(mullGeo, matFrame, items, store, false);
+  }
+  // Entrance door pair set into the storefront (dark frames).
+  for (const dz of [-0.75, 0.75]) {
+    const door = box(0.1, 2.6, 1.3, matTrim, false);
+    door.position.set(STORE.w / 2 + 0.06, 1.3, dz);
+    store.add(door);
+  }
+  // Flat roof + parapet cap so the top reads solid, not open.
+  const stRoof = box(STORE.w + 0.3, 0.35, STORE.d + 0.3, matRoof);
+  stRoof.position.set(0, STORE.h + 0.18, 0);
+  store.add(stRoof);
+  const stPar = box(0.25, 0.5, STORE.d + 0.4, matTrim, false);
+  stPar.position.set(STORE.w / 2 + 0.1, STORE.h + 0.5, 0);
+  store.add(stPar);
+  // "MART" fascia sign across the front, facing +X (toward the forecourt/lane).
+  const martSign = artPanel(STORE.d - 1.2, 1.0, "sign", {
+    text: "MART", bg: "#1f5c8a", fg: "#ffffff",
+    emissiveIntensity: 0.45, file: "autoplaza-mart.png",
+  });
+  martSign.position.set(STORE.w / 2 + 0.24, STORE.h + 0.5, 0);
+  martSign.rotation.y = Math.PI / 2; // readable front faces +X
+  store.add(martSign);
+  // A rooftop AC unit so the roofline isn't bare.
+  const stAc = box(1.3, 0.6, 1.0, matSteel, true);
+  stAc.position.set(-1.2, STORE.h + 0.65, 1.5);
+  store.add(stAc);
+  store.position.set(STORE.x, 0, STORE.z);
+  group.add(store);
+  addCollider(colliders, STORE.x, STORE.z, STORE.w + 0.3, STORE.d + 0.3);
 
   // === PARKING LOT: painted stalls + parked cars (back-left) ================
   // Stalls run along the back; cars face -Z toward the open lot. Stripes are

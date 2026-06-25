@@ -65,6 +65,20 @@ const boothRoofMat = new THREE.MeshStandardMaterial({ color: "#f6d24a", roughnes
 const gullMat = new THREE.MeshStandardMaterial({ color: "#f4f4ee", roughness: 0.8, flatShading: true });
 const buoyMat = new THREE.MeshStandardMaterial({ color: "#e0473c", roughness: 0.7 });
 const ropeMat = new THREE.MeshStandardMaterial({ color: "#caa86a", roughness: 1 });
+// Building skins for the promenade pavilions (a ticket-office / pier hall and the
+// arcade). Painted seaside-resort woodwork: cream walls, teal & coral trim, glassy
+// shopfronts and a striped awning. All reused across the two buildings.
+const wallMat = new THREE.MeshStandardMaterial({ color: "#eae3d2", roughness: 0.85 });
+const wallTrimMat = new THREE.MeshStandardMaterial({ color: "#2f7f93", roughness: 0.75 });
+const roofMat = new THREE.MeshStandardMaterial({ color: "#b8453e", roughness: 0.7 });
+const doorMat = new THREE.MeshStandardMaterial({ color: "#3a4f57", roughness: 0.7, metalness: 0.2 });
+const shopWinMat = new THREE.MeshStandardMaterial({
+  color: "#bfe6ef", roughness: 0.25, metalness: 0.2,
+  emissive: "#2b3d44", emissiveIntensity: 0.35,
+});
+const awningMat = new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.75 });
+const awningStripeMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.75 });
+const columnMat = new THREE.MeshStandardMaterial({ color: "#d8cfb8", roughness: 0.85 });
 
 // --- Shared geometries (reused across repeated props) ----------------------
 const pilingGeo = new THREE.CylinderGeometry(0.22, 0.26, 5, 8);
@@ -276,49 +290,158 @@ export function buildPier() {
   group.add(lighthouse);
   addCollider(colliders, lhX, lhZ, 4.0, 4.0);
 
-  // --- Arcade booth on the promenade (off to one side) --------------------
-  const boothX = -16, boothZ = -16;
-  const booth = new THREE.Group();
-  booth.position.set(boothX, 0, boothZ);
-  const boothBody = box(5, 3, 4, boothMat);
-  boothBody.position.y = 1.5;
-  booth.add(boothBody);
-  const boothRoof = new THREE.Mesh(new THREE.ConeGeometry(4, 1.6, 4), boothRoofMat);
-  boothRoof.rotation.y = Math.PI / 4;
-  boothRoof.position.y = 3.8;
-  boothRoof.castShadow = true;
-  booth.add(boothRoof);
-  // Glowing neon sign on the booth front (faces +Z, toward the shore lane).
-  const boothSign = artPanel(4.2, 1.6, "neon", {
+  // --- Seaside-resort buildings on the promenade --------------------------
+  // PRIORITY: these are FULL 3D VOLUMES (real width AND depth AND height), not
+  // flat facades or thin slabs. Each sits BEHIND the clear promenade driving lane
+  // (Z in [-12,-2]) with its detailed FRONT facing +Z toward that lane/sea, so
+  // artPanel signs (which face +Z by default) need NO rotation — no mirrored text.
+  // Each building is a solid hall (wall box + overhanging roof) whose FRONT wall
+  // sits at +Z = depth/2. The shared shopfront/awning helpers below pin glazing,
+  // an awning and the sign just PROUD of that wall (≤0.6 m), so the ONE footprint
+  // collider added per building (full width×depth) stays exact.
+  function makeShopWindows(w, frontZ) {
+    // A run of glowing shopfront windows across the front wall, framed by a
+    // continuous teal sill/lintel so the storefront reads as glazed, not blank.
+    const g = new THREE.Group();
+    const panes = Math.max(2, Math.round(w / 2.2));
+    const paneW = (w - 0.8) / panes;
+    for (let i = 0; i < panes; i++) {
+      const pane = box(paneW - 0.18, 1.7, 0.12, shopWinMat, false);
+      pane.position.set(-w / 2 + 0.4 + (i + 0.5) * paneW, 1.9, frontZ + 0.07);
+      g.add(pane);
+    }
+    const sill = box(w - 0.4, 0.18, 0.18, wallTrimMat, false);
+    sill.position.set(0, 0.95, frontZ + 0.09);
+    g.add(sill);
+    const lintel = box(w - 0.4, 0.2, 0.2, wallTrimMat, false);
+    lintel.position.set(0, 2.85, frontZ + 0.1);
+    g.add(lintel);
+    return g;
+  }
+  // A striped awning shading the shopfront: alternating coral/cream slats on a
+  // gentle forward tilt, with two slim support posts to the deck.
+  function makeAwning(w, frontZ, y) {
+    const g = new THREE.Group();
+    const depth = 1.8;
+    const slats = Math.max(3, Math.round(w / 1.1));
+    const slatW = w / slats;
+    for (let i = 0; i < slats; i++) {
+      const slat = box(slatW + 0.02, 0.08, depth, i % 2 ? awningStripeMat : awningMat, false);
+      slat.position.set(-w / 2 + (i + 0.5) * slatW, y, frontZ + depth / 2 - 0.1);
+      g.add(slat);
+    }
+    g.rotation.x = -0.18; // tip the front edge down toward the street
+    // Support posts run from the awning's outer corners down to the deck.
+    for (const sx of [-w / 2 + 0.4, w / 2 - 0.4]) {
+      const post = box(0.12, y, 0.12, columnMat, false);
+      post.position.set(sx, y / 2, frontZ + depth - 0.2);
+      g.add(post);
+    }
+    return g;
+  }
+
+  // --- ARCADE (a full hall, left of the pier) -----------------------------
+  // 11 m wide × 8 m deep × 5 m tall — a real city-block volume, solid from all
+  // sides, well clear of the promenade lane (front wall at Z=-16, lane ends -12).
+  const arcX = -15, arcZ = -20, arcW = 11, arcD = 8, arcH = 5;
+  const arcFrontZ = arcD / 2;
+  const arcade = new THREE.Group();
+  arcade.position.set(arcX, 0, arcZ);
+  const arcBody = box(arcW, arcH, arcD, boothMat);
+  arcBody.position.y = arcH / 2;
+  arcade.add(arcBody);
+  // A pitched parapet roof cap (full footprint, slightly overhanging) so the
+  // building reads as a solid hall from front, sides AND back.
+  const arcRoof = box(arcW + 0.5, 0.6, arcD + 0.5, boothRoofMat);
+  arcRoof.position.y = arcH + 0.2;
+  arcade.add(arcRoof);
+  const arcRidge = new THREE.Mesh(new THREE.ConeGeometry(arcW * 0.62, 1.7, 4), boothRoofMat);
+  arcRidge.rotation.y = Math.PI / 4;
+  arcRidge.position.y = arcH + 1.2;
+  arcRidge.scale.z = (arcD + 0.5) / (arcW + 0.5);
+  arcRidge.castShadow = true;
+  arcade.add(arcRidge);
+  // Glazed shopfront + glowing neon sign on the FRONT (faces +Z toward the lane).
+  arcade.add(makeShopWindows(arcW, arcFrontZ));
+  // Central entrance door set into the glazing.
+  const arcDoor = box(2.0, 2.6, 0.16, doorMat, false);
+  arcDoor.position.set(0, 1.3, arcFrontZ + 0.08);
+  arcade.add(arcDoor);
+  arcade.add(makeAwning(arcW - 1.0, arcFrontZ, 3.4));
+  const arcSign = artPanel(5.0, 1.7, "neon", {
     lines: ["ARCADE", "PIER"], color: "#ff5fae", color2: "#5fd2ff",
     emissiveIntensity: 0.9, file: "pier-arcade-neon.png",
   });
-  boothSign.position.set(0, 2.0, 2.06);
-  booth.add(boothSign);
-  group.add(booth);
-  addCollider(colliders, boothX, boothZ, 5, 4);
+  arcSign.position.set(0, arcH - 0.7, arcFrontZ + 0.12);
+  arcade.add(arcSign);
+  group.add(arcade);
+  addCollider(colliders, arcX, arcZ, arcW, arcD);
 
-  // A big welcome billboard near the boardwalk entrance.
-  const welcome = artPanel(6, 3, "billboard", {
+  // --- PIER HALL / ticket office (a full hall, right of the pier) ----------
+  // 12 m wide × 9 m deep × 6 m tall — the district's main building, a substantial
+  // volume that reads solid from every angle. Front wall at Z=-16.5 (lane ends -12).
+  const hallX = 15, hallZ = -21, hallW = 12, hallD = 9, hallH = 6;
+  const hallFrontZ = hallD / 2;
+  const hall = new THREE.Group();
+  hall.position.set(hallX, 0, hallZ);
+  const hallBody = box(hallW, hallH, hallD, wallMat);
+  hallBody.position.y = hallH / 2;
+  hall.add(hallBody);
+  // Corner pilasters give the seaside-resort hall some relief on the side/back
+  // faces too, so it never reads as a plain slab from behind.
+  for (const cx of [-hallW / 2 + 0.25, hallW / 2 - 0.25]) {
+    for (const cz of [-hallD / 2 + 0.25, hallD / 2 - 0.25]) {
+      const pil = box(0.5, hallH, 0.5, wallTrimMat, false);
+      pil.position.set(cx, hallH / 2, cz);
+      hall.add(pil);
+    }
+  }
+  // Overhanging hip roof (full footprint) + a small cupola, reading solid all round.
+  const hallRoof = box(hallW + 0.9, 0.7, hallD + 0.9, roofMat);
+  hallRoof.position.y = hallH + 0.25;
+  hall.add(hallRoof);
+  const hallHip = new THREE.Mesh(new THREE.ConeGeometry(hallW * 0.62, 2.2, 4), roofMat);
+  hallHip.rotation.y = Math.PI / 4;
+  hallHip.position.y = hallH + 1.4;
+  hallHip.scale.z = (hallD + 0.9) / (hallW + 0.9);
+  hallHip.castShadow = true;
+  hall.add(hallHip);
+  const cupola = box(1.4, 1.4, 1.4, wallMat);
+  cupola.position.y = hallH + 2.3;
+  hall.add(cupola);
+  const cupolaCap = new THREE.Mesh(new THREE.ConeGeometry(1.1, 1.0, 8), roofMat);
+  cupolaCap.position.y = hallH + 3.5;
+  cupolaCap.castShadow = true;
+  hall.add(cupolaCap);
+  // FRONT: a row of portico columns, glazed ticket windows, a central doorway,
+  // an awning and the welcome billboard — all facing +Z (the promenade lane).
+  for (const cx of [-hallW / 2 + 1.2, -1.8, 1.8, hallW / 2 - 1.2]) {
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 3.2, 12), columnMat);
+    col.position.set(cx, 1.6, hallFrontZ + 0.55);
+    col.castShadow = true;
+    hall.add(col);
+  }
+  hall.add(makeShopWindows(hallW, hallFrontZ));
+  const hallDoor = box(2.4, 3.0, 0.18, doorMat, false);
+  hallDoor.position.set(0, 1.5, hallFrontZ + 0.08);
+  hall.add(hallDoor);
+  hall.add(makeAwning(hallW - 1.2, hallFrontZ, 3.6));
+  // Welcome billboard mounted PROUD of the front wall, facing +Z (no rotation →
+  // readable, not mirrored). The big mass + roof sit BEHIND it as a real building.
+  const welcome = artPanel(7, 2.6, "billboard", {
     title: "SEASIDE PIER", sub: "Boardwalk • Funfair • Fish & Chips",
     a: "#1f6f9c", b: "#0b2a3e", accent: "#ffd24a", glyph: "⚓",
     emissiveIntensity: 0.5, file: "pier-welcome.png",
   });
-  welcome.position.set(16, 3.2, -18);
-  welcome.rotation.y = -0.5;
-  group.add(welcome);
-  // Posts holding the billboard.
-  for (const dx of [-2.4, 2.4]) {
-    const post = box(0.3, 4.4, 0.3, railMat);
-    const px = 16 + Math.cos(-0.5) * dx;
-    const pz = -18 - Math.sin(-0.5) * dx;
-    post.position.set(px, 2.2, pz);
-    group.add(post);
-  }
-  addCollider(colliders, 16, -18, 5.4, 1.2);
+  welcome.position.set(0, hallH - 0.6, hallFrontZ + 0.12);
+  hall.add(welcome);
+  group.add(hall);
+  addCollider(colliders, hallX, hallZ, hallW, hallD);
 
-  // --- Ferris-wheel silhouette behind the arcade booth --------------------
-  const wheelX = 22, wheelZ = -22;
+  // --- Ferris-wheel silhouette in the back-right corner -------------------
+  // Pulled into the corner so its legs clear the pier-hall footprint (which now
+  // reaches X≈21) and nothing interpenetrates the building.
+  const wheelX = 24, wheelZ = -24;
   const wheel = new THREE.Group();
   wheel.position.set(wheelX, 0, wheelZ);
   // Support A-frame legs.

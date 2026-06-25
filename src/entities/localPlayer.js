@@ -145,6 +145,12 @@ export class LocalPlayer {
     return this.heldItem ? this.heldItem.def.name : null;
   }
 
+  // Wire id of the item you're holding, or null. Used to sync held items so
+  // remotes can rebuild the same mesh via items.js getItem(id).build().
+  heldId() {
+    return this.heldItem ? this.heldItem.def.id : null;
+  }
+
   // `seatedView` (optional) is the board-view descriptor from
   // InWorldBoard.getSeatedView(): { active, center:{x,y,z}, seatRy }. When it is
   // active the camera eases to an over-the-table framing instead of the normal

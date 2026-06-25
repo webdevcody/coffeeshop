@@ -1,8 +1,11 @@
 // DOWNTOWN TOWERS — one 60×60 m district tile for the expanded city.
 //
-// A dense corporate block: 5 tall glass skyscrapers (up to ~40 m) with emissive
-// window-grid facades, two huge wall billboards mounted high on building sides,
-// and wide avenues between tight footprints so a car can drive straight through.
+// A dense corporate block: 4 tall glass skyscrapers (up to ~40 m) ringing a
+// central plaza, plus 4 secondary mid-rise blocks at the outer quadrant corners
+// — every building a SOLID 3D volume (min 7×7 m footprint, no flat facades) —
+// with emissive window-grid facades, two huge wall billboards mounted high on
+// building sides, and wide (11 m) avenues kept fully clear so a car can drive
+// straight through the cross from any edge.
 //
 // buildDowntown() returns { group, colliders, ground, update }:
 //   group     — THREE.Group of all meshes, LOCAL coords centered on origin.
@@ -249,54 +252,72 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
   const topY = tierY; // flat usable rooftop of the stack (above tiers)
 
   // --- Ground-floor glass lobby + canopy + revolving-door front -------------
-  // Glass lobby band wraps the base; faces the same side the podium opens to.
-  const front = opts.frontZ ?? 1; // +1 → lobby opens toward +Z, -1 → -Z
-  // Concrete plinth/sill the lobby glazing sits on (reads as a real base).
+  // The whole entrance assembly is built once along the LOCAL +Z face, then the
+  // sub-group is rotated so its detailed storefront faces the real street: a
+  // tower beside the N-S avenue wants its front on ±X (use opts.frontX), one
+  // beside the E-W avenue wants ±Z (use opts.frontZ). Exactly one is chosen.
+  // This guarantees the lobby/canopy/door never point at an interior/back face.
+  const entranceG = new THREE.Group();
+  // entranceYaw maps the assembly's local +Z to the requested world direction.
+  // +Z→0, -Z→π, +X→π/2, -X→-π/2.   fz/fd = facade width / building depth seen
+  // by the entrance (so an X-facing front uses w as its outward depth, d as width).
+  let entranceYaw = 0;
+  let fw = w, fd = d; // facade width, building depth in the entrance's local frame
+  if (opts.frontX !== undefined) {
+    entranceYaw = opts.frontX >= 0 ? Math.PI / 2 : -Math.PI / 2;
+    fw = d; fd = w; // facing along X: the visible facade spans the depth (d)
+  } else {
+    const fz = opts.frontZ ?? 1; // +1 → toward +Z, -1 → toward -Z
+    entranceYaw = fz >= 0 ? 0 : Math.PI;
+  }
+  // Concrete plinth/sill the lobby glazing sits on (shared base, not rotated).
   const plinth = box(w + 0.3, 0.6, d + 0.3, concreteMat);
   plinth.position.y = 0.3;
   g.add(plinth);
   // Lobby glazing on the front face (bright, slightly transparent).
-  const lobbyGlass = box(w * 0.92, lobbyH, 0.12, lobbyGlassMat, false);
-  lobbyGlass.position.set(0, lobbyH / 2, front * (d / 2 + 0.08));
-  g.add(lobbyGlass);
+  const lobbyGlass = box(fw * 0.92, lobbyH, 0.12, lobbyGlassMat, false);
+  lobbyGlass.position.set(0, lobbyH / 2, fd / 2 + 0.08);
+  entranceG.add(lobbyGlass);
   // Dark interior backing behind the glass.
-  const lobbyBack = box(w * 0.9, lobbyH - 0.3, 0.1, lobbyBackMat, false);
-  lobbyBack.position.set(0, lobbyH / 2, front * (d / 2 - 0.2));
-  g.add(lobbyBack);
+  const lobbyBack = box(fw * 0.9, lobbyH - 0.3, 0.1, lobbyBackMat, false);
+  lobbyBack.position.set(0, lobbyH / 2, fd / 2 - 0.2);
+  entranceG.add(lobbyBack);
   // Side returns so the lobby reads as wrapping the corner a little.
   for (const sx of [-1, 1]) {
-    const sideGlass = box(0.12, lobbyH, d * 0.5, lobbyGlassMat, false);
-    sideGlass.position.set(sx * (w / 2 + 0.06), lobbyH / 2, front * d * 0.2);
-    g.add(sideGlass);
+    const sideGlass = box(0.12, lobbyH, fw * 0.5, lobbyGlassMat, false);
+    sideGlass.position.set(sx * (fw / 2 + 0.06), lobbyH / 2, fd * 0.2);
+    entranceG.add(sideGlass);
   }
   // Stone entrance canopy projecting over the door.
-  const canopy = box(w * 0.5, 0.45, 2.4, trimMat);
-  canopy.position.set(0, lobbyH - 0.4, front * (d / 2 + 1.1));
-  g.add(canopy);
+  const canopy = box(fw * 0.5, 0.45, 2.4, trimMat);
+  canopy.position.set(0, lobbyH - 0.4, fd / 2 + 1.1);
+  entranceG.add(canopy);
   // Lit canopy underside strip.
-  const canopyLit = box(w * 0.46, 0.1, 2.0, accentLitMat, false);
-  canopyLit.position.set(0, lobbyH - 0.66, front * (d / 2 + 1.1));
-  g.add(canopyLit);
+  const canopyLit = box(fw * 0.46, 0.1, 2.0, accentLitMat, false);
+  canopyLit.position.set(0, lobbyH - 0.66, fd / 2 + 1.1);
+  entranceG.add(canopyLit);
   // Two canopy support posts.
   for (const sx of [-1, 1]) {
     const post = cyl(0.12, 2.2, doorMat);
-    post.position.set(sx * w * 0.22, 1.1, front * (d / 2 + 2.1));
-    g.add(post);
+    post.position.set(sx * fw * 0.22, 1.1, fd / 2 + 2.1);
+    entranceG.add(post);
   }
   // Brass revolving-door drum at the entrance.
   const drum = cyl(1.05, 2.6, lobbyGlassMat, false);
-  drum.position.set(0, 1.3, front * (d / 2 + 0.6));
-  g.add(drum);
+  drum.position.set(0, 1.3, fd / 2 + 0.6);
+  entranceG.add(drum);
   const drumFrame = cyl(1.12, 0.18, doorMat, false);
-  drumFrame.position.set(0, 2.55, front * (d / 2 + 0.6));
-  g.add(drumFrame);
+  drumFrame.position.set(0, 2.55, fd / 2 + 0.6);
+  entranceG.add(drumFrame);
   // Door wings (cross of 4 panels) inside the drum.
   for (let k = 0; k < 4; k++) {
     const wing = box(1.9, 2.4, 0.06, doorMat, false);
-    wing.position.set(0, 1.3, front * (d / 2 + 0.6));
+    wing.position.set(0, 1.3, fd / 2 + 0.6);
     wing.rotation.y = k * (Math.PI / 2);
-    g.add(wing);
+    entranceG.add(wing);
   }
+  entranceG.rotation.y = entranceYaw;
+  g.add(entranceG);
 
   // --- Rooftop clutter on the flat stack top --------------------------------
   // Parapet rail around the topmost tier.
@@ -419,24 +440,38 @@ export function buildDowntown() {
     group.add(dE);
   }
 
-  // --- Skyscrapers — tight footprints in the 4 quadrants, off the avenues. --
-  // [cx, cz, w, d, height, glassMat, antenna, helipad]
+  // --- Buildings — full 3D volumes, one per quadrant, all off the avenues. ---
+  // Every building below is a SOLID box shaft (real width AND depth AND height),
+  // never a flat facade: the smallest footprint here is 7×7 m, the towers 11-13 m.
+  // Four flagship corner towers ring the central plaza; four secondary mid-rise
+  // blocks fill the outer corner of each quadrant. The towers were pulled inward
+  // to |cx|,|cz|≈15.5 (was 17-19) so the EW avenue's west end is no longer blocked
+  // by a slab — the old [-19,0] infill tower literally straddled z=0 and has been
+  // replaced by the four corner mid-rises that sit well clear of both lanes.
+  //
+  // [cx, cz, w, d, height, glassMat, antenna, helipad, frontZ]
+  // frontZ chooses which Z face carries the lobby/canopy/door so the detailed
+  // FRONT always faces the central avenue cross (the street), never a back lot.
   const towers = [
-    [-17, -17, 11, 11, 40, glassA, true, true],   // NW flagship (tallest, beacon + helipad)
-    [16, -18, 10, 10, 33, glassB, false, false],  // NE
-    [-18, 17, 10, 12, 30, glassC, true, false],   // SW (beacon)
-    [17, 16, 12, 10, 36, glassA, false, true],    // SE (helipad)
-    [-19, 0, 8, 7, 24, glassB, false, false],     // W mid-block infill (set back off EW ave)
+    // Four flagship corner towers (tall glass, ringing the plaza).
+    [-15.5, -15.5, 12, 12, 40, glassA, true,  true,   1], // NW flagship (beacon + helipad)
+    [ 15.5, -15.5, 11, 11, 33, glassB, false, false,  1], // NE
+    [-15.5,  15.5, 11, 13, 30, glassC, true,  false, -1], // SW (beacon)
+    [ 15.5,  15.5, 13, 11, 36, glassA, false, true,  -1], // SE (helipad)
+    // Four secondary mid-rise blocks at the OUTER corner of each quadrant. Full
+    // volumes (7×7 footprint) so they read solid from every side, set hard
+    // against the tile edge and clear of the corner towers + both avenues.
+    [-26.0, -26.0, 7, 7, 20, glassB, false, false,  1], // NW outer block
+    [ 26.0, -26.0, 7, 7, 18, glassC, false, false,  1], // NE outer block
+    [-26.0,  26.0, 7, 7, 22, glassA, false, false, -1], // SW outer block
+    [ 26.0,  26.0, 7, 7, 19, glassB, false, false, -1], // SE outer block
   ];
   const litList = []; // lobby/canopy accent mats animated by update (shared mat)
   litList.push(accentLitMat, lobbyGlassMat); // pulse the shared lit accents once
-  // NOTE: W infill sits at x=-19; its +X face is x=-15, leaving the EW avenue
-  // (z∈[-5.5,5.5]) and NS avenue clear. Footprint padded slightly in collider.
-  // Lobby/canopy projects toward tile centre (away from edges), never into a
-  // lane: towers sit at |cx|,|cz| ≈ 16-19 so a ~2.6m canopy stays clear of the
-  // central cross (|x|,|z| < 5.5).
-  for (const [cx, cz, w, d, h, gm, ant, heli] of towers) {
-    const frontZ = cz < 0 ? 1 : -1; // entrance faces toward the avenue cross
+  // The lobby/canopy projects ~2.4 m off the chosen front face toward the tile
+  // centre, so with every building set back to |cx|,|cz|≥15.5 the canopy stays
+  // far clear of the central cross (lanes at |x|,|z| < 5.5).
+  for (const [cx, cz, w, d, h, gm, ant, heli, frontZ] of towers) {
     const t = makeTower(w, h, d, gm, flickerList, ant, litList, { frontZ, helipad: heli });
     t.position.set(cx, 0, cz);
     group.add(t);
@@ -444,50 +479,54 @@ export function buildDowntown() {
   }
 
   // --- Two HUGE wall billboards mounted high on tower sides. ----------------
+  // Each billboard's lit FRONT faces an avenue; it is offset just proud of the
+  // host face so it never sinks into (or floats off) the building.
   // Billboard 1: "SKYLINE TOWERS" on the SE tower's -X face, facing the NS ave.
+  // SE tower is cx15.5,cz15.5,w13 → -X face at x=15.5-6.5=9.0.
   const bb1 = artPanel(12, 7, "billboard", {
     title: "SKYLINE TOWERS", sub: "LIVE ABOVE THE CITY",
     a: "#16335f", b: "#0a1428", accent: "#ffcf3f", glyph: "▲",
     emissiveIntensity: 0.5, file: "billboard-skyline.png",
   });
-  bb1.position.set(11.5, 24, 16);     // hugs SE tower (cx17,cz16,w12) -X face
-  bb1.rotation.y = -Math.PI / 2;       // normal faces -X toward the avenue
+  bb1.position.set(8.9, 24, 15.5);     // just proud of the SE tower -X face
+  bb1.rotation.y = -Math.PI / 2;        // normal faces -X toward the NS avenue
   group.add(bb1);
 
   // Billboard 2: "FIZZ POP COLA" on the NW flagship's +Z face, facing EW ave.
+  // NW tower is cx-15.5,cz-15.5,d12 → +Z face at z=-15.5+6=-9.5.
   const bb2 = artPanel(13, 7.5, "billboard", {
     title: "FIZZ POP COLA", sub: "ICE-COLD & FIZZY",
     a: "#6b1130", b: "#1a0410", accent: "#ff5fa0", glyph: "✦",
     emissiveIntensity: 0.5, file: "billboard-cola.png",
   });
-  bb2.position.set(-17, 27, -11.4);    // hugs NW tower (cx-17,cz-17,d11) +Z face
-  group.add(bb2);                       // PlaneGeometry default normal +Z
+  bb2.position.set(-15.5, 27, -9.4);   // just proud of the NW tower +Z face
+  group.add(bb2);                       // PlaneGeometry default normal +Z (toward EW ave)
 
   // --- A rooftop rotating beacon sign (neon) on the SE tower. ---------------
   const rooftopSign = artPanel(4.5, 4.5, "neon", {
     lines: ["DT", "TOWER"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "neon-dt.png",
   });
-  // mount it on a small post above the SE tower (height 36 + crown).
-  rooftopSign.position.set(17, 40.5, 16);
+  // mount it above the SE tower roof (height 36 + crown stack).
+  rooftopSign.position.set(15.5, 41, 15.5);
   group.add(rooftopSign);
   spinners.push(rooftopSign);
 
   // --- A couple of lit CROWN SIGNS near tower tops (vertical wall signs) -----
-  // "NOVA" up the NE tower's -X face (cx16,cz-18,w10 → -X at x=11), high up.
+  // "NOVA" up the NE tower's -X face (cx15.5,cz-15.5,w11 → -X at x=10), high up.
   const crownSign1 = artPanel(3.2, 8, "sign", {
     text: "NOVA", bg: "#0b2c4a", fg: "#7fe0ff",
     emissive: "#1c6fb0", emissiveIntensity: 0.9, file: "sign-nova.png",
   });
-  crownSign1.position.set(11.05, 28, -18);
+  crownSign1.position.set(9.9, 28, -15.5);
   crownSign1.rotation.y = -Math.PI / 2; // normal faces -X toward NS avenue
   group.add(crownSign1);
-  // "VERTEX" up the SW tower's +X face (cx-18,cz17,w10 → +X at x=-13), high up.
+  // "VERTEX" up the SW tower's +X face (cx-15.5,cz15.5,w11 → +X at x=-10), high up.
   const crownSign2 = artPanel(3.0, 7, "sign", {
     text: "VERTEX", bg: "#3a0b2c", fg: "#ff9fe0",
     emissive: "#b01c7f", emissiveIntensity: 0.9, file: "sign-vertex.png",
   });
-  crownSign2.position.set(-12.95, 23, 17);
+  crownSign2.position.set(-9.9, 23, 15.5);
   crownSign2.rotation.y = Math.PI / 2; // normal faces +X toward NS avenue
   group.add(crownSign2);
 

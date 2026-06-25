@@ -340,18 +340,23 @@ function makeTank() {
   return g;
 }
 
-// Smokestack: a tapered brick chimney with a hazard band; returns the world
-// tip position so the puff emitter can sit on top.
-function makeStack(height) {
+// Smokestack: a tapered brick chimney with a hazard band, mounted on a roof at
+// height `baseY` (so it rises OFF the warehouse roof instead of punching through
+// the building mass). A short concrete collar ties it visually to the roof.
+function makeStack(height, baseY = 0) {
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.35, height, 14), stackMat);
-  body.position.y = height / 2;
+  body.position.y = baseY + height / 2;
   body.castShadow = true;
   const band = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 0.7, 14), stackBand);
-  band.position.y = height - 1.6;
+  band.position.y = baseY + height - 1.6;
   const lip = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.95, 0.5, 14), concreteDark);
-  lip.position.y = height;
-  g.add(body, band, lip);
+  lip.position.y = baseY + height;
+  // collar/flashing where the stack meets the roof
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.7, 0.5, 14), concreteDark);
+  collar.position.y = baseY + 0.2;
+  collar.castShadow = true;
+  g.add(body, band, lip, collar);
   return g;
 }
 
@@ -441,23 +446,37 @@ export function buildIndustrial() {
   // Roof ventilation turbines from all sheds collect here so update() can spin
   // them with no per-frame allocation.
   const spinners = [];
-  // NW warehouse, runs along Z.
-  const wh1 = makeWarehouse(11, 6, 16, steelWall, spinners);
-  wh1.position.set(-18, 0, -14);
+  // Each warehouse is a full BLOCK-scale steel shed — substantial width AND
+  // depth AND height so it reads solid from every side (front, flank and back),
+  // filling a good share of its corner quadrant rather than a thin slab. The
+  // collider always matches the body footprint exactly (see addCollider calls).
+
+  // NW warehouse, runs along Z (deep shed). Footprint x∈[-26,-12] z∈[-23,-5].
+  const WH1 = { w: 14, h: 7, d: 18, x: -19, z: -14 };
+  const wh1 = makeWarehouse(WH1.w, WH1.h, WH1.d, steelWall, spinners);
+  wh1.position.set(WH1.x, 0, WH1.z);
   group.add(wh1);
-  addCollider(colliders, -18, -14, 11, 16);
+  addCollider(colliders, WH1.x, WH1.z, WH1.w, WH1.d);
 
-  // SW warehouse (rusty), runs along X.
-  const wh2 = makeWarehouse(18, 5.5, 10, steelWallRust, spinners);
-  wh2.position.set(-15, 0, 18);
+  // SW warehouse (rusty), runs along X. Flipped 180° so its detailed FRONT
+  // (loading dock + roller doors, built on the local +Z face) points toward the
+  // open center lane (−Z) the player approaches from, not the cramped south
+  // perimeter strip. Footprint is symmetric so the collider stays centred.
+  // Footprint x∈[-26,-6] z∈[11,23].
+  const WH2 = { w: 20, h: 6.5, d: 12, x: -16, z: 17 };
+  const wh2 = makeWarehouse(WH2.w, WH2.h, WH2.d, steelWallRust, spinners);
+  wh2.position.set(WH2.x, 0, WH2.z);
+  wh2.rotation.y = Math.PI;
   group.add(wh2);
-  addCollider(colliders, -15, 18, 18, 10);
+  addCollider(colliders, WH2.x, WH2.z, WH2.w, WH2.d);
 
-  // NE warehouse, runs along X.
-  const wh3 = makeWarehouse(16, 5, 9, steelWall, spinners);
-  wh3.position.set(16, 0, -19);
+  // NE warehouse, runs along X (deepened so its back is a real wall, not a card).
+  // Footprint x∈[8,26] z∈[-24,-12]; the +X catwalk reaches x≈26.8 (< tile 30).
+  const WH3 = { w: 18, h: 6.5, d: 12, x: 17, z: -18 };
+  const wh3 = makeWarehouse(WH3.w, WH3.h, WH3.d, steelWall, spinners);
+  wh3.position.set(WH3.x, 0, WH3.z);
   group.add(wh3);
-  addCollider(colliders, 16, -19, 16, 9);
+  addCollider(colliders, WH3.x, WH3.z, WH3.w, WH3.d);
 
   // --- Silos cluster (NE quadrant, south of wh3) ---------------------------
   const siloSpots = [[10, -7], [14.6, -8]];
@@ -483,21 +502,25 @@ export function buildIndustrial() {
   group.add(tower);
   addCollider(colliders, 24, 24, 3.6, 3.6); // tight to the leg spread
 
-  // --- Two smokestacks rising off the NW warehouse roof --------------------
+  // --- Two smokestacks rising off the NW warehouse ROOF --------------------
+  // Mounted on the roof (baseY ≈ ridge height of wh1) so the chimneys sit ON the
+  // shed instead of punching through its mass. No ground colliders: they're up
+  // on the roof, not blocking the yard floor. Both stack feet land inside wh1's
+  // footprint (x∈[-26,-12], z∈[-23,-5]).
   // Emitters at the stack tips; each owns a pool of reusable puff blobs.
   const smokeSystems = [];
+  const wh1RoofY = WH1.h + WH1.h * 0.28; // wh1 gable ridge height
   const stackSpots = [
-    { x: -20, z: -16, h: 11 },
-    { x: -16, z: -12, h: 9.5 },
+    { x: -19, z: -15, h: 8, baseY: wh1RoofY - 0.6 },
+    { x: -16, z: -11, h: 6.5, baseY: wh1RoofY - 0.6 },
   ];
   for (const sp of stackSpots) {
-    const stack = makeStack(sp.h);
+    const stack = makeStack(sp.h, sp.baseY);
     stack.position.set(sp.x, 0, sp.z);
     group.add(stack);
-    addCollider(colliders, sp.x, sp.z, 2.6, 2.6);
 
     const puffs = [];
-    const tipY = sp.h + 0.4;
+    const tipY = sp.baseY + sp.h + 0.4;
     const PUFFS = 3;
     for (let i = 0; i < PUFFS; i++) {
       const puff = new THREE.Mesh(smokeGeo, smokeMat.clone());
@@ -589,14 +612,25 @@ export function buildIndustrial() {
     a: "#5a3320", b: "#1c1410", glyph: "⚙", emissiveIntensity: 0.5,
     file: "industrial-ironworks.png",
   });
-  sign1.position.set(-18, 4.4, -5.9); // on the south face of the NW warehouse
+  // On the NW warehouse's FRONT (+Z dock) face — wall at z=-5, panel just proud
+  // of it at z=-4.92. The PlaneGeometry's textured front already faces +Z (the
+  // open center the player approaches from), so the text reads correctly (no
+  // mirroring) and the detailed front faces the avenue.
+  sign1.position.set(WH1.x, 4.6, WH1.z + WH1.d / 2 + 0.08);
   group.add(sign1);
 
   const sign2 = artPanel(5, 2.4, "sign", {
     text: "HAZARD ZONE", bg: "#e6c200", fg: "#1c1c1c", emissiveIntensity: 0.45,
     file: "industrial-hazard.png",
   });
-  sign2.position.set(-15, 4.2, 13.05); // on the north face of the SW warehouse
+  // High on the SW warehouse's FRONT (−Z) face, above the loading dock, and
+  // rotated to FACE −Z (toward the player approaching from the open center).
+  // The shed is flipped 180° so its dock front is the −Z wall at z=11; the panel
+  // sits just proud at z=10.92. Without the Math.PI turn the plane's textured
+  // front would point into the building and the player would read the mirrored
+  // back of the panel.
+  sign2.position.set(WH2.x, 4.6, WH2.z - WH2.d / 2 - 0.08);
+  sign2.rotation.y = Math.PI;
   group.add(sign2);
 
   // --- Rotating warning beacon atop the SE tank (cheap ambient motion) ------

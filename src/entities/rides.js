@@ -108,5 +108,8 @@ export function createRides(scene, opts) {
     update,
     car,
     get mode() { return mode; },
+    // Network-friendly ride tag: null while walking, "car" while driving, "skate"
+    // while on the board. Threaded through sendState so remotes render the mesh.
+    get ride() { return mode === "drive" ? "car" : mode === "skate" ? "skate" : null; },
   };
 }

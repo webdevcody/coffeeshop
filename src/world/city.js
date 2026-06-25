@@ -66,6 +66,7 @@ export function buildCity(scene) {
   try {
     const streets = buildStreets();
     if (streets && streets.group) group.add(streets.group);
+    if (streets && typeof streets.update === "function") updates.push(streets.update);
   } catch (e) {
     console.warn("[city] streets failed", e);
   }

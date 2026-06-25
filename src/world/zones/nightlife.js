@@ -183,12 +183,22 @@ export function buildNightlife() {
   }
 
   // North side (Z negative, facing +Z lane) and South side (Z positive).
-  // Lane stays clear: buildings sit at |Z| >= ~9.
-  makeBuilding(-19, -15, 13, 7.5, 11, buildingDarkMat, trimMat, 1, winLitMat);    // NEON LOUNGE bar
-  makeBuilding(-2, -16, 14, 9.5, 12, buildingPlumMat, trimTealMat, 1, winTealMat); // THE CLUB (tall hero)
-  makeBuilding(17, -14.5, 12, 6.5, 10, buildingTealMat, trimMat, 1, winLitMat);   // OPEN 24/7 diner
-  makeBuilding(-15, 16, 14, 6.5, 11, buildingTealMat, trimTealMat, -1, winTealMat); // south bar
-  makeBuilding(13, 16.5, 16, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);      // south lounge
+  // Lane stays clear: buildings sit at |Z| >= ~9. Every building below is a
+  // FULL 3-D volume (w & d both >= 6 m) and the streetwall is kept continuous
+  // (footprints abut with no card-like gaps) so the block reads solid from the
+  // front, the sides AND the back. The pedestrian cross-lanes at X ≈ ±9 stay
+  // open at ground level (only overhead bulb strings span them).
+  // -- NORTH STREETWALL (front faces +Z) --
+  makeBuilding(-20, -15.5, 16, 7.5, 12, buildingDarkMat, trimMat, 1, winLitMat);    // NEON LOUNGE bar  X[-28,-12]
+  makeBuilding(-2, -16, 14, 9.5, 12, buildingPlumMat, trimTealMat, 1, winTealMat);  // THE CLUB (tall hero) X[-9,5]
+  makeBuilding(8.5, -15.5, 7, 6.0, 9, buildingTealMat, trimTealMat, 1, winTealMat); // CLUB box-office kiosk X[5,12]
+  makeBuilding(19.5, -15, 13, 6.5, 11, buildingTealMat, trimMat, 1, winLitMat);     // OPEN 24/7 diner  X[13,26]
+  // -- SOUTH STREETWALL (front faces -Z) --
+  makeBuilding(-24, 16, 11, 7.0, 11, buildingPlumMat, trimMat, -1, winLitMat);      // south corner bar X[-29.5,-18.5]
+  makeBuilding(-12, 16, 11, 6.5, 11, buildingTealMat, trimTealMat, -1, winTealMat); // south bar (terrace) X[-17.5,-6.5]
+  makeBuilding(0.5, 16.5, 10, 7.5, 11, buildingDarkMat, trimTealMat, -1, winTealMat); // south music hall X[-4.5,5.5]
+  makeBuilding(14, 16.5, 14, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);       // south lounge X[7,21]
+  makeBuilding(25.5, 16, 9, 6.5, 11, buildingTealMat, trimMat, -1, winLitMat);      // south corner diner X[21,30]
 
   // ── LIT WINDOW BAYS — one InstancedMesh per material, shared geometry ──
   // Build window-bay grids on each lane-facing façade above the storefront.
@@ -255,7 +265,7 @@ export function buildNightlife() {
   addNeonPanel(6, 4, {
     lines: ["NEON", "LOUNGE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.95, file: "neon-lounge.png",
-  }, -19, 5.6, -9.3, 0);
+  }, -20, 5.6, -9.3, 0);
 
   // "CLUB" — huge sign on the hero club, facing +Z
   addNeonPanel(7, 5, {
@@ -267,7 +277,7 @@ export function buildNightlife() {
   addNeonPanel(5, 4, {
     lines: ["OPEN", "24/7"], color: "#4fffa0", color2: "#ffe24f",
     emissiveIntensity: 0.95, file: "neon-open247.png",
-  }, 17, 4.9, -9.2, 0);
+  }, 19.5, 4.9, -9.2, 0);
 
   // South-side signs face -Z (toward the lane from the other side)
   addNeonPanel(6, 4, {
@@ -278,7 +288,7 @@ export function buildNightlife() {
   addNeonPanel(6.5, 4.5, {
     lines: ["LATE", "LOUNGE"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.95, file: "neon-late.png",
-  }, 13, 5.8, 10.2, Math.PI);
+  }, 14, 5.8, 10.2, Math.PI);
 
   // A vertical blade sign on a pole at a corner (rotated, faces the lane)
   const blade = addNeonPanel(2.4, 6, {
@@ -438,14 +448,14 @@ export function buildNightlife() {
   addRopeSwag(postTops[2], postTops[3]);
 
   // ── BAR TERRACE with stools (small raised deck + stools by the south bar) ──
-  // South bar is cx=-15, cz=16, front face at z=10.5 (faces -Z). Terrace sits
+  // South bar is cx=-12, cz=16, front face at z=10.5 (faces -Z). Terrace sits
   // just in front, well outside the lane.
   const terrace = box(6.0, 0.18, 3.0, terraceMat, false);
-  terrace.position.set(-15, 0.12, 9.0);
+  terrace.position.set(-12, 0.12, 9.0);
   terrace.receiveShadow = true;
   group.add(terrace);
   // low terrace rail (decorative, thin)
-  for (const [rw, rd, rx, rz] of [[6.0, 0.1, -15, 7.55], [0.1, 3.0, -12.05, 9.0], [0.1, 3.0, -17.95, 9.0]]) {
+  for (const [rw, rd, rx, rz] of [[6.0, 0.1, -12, 7.55], [0.1, 3.0, -9.05, 9.0], [0.1, 3.0, -14.95, 9.0]]) {
     const rail = box(rw, 0.5, rd, terraceMat, false);
     rail.position.set(rx, 0.45, rz);
     group.add(rail);
@@ -459,7 +469,7 @@ export function buildNightlife() {
     seat.castShadow = true;
     group.add(pole, seat);
   }
-  for (const sx of [-16.8, -15, -13.2]) makeStool(sx, 9.6);
+  for (const sx of [-13.8, -12, -10.2]) makeStool(sx, 9.6);
 
   // ── ROOFTOP CLUTTER — AC ducts, vent stacks, a water tank, antennas ──
   // Reuses shared geometries; small visual-only props sitting on each roof.
@@ -487,10 +497,11 @@ export function buildNightlife() {
     ant.position.set(cx + w * 0.34, h + 1.6, cz + d * 0.3);
     group.add(ant);
   }
-  addRoofClutter(-19, -15, 13, 11, 7.5);
-  addRoofClutter(17, -14.5, 12, 10, 6.5);
-  addRoofClutter(-15, 16, 14, 11, 6.5);
-  addRoofClutter(13, 16.5, 16, 12, 8);
+  addRoofClutter(-20, -15.5, 16, 12, 7.5);  // NEON LOUNGE roof
+  addRoofClutter(19.5, -15, 13, 11, 6.5);    // diner roof
+  addRoofClutter(-24, 16, 11, 11, 7.0);      // south corner bar roof
+  addRoofClutter(-12, 16, 11, 11, 6.5);      // south bar roof
+  addRoofClutter(14, 16.5, 14, 12, 8);       // south lounge roof
 
   // ── EXTRA NEON + GIG POSTERS (more signage density) ──
   // A second blade sign on the south side + extra wall neons.
@@ -501,7 +512,7 @@ export function buildNightlife() {
   addNeonPanel(4.5, 2.2, {
     lines: ["COCKTAILS"], color: "#ff7a2f", color2: "#4fd2ff",
     emissiveIntensity: 0.95, file: "neon-cocktails.png",
-  }, 17, 5.3, -9.0, 0);
+  }, 19.5, 5.3, -9.0, 0);
   // extra gig posters by the canopy / south lounge
   addPoster({ top: "LIVE TONIGHT", bottom: "VELVET", foot: "DOORS 10PM", glyph: "♫", accent: "#b14fff", bg: "#160a22", file: "poster-velvet.png" }, -5.4, 2.6, -8.85, 0);
   addPoster({ top: "THIS FRIDAY", bottom: "PULSE", foot: "18+", glyph: "◆", accent: "#2fe6ff", bg: "#0f1626", file: "poster-pulse.png" }, 18.5, 2.6, 9.4, Math.PI);

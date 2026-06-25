@@ -127,7 +127,12 @@ export function buildHarbor() {
   }
   colliders.push({ minX: whX - whW / 2, maxX: whX + whW / 2, minZ: whZ - whD / 2, maxZ: whZ + whD / 2 });
 
-  // Warehouse signage billboard on the south face
+  // Warehouse FRONT faces the open dock/quay to the SOUTH (+Z), the side the
+  // player roams (pier, crane, boats). The big mass + roof are BEHIND this face.
+  // ── Signage billboard, mounted proud of the south face, normal pointing +Z so
+  // its readable front looks OUT over the dock (artPanel faces +Z by default, so
+  // NO rotation — a 180° turn here would show the player the mirrored back).
+  const whFrontZ = whZ + whD / 2; // south wall plane, z = -16
   const whSign = artPanel(8, 2.4, "sign", {
     text: "HARBOR FREIGHT CO",
     bg: "#1d6e8c",
@@ -135,8 +140,110 @@ export function buildHarbor() {
     file: "harbor-warehouse.png",
     emissiveIntensity: 0.5,
   });
-  whSign.position.set(whX, 4.6, whZ - whD / 2 - 0.06);
+  whSign.position.set(whX, 5.0, whFrontZ + 0.06);
   group.add(whSign);
+
+  // Storefront detail on the same south face so the building reads as a FRONT:
+  // a wide roll-up cargo door (the entrance), flanking windows, and a canopy
+  // over the door. All sit just proud of the wall (≤0.25m) so the footprint
+  // collider is unchanged.
+  const matWhDoor = new THREE.MeshStandardMaterial({ color: "#3c4a52", roughness: 0.75, metalness: 0.3 });
+  const matWhWin = new THREE.MeshStandardMaterial({ color: "#bfe2ea", roughness: 0.25, metalness: 0.2, emissive: "#22333a", emissiveIntensity: 0.3 });
+  const matWhTrim = new THREE.MeshStandardMaterial({ color: "#8a949b", roughness: 0.8 });
+  // Big roll-up loading door = the entrance, centred on the front.
+  addBox(boxGeo, matWhDoor, whX, 1.85, whFrontZ + 0.08, 4.6, 3.7, 0.16, false);
+  // Door guide rails + lintel for a tidy framed entrance.
+  for (const dx of [-2.45, 2.45]) addBox(boxGeo, matWhTrim, whX + dx, 1.85, whFrontZ + 0.1, 0.25, 3.9, 0.18, false);
+  addBox(boxGeo, matWhTrim, whX, 3.85, whFrontZ + 0.1, 5.2, 0.3, 0.2, false);
+  // Two window strips flanking the door.
+  for (const dx of [-6.0, 6.0]) addBox(boxGeo, matWhWin, whX + dx, 2.4, whFrontZ + 0.08, 3.2, 1.6, 0.12, false);
+  // A flat canopy/awning shading the cargo door (shallow, stays over the quay).
+  addBox(boxGeo, matRoof, whX, 4.0, whFrontZ + 0.85, 6.0, 0.25, 1.6, false);
+  for (const dx of [-2.7, 2.7]) addBox(cylGeo, matWhTrim, whX + dx, 3.55, whFrontZ + 1.5, 0.12, 0.9, 0.12, false);
+
+  // ── Dockside buildings filling the open quay ──────────────────────────────
+  // The harbour previously had a single full-size building (the warehouse) and a
+  // lot of empty quay. Add two more SUBSTANTIAL buildings — each a real 3D mass
+  // with proper WIDTH *and* DEPTH *and* HEIGHT (no thin facades / standing cards)
+  // — so the dock reads as a proper port block from every angle. Each front (sign,
+  // door, windows, canopy) faces +Z out over the open quay, the side the player
+  // approaches from, using artPanel (which faces +Z by default → no mirrored text).
+  //
+  // Shared materials for the new masonry buildings (reuse the warehouse facade
+  // mats above so we add no per-building material churn).
+  const matBldgA = new THREE.MeshStandardMaterial({ color: "#9fb0a6", roughness: 0.9 });
+  const matBldgB = new THREE.MeshStandardMaterial({ color: "#c2a878", roughness: 0.92 });
+  const matBldgRoof = new THREE.MeshStandardMaterial({ color: "#384650", roughness: 0.85, metalness: 0.3 });
+
+  // Window InstancedMesh shared across the new buildings' fronts (one draw call).
+  // A flat lit pane sitting proud of a wall; we fill the matrices below.
+  const winGeo = new THREE.BoxGeometry(1.5, 1.3, 0.16);
+  const bldgWindows = []; // { x, y, z } collected, baked into an InstancedMesh
+
+  // Build one full-volume building with a +Z-facing front. Returns the collider.
+  function makeDockBuilding(cx, cz, w, d, h, bodyMat, signOpts) {
+    const frontZ = cz + d / 2;           // south wall plane (faces the open quay)
+    // Solid body — a true box volume (w × h × d), reads solid from all sides.
+    addBox(boxGeo, bodyMat, cx, h / 2 - 0.3, cz, w, h, d);
+    // Roof cap + a slim parapet so the silhouette isn't a bare cube.
+    addBox(boxGeo, matBldgRoof, cx, h - 0.3, cz, w + 0.5, 0.5, d + 0.5);
+    addBox(boxGeo, matBldgRoof, cx, h + 0.05, frontZ - 0.1, w + 0.5, 0.6, 0.4, false); // front parapet lip
+    // Sign mounted proud of the front, normal +Z (readable from the quay).
+    const sign = artPanel(Math.min(w - 1.2, 7), 1.8, "sign", signOpts);
+    sign.position.set(cx, h - 1.6, frontZ + 0.07);
+    group.add(sign);
+    // Ground-floor entrance: a recessed door centred on the front.
+    addBox(boxGeo, matWhDoor, cx, 1.7, frontZ + 0.08, 2.6, 3.4, 0.16, false);
+    for (const dx of [-1.5, 1.5]) addBox(boxGeo, matWhTrim, cx + dx, 1.7, frontZ + 0.1, 0.25, 3.6, 0.18, false);
+    addBox(boxGeo, matWhTrim, cx, 3.55, frontZ + 0.1, 3.2, 0.3, 0.2, false);
+    // Front windows (collected for the shared InstancedMesh) — a tidy 2-column
+    // grid flanking the door, on each floor the building is tall enough for.
+    const floors = Math.max(1, Math.floor((h - 2.0) / 2.4));
+    for (let f = 0; f < floors; f++) {
+      const wy = 2.4 + f * 2.4;
+      if (wy + 0.8 > h - 0.3) break;
+      for (const dx of [-w / 2 + 1.6, w / 2 - 1.6]) {
+        bldgWindows.push({ x: cx + dx, y: wy, z: frontZ + 0.08 });
+      }
+    }
+    // A shallow front canopy over the door (stays within ~1.4m of the wall, well
+    // clear of the road/walk lanes south of the quay).
+    addBox(boxGeo, matBldgRoof, cx, 3.7, frontZ + 0.8, 3.6, 0.22, 1.4, false);
+    for (const dx of [-1.6, 1.6]) addBox(cylGeo, matWhTrim, cx + dx, 3.2, frontZ + 1.4, 0.1, 0.9, 0.1, false);
+    return { minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 };
+  }
+
+  // Building 1 — Port Authority / Harbour Master's office (2-storey block) in the
+  // open quay gap between the container stack (west) and the crane/warehouse (east).
+  // Footprint X[-8,2] Z[-28.5,-17.5]: clear of containers (maxX -11.5), the crane
+  // base (X 4.2–7.8) and the warehouse (minX 7); 3.5m walk lane to the pier head.
+  colliders.push(makeDockBuilding(-3, -23, 10, 11, 8, matBldgA, {
+    text: "PORT AUTHORITY", bg: "#13414f", fg: "#ffe08a",
+    file: "harbor-port-authority.png", emissiveIntensity: 0.5,
+  }));
+
+  // Building 2 — Ship Chandlery storefront with REAL depth (not a card): a full
+  // 7×12×6.5m volume tucked into the open west end of the quay.
+  // Footprint X[-29.5,-22.5] Z[-28,-16]: snug west of the container stack (minX -22).
+  colliders.push(makeDockBuilding(-26, -22, 7, 12, 6.5, matBldgB, {
+    text: "SHIP CHANDLERY", bg: "#5a3a22", fg: "#ffd23f",
+    file: "harbor-chandlery.png", emissiveIntensity: 0.5,
+  }));
+
+  // Bake the collected front windows into a single InstancedMesh (one draw call).
+  if (bldgWindows.length) {
+    const inst = new THREE.InstancedMesh(winGeo, matWhWin, bldgWindows.length);
+    inst.castShadow = false;
+    inst.receiveShadow = false;
+    const m4 = new THREE.Matrix4();
+    for (let i = 0; i < bldgWindows.length; i++) {
+      const wpt = bldgWindows[i];
+      m4.makeTranslation(wpt.x, wpt.y, wpt.z);
+      inst.setMatrixAt(i, m4);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    group.add(inst);
+  }
 
   // ── Stacked shipping containers (north-west, a bright colorful block) ─────
   // Two ground rows + a partial second tier. Tight collider on the stack base.

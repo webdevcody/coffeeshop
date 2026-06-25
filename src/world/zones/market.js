@@ -5,9 +5,12 @@
 // stall, hanging goods (sausages/peppers) and little chalkboard price signs
 // dangle from the awning bars, tilted vendor umbrellas shade alternating stalls,
 // dense strings of warm bulbs are strung overhead, and a steel MARKET-HALL roof
-// with simple A-frame trusses spans the whole arcade. Tall shop signs (style
-// "sign": FRESH / BAKERY / CORNER MART) flank the street. A cobbled ground slab
-// plus a slow-rotating "MARKET" sign and flickering string lights keep it alive.
+// with simple A-frame trusses spans the whole arcade. Four SUBSTANTIAL brick
+// shop buildings (FRESH GROCER / BAKERY / CORNER MART / DELI) — full 3D volumes
+// with real width, depth AND height, instanced windows, doors, awnings and a
+// storefront sign mounted on the FRONT facing the lane — anchor the tile edges.
+// A cobbled ground slab plus a slow-rotating "MARKET" sign and flickering string
+// lights keep it alive.
 //
 // Performance: repeated produce + bulbs use THREE.InstancedMesh so the whole
 // district stays well under ~50 draw objects. Geometries + materials are created
@@ -43,6 +46,20 @@ const chalkMat = new THREE.MeshStandardMaterial({ color: "#2a2f2c", roughness: 1
 const chalkFrameMat = new THREE.MeshStandardMaterial({ color: "#6b4a28", roughness: 0.9, flatShading: true });
 const hangMat = new THREE.MeshStandardMaterial({ color: "#9a3b28", roughness: 0.7, flatShading: true });
 const umbrellaPoleMat = new THREE.MeshStandardMaterial({ color: "#cfc7b6", roughness: 0.7 });
+
+// --- Shop-building materials (substantial brick storefronts) ---------------
+const brickMat = new THREE.MeshStandardMaterial({ color: "#9c5a44", roughness: 0.95 });
+const brickMat2 = new THREE.MeshStandardMaterial({ color: "#7d6f63", roughness: 0.95 });
+const stuccoMat = new THREE.MeshStandardMaterial({ color: "#c9b89a", roughness: 0.9 });
+const parapetMat = new THREE.MeshStandardMaterial({ color: "#5c4a3c", roughness: 0.9 });
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#36302b", roughness: 0.95 });
+const windowMat = new THREE.MeshStandardMaterial({
+  color: "#bfe2ea", roughness: 0.25, metalness: 0.2,
+  emissive: "#9fd0dc", emissiveIntensity: 0.18,
+});
+const doorMat = new THREE.MeshStandardMaterial({ color: "#3a2c20", roughness: 0.8 });
+const trimMat = new THREE.MeshStandardMaterial({ color: "#efe6d4", roughness: 0.8 });
+const shopAwningMat = new THREE.MeshStandardMaterial({ roughness: 0.8, side: THREE.DoubleSide });
 
 // Bright alternating canopy colors for the awnings (vertex-colored instances).
 const AWNING_COLORS = ["#e0473c", "#2f9e6e", "#e8a93a", "#3f7fd0"];
@@ -81,20 +98,100 @@ function addCollider(colliders, cx, cz, w, d) {
   colliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 }
 
-function makeShopSign(group, colliders, x, z, ry, text, bg) {
-  const pole = box(new THREE.BoxGeometry(0.18, 4.4, 0.18), poleMat);
-  pole.position.set(x, 2.2, z);
-  pole.rotation.y = ry;
-  group.add(pole);
-  const panel = artPanel(2.4, 1.6, "sign", {
+// Build a SUBSTANTIAL shop building: a real 3D brick volume with width, depth
+// AND height (not a flat facade card). The storefront — sign, awning, door and
+// big display windows — is built on the FRONT (+Z) face, then the whole building
+// group is rotated by `ry` so that detailed front turns toward the central
+// lane/plaza (ry=π → front points -Z; ry=0 → front points +Z).
+//
+//   x,z   centre of the building footprint (placed at the tile edge, off lanes)
+//   ry    yaw so the +Z storefront face turns toward the lane
+//   w,d,h building width / DEPTH / wall height (all generous — a real block)
+//   text/bg  storefront sign
+function makeShopBuilding(group, colliders, dummy, opts) {
+  const { x, z, ry, w, d, h, text, bg, accent, wallMat } = opts;
+  const b = new THREE.Group();
+  b.position.set(x, 0, z);
+  b.rotation.y = ry;
+  group.add(b);
+
+  // --- Main brick mass (full volume: width × depth × height) -------------
+  const body = box(new THREE.BoxGeometry(w, h, d), wallMat);
+  body.position.set(0, h / 2, 0);
+  b.add(body);
+
+  // Parapet cap + thin flat roof slab so it reads solid from above/behind.
+  const parapet = box(new THREE.BoxGeometry(w + 0.4, 0.6, d + 0.4), parapetMat);
+  parapet.position.set(0, h + 0.25, 0);
+  b.add(parapet);
+  const roof = box(new THREE.BoxGeometry(w - 0.2, 0.3, d - 0.2), shopRoofMat);
+  roof.position.set(0, h + 0.05, 0);
+  b.add(roof);
+  // A little rooftop vent box for silhouette interest.
+  const vent = box(new THREE.BoxGeometry(1.2, 0.9, 1.2), parapetMat);
+  vent.position.set(w * 0.25, h + 0.6, -d * 0.15);
+  b.add(vent);
+
+  // --- Storefront on the FRONT (+Z) face ---------------------------------
+  const fz = d / 2;        // front face plane
+  // Ground-floor trim band that frames the shopfront.
+  const band = box(new THREE.BoxGeometry(w - 0.3, 0.4, 0.18), trimMat, false);
+  band.position.set(0, 2.7, fz + 0.06);
+  b.add(band);
+
+  // Big display windows flanking a central door (built proud of the wall).
+  const winH = 1.9, winY = 1.45;
+  const winW = (w - 2.4) / 2;
+  for (const sx of [-1, 1]) {
+    const frame = box(new THREE.BoxGeometry(winW + 0.2, winH + 0.2, 0.16), trimMat, false);
+    frame.position.set(sx * (winW / 2 + 0.7), winY, fz + 0.05);
+    b.add(frame);
+    const glass = box(new THREE.BoxGeometry(winW, winH, 0.1), windowMat, false);
+    glass.position.set(sx * (winW / 2 + 0.7), winY, fz + 0.12);
+    b.add(glass);
+  }
+  // Central door.
+  const door = box(new THREE.BoxGeometry(1.1, 2.3, 0.16), doorMat, false);
+  door.position.set(0, 1.15, fz + 0.06);
+  b.add(door);
+  const doorFrame = box(new THREE.BoxGeometry(1.4, 2.5, 0.1), trimMat, false);
+  doorFrame.position.set(0, 1.25, fz + 0.02);
+  b.add(doorFrame);
+
+  // --- Storefront awning over the shopfront (faces the lane) -------------
+  const awnW = w - 0.6, awnDepth = 1.6;
+  const awnMat = shopAwningMat.clone(); // one tinted clone per building (not per-frame)
+  awnMat.color.set(accent);
+  const awn = box(new THREE.BoxGeometry(awnW, 0.14, awnDepth), awnMat);
+  awn.position.set(0, 3.05, fz + awnDepth / 2 - 0.1);
+  awn.rotation.x = 0.22; // slope down toward the street
+  b.add(awn);
+  // Two small brackets holding the awning to the wall.
+  for (const sx of [-1, 1]) {
+    const br = box(new THREE.BoxGeometry(0.1, 0.1, awnDepth + 0.2), poleMat, false);
+    br.position.set(sx * (awnW / 2 - 0.3), 3.2, fz + awnDepth / 2 - 0.1);
+    br.rotation.x = 0.22;
+    b.add(br);
+  }
+
+  // --- Storefront SIGN mounted on the front, ABOVE the awning -----------
+  // artPanel faces +Z at local ry=0; the building group's ry rotation turns
+  // this whole front toward the lane, so text reads correctly (not mirrored).
+  const sign = artPanel(Math.min(w - 1.0, 4.0), 1.3, "sign", {
     text, bg, fg: "#fff7e8",
     emissiveIntensity: 0.55,
     file: `market-sign-${text.toLowerCase().replace(/\s+/g, "-")}.png`,
   });
-  panel.position.set(x, 3.6, z);
-  panel.rotation.y = ry;
-  group.add(panel);
-  addCollider(colliders, x, z, 0.6, 0.6);
+  sign.position.set(0, h - 0.5, fz + 0.12);
+  b.add(sign);
+
+  // --- Footprint collider (axis-aligned AABB matching the rotated box) ----
+  // ry is a multiple of ~90° for these placements, but to stay robust we take
+  // the rotated extent of the (w × d) footprint around (x,z).
+  const cos = Math.abs(Math.cos(ry)), sin = Math.abs(Math.sin(ry));
+  const exX = (w * cos + d * sin);
+  const exZ = (w * sin + d * cos);
+  addCollider(colliders, x, z, exX, exZ);
 }
 
 export function buildMarket() {
@@ -372,6 +469,9 @@ export function buildMarket() {
   group.add(chalkBoards);
 
   // A couple of readable chalk "price" signs (procedural sign panels).
+  // faceZ is the lane-facing direction of each row: near row (z=+9) faces -Z,
+  // far row (z=-9) faces +Z. The panel's FRONT must point along faceZ toward the
+  // lane, otherwise its DoubleSide back shows MIRRORED text to the player.
   const priceTags = [
     { x: 0, z: 9, faceZ: -1, text: "APPLES $2", bg: "#2a2f2c" },
     { x: 0, z: -9, faceZ: 1, text: "BREAD $4", bg: "#2a2f2c" },
@@ -383,8 +483,9 @@ export function buildMarket() {
       file: `market-price-${p.text.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`,
     });
     panel.position.set(p.x + 1.4, 1.35, p.z + p.faceZ * 0.6);
-    panel.rotation.x = p.faceZ > 0 ? 0.16 : -0.16;
-    if (p.faceZ > 0) panel.rotation.y = Math.PI;
+    // tilt the top slightly back toward the stall; turn the front to face the lane
+    panel.rotation.x = p.faceZ < 0 ? 0.16 : -0.16;
+    if (p.faceZ < 0) panel.rotation.y = Math.PI; // near row: front must point -Z
     group.add(panel);
   }
 
@@ -519,10 +620,31 @@ export function buildMarket() {
   bulbs.instanceMatrix.needsUpdate = true;
   group.add(bulbs);
 
-  // --- Shop signs flanking the street -------------------------------------
-  makeShopSign(group, colliders, -26, 13, 0, "FRESH", "#2f9e6e");
-  makeShopSign(group, colliders, 26, -13, 0, "BAKERY", "#c4302b");
-  makeShopSign(group, colliders, 26, 13, -Math.PI / 6, "CORNER MART", "#3f7fd0");
+  // --- Substantial shop buildings flanking the street ---------------------
+  // Four full-volume brick storefronts anchor the tile edges (well back from the
+  // lanes and stall rows). Each is a real 3D block — generous WIDTH, DEPTH and
+  // HEIGHT — with its detailed storefront (sign, awning, door, display windows)
+  // on the FRONT face turned toward the central lane (z≈0):
+  //   • north buildings (z>0): front points -Z → ry = π
+  //   • south buildings (z<0): front points +Z → ry = 0
+  // Footprints sit at |z| ≈ 21 (back edge ≤ 30, front ≥ 16.5 — clear of the
+  // hall columns at z=±11.6 and the stalls at z=±9).
+  makeShopBuilding(group, colliders, dummy, {
+    x: -16, z: 21, ry: Math.PI, w: 11, d: 8, h: 6.6,
+    text: "FRESH GROCER", bg: "#2f9e6e", accent: "#2f9e6e", wallMat: brickMat,
+  });
+  makeShopBuilding(group, colliders, dummy, {
+    x: 14, z: 21, ry: Math.PI, w: 10, d: 7.5, h: 7.2,
+    text: "CORNER MART", bg: "#3f7fd0", accent: "#3f7fd0", wallMat: stuccoMat,
+  });
+  makeShopBuilding(group, colliders, dummy, {
+    x: -14, z: -21, ry: 0, w: 10, d: 7.5, h: 6.2,
+    text: "BAKERY", bg: "#c4302b", accent: "#c4302b", wallMat: brickMat,
+  });
+  makeShopBuilding(group, colliders, dummy, {
+    x: 16, z: -21, ry: 0, w: 11, d: 8, h: 7.0,
+    text: "DELI", bg: "#e8a93a", accent: "#e8a93a", wallMat: brickMat2,
+  });
 
   // --- Rotating market hub sign (animated) --------------------------------
   // Pole sits OFF the lane (Z=6, beside the west lamp posts) so the central

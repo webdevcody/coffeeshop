@@ -537,6 +537,12 @@ wss.on("connection", (ws) => {
     moving: false,
     sitting: false,
     seatY: 0,
+    // Current ride: null (walking), "car" (driving), or "skate" (on the board).
+    // Stored so a newcomer's welcome/player-joined roster shows an in-progress ride.
+    ride: null,
+    // Held coffee-bar item id (null = empty-handed). Stored so a newcomer's
+    // welcome/player-joined roster shows what each player is already holding.
+    held: null,
     // Voice: whether this player has muted everyone (deafened). Sent to newcomers
     // so they immediately see the "can't hear you" badge over an already-deafened
     // player. Per-person mutes are relayed live and not stored here.
@@ -590,6 +596,12 @@ wss.on("connection", (ws) => {
         player.moving = !!msg.moving;
         player.sitting = !!msg.sitting;
         if (typeof msg.seatY === "number") player.seatY = clamp(msg.seatY, 0, 5);
+        // Ride tag — validated to the two known strings (else walking) so a client
+        // can't inject arbitrary data, consistent with the clamps above.
+        player.ride = msg.ride === "car" || msg.ride === "skate" ? msg.ride : null;
+        // Held item id — a short string id (else empty-handed). Bounded so a client
+        // can't inject arbitrary data; the client maps it back via getItem(id).
+        player.held = typeof msg.held === "string" ? msg.held.slice(0, 32) : null;
         broadcast(
           {
             type: "state",
@@ -600,6 +612,8 @@ wss.on("connection", (ws) => {
             moving: player.moving,
             sitting: player.sitting,
             seatY: player.seatY,
+            ride: player.ride,
+            held: player.held,
           },
           id
         );

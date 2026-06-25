@@ -25,6 +25,8 @@ const paveSide = new THREE.MeshStandardMaterial({ color: "#8e887d", roughness: 1
 const plazaMat = new THREE.MeshStandardMaterial({ color: "#c8a36b", roughness: 0.9 });
 const galleryWall = new THREE.MeshStandardMaterial({ color: "#efe7d8", roughness: 0.85 });
 const galleryWall2 = new THREE.MeshStandardMaterial({ color: "#e3d4c0", roughness: 0.85 });
+const cafeWall = new THREE.MeshStandardMaterial({ color: "#d9b894", roughness: 0.85 });        // warm terracotta cafe
+const studioWall = new THREE.MeshStandardMaterial({ color: "#c9cdd6", roughness: 0.85 });       // cool grey studio
 const roofMat = new THREE.MeshStandardMaterial({ color: "#3b3640", roughness: 0.8 });
 const plinthMat = new THREE.MeshStandardMaterial({ color: "#4a4750", roughness: 0.9 });
 const planterMat = new THREE.MeshStandardMaterial({ color: "#8a5a36", roughness: 0.9 });
@@ -143,7 +145,9 @@ function addWindowGrid(parent, cx, cy, cz, dir, faceW, cols, rows, y0, ystep) {
 
 // Ground-floor storefront on a wall face: display glass + door + awning + framing.
 // dir = outward normal. Visual only (sits flush on the existing footprint).
-function addStorefront(parent, cx, cz, dir, faceW, awning) {
+// doorOffset = tangent offset (m) of the entrance door from the face centre; pass
+// 0 to centre the door (e.g. under a centred entrance porch).
+function addStorefront(parent, cx, cz, dir, faceW, awning, doorOffset = null) {
   const rotY = Math.atan2(dir.x, dir.z);
   const tang = new THREE.Vector3(-dir.z, 0, dir.x);
   const off = (s) => ({ x: cx + dir.x * 0.07 + tang.x * s, z: cz + dir.z * 0.07 + tang.z * s });
@@ -174,10 +178,10 @@ function addStorefront(parent, cx, cz, dir, faceW, awning) {
     parent.add(mull);
   }
 
-  // glass entrance door (offset to one side)
+  // glass entrance door (centred if doorOffset===0, else offset to one side)
   const door = new THREE.Mesh(unitBox, doorMat);
   door.scale.set(1.3, 2.3, 0.14);
-  const dp = off(faceW * 0.32);
+  const dp = off(doorOffset ?? faceW * 0.32);
   door.position.set(dp.x + dir.x * 0.05, 1.15, dp.z + dir.z * 0.05);
   door.rotation.y = rotY;
   parent.add(door);
@@ -189,6 +193,85 @@ function addStorefront(parent, cx, cz, dir, faceW, awning) {
   aw.rotation.set(dir.z * 0.32, rotY, dir.x * 0.32);
   aw.castShadow = true;
   parent.add(aw);
+}
+
+// A full-volume corner building (real width x depth x height) with a cornice,
+// flat roof, rooftop clutter, a storefront on its primary face, a shop sign
+// mounted over the storefront (FRONT faces `dir`, never mirrored), and lit window
+// grids on the upper floor of the two side/back faces. Registers a footprint
+// collider sized to the wall (+ a small skin for the storefront depth).
+//
+//   dir  — outward unit normal of the PRIMARY (storefront) face, toward a lane.
+//   side — outward unit normal of a SECONDARY face that also fronts a lane; gets
+//          its own slim mural-free window band + an accent door. Pass null to skip.
+// Returns nothing; everything is added to `parent`, collider pushed to `colliders`.
+function addShopBuilding(parent, colliders, cfg) {
+  const { cx, cz, w, d, h, wall, trim, awning, dir, side = null, sign } = cfg;
+
+  // main solid mass — substantial on ALL three axes, reads solid from every angle
+  const body = box(w, h, d, wall);
+  body.position.set(cx, h / 2, cz);
+  parent.add(body);
+
+  // flat roof slab + cornice/parapet + rooftop clutter
+  const roof = box(w + 0.5, 0.5, d + 0.5, roofMat);
+  roof.position.set(cx, h + 0.25, cz);
+  parent.add(roof);
+  addCornice(parent, cx, cz, w, d, h, trim);
+  addRoofClutter(parent, cx, cz, h + 0.5, w, d);
+
+  // string-course band between the ground floor and upper floor (depth on facade)
+  const course = box(w + 0.3, 0.4, d + 0.3, trim);
+  course.position.set(cx, 3.3, cz);
+  parent.add(course);
+
+  // Primary storefront face (toward the avenue/plaza). faceW spans the wall edge
+  // perpendicular to `dir`: if dir is along Z the storefront width is `w`, else `d`.
+  const primW = Math.abs(dir.x) > 0.5 ? d : w;
+  const fcx = cx + dir.x * (Math.abs(dir.x) > 0.5 ? w / 2 : 0);
+  const fcz = cz + dir.z * (Math.abs(dir.z) > 0.5 ? d / 2 : 0);
+  addStorefront(parent, fcx, fcz, dir, primW, awning, 0);
+
+  // Shop SIGN mounted on the string-course over the storefront. artPanel("sign")
+  // is double-sided; we orient its FRONT outward along `dir` so text reads
+  // correctly from the street (rotY = atan2(dir.x,dir.z)) — never mirrored.
+  const rotY = Math.atan2(dir.x, dir.z);
+  const signPanel = artPanel(Math.min(primW * 0.7, 6.4), 1.5, "sign", {
+    text: sign.text, bg: sign.bg, fg: sign.fg || "#ffffff",
+    emissiveIntensity: 0.5, file: sign.file,
+  });
+  // Mounted on the facade ABOVE the awning (awning tops ~y3.1), below the cornice.
+  signPanel.position.set(fcx + dir.x * 0.18, 4.15, fcz + dir.z * 0.18);
+  signPanel.rotation.y = rotY;
+  parent.add(signPanel);
+
+  // Secondary lane face: a slim storefront so the building reads "active" on its
+  // other street frontage too (still one coherent mass, sits flush on the wall).
+  if (side) {
+    const secW = Math.abs(side.x) > 0.5 ? d : w;
+    const scx = cx + side.x * (Math.abs(side.x) > 0.5 ? w / 2 : 0);
+    const scz = cz + side.z * (Math.abs(side.z) > 0.5 ? d / 2 : 0);
+    addStorefront(parent, scx, scz, side, secW, awning, secW * 0.3);
+  }
+
+  // Lit instanced window grids on the upper floor of the remaining (back) faces,
+  // so the building has detail from behind too (NOT a one-sided facade).
+  const backDir = new THREE.Vector3(-dir.x, 0, -dir.z);
+  const backW = Math.abs(backDir.x) > 0.5 ? d : w;
+  const bcx = cx + backDir.x * (Math.abs(backDir.x) > 0.5 ? w / 2 : 0);
+  const bcz = cz + backDir.z * (Math.abs(backDir.z) > 0.5 ? d / 2 : 0);
+  addWindowGrid(parent, bcx, 0, bcz, backDir, backW * 0.78, 4, 2, 4.4, 2.2);
+  if (!side) {
+    // if there is no secondary storefront, also dress that side face with windows
+    const sd = new THREE.Vector3(-dir.z, 0, dir.x); // perpendicular to dir
+    const sdW = Math.abs(sd.x) > 0.5 ? d : w;
+    const sdcx = cx + sd.x * (Math.abs(sd.x) > 0.5 ? w / 2 : 0);
+    const sdcz = cz + sd.z * (Math.abs(sd.z) > 0.5 ? d / 2 : 0);
+    addWindowGrid(parent, sdcx, 0, sdcz, sd, sdW * 0.72, 3, 2, 4.4, 2.2);
+  }
+
+  // Footprint collider tight to the wall + a thin storefront skin.
+  addCollider(colliders, cx, cz, w + 0.4, d + 0.4);
 }
 
 // Cornice / parapet trim band wrapping the top of a rectangular footprint.
@@ -440,17 +523,32 @@ export function buildArts() {
       group.add(fr, a);
     }
 
-    // Glass atrium entrance + storefront band on the +Z face.
-    addStorefront(group, gx, gz + d / 2, new THREE.Vector3(0, 0, 1), w, awningMat);
-    // taller glass atrium volume jutting from the entrance
-    const atrium = new THREE.Mesh(unitBox, glassMat);
-    atrium.scale.set(5.5, 4.6, 1.8);
-    atrium.position.set(gx, 2.3, gz + d / 2 + 0.9);
-    group.add(atrium);
-    const atriumFrame = new THREE.Mesh(unitBox, frameMat);
-    atriumFrame.scale.set(5.7, 0.2, 2.0);
-    atriumFrame.position.set(gx, 4.6, gz + d / 2 + 0.9);
-    group.add(atriumFrame);
+    // Glass storefront band on the +Z (plaza) face, with the door centred so the
+    // entrance porch lines up over it.
+    addStorefront(group, gx, gz + d / 2, new THREE.Vector3(0, 0, 1), w, awningMat, 0);
+    // Centred glass entrance porch projecting cleanly from the wall. Kept narrow
+    // (3.6 m) and short (top y≈2.8) so it sits BELOW the awning and does not bury
+    // the flanking display windows — one coherent vestibule, no overlap.
+    const porchW = 3.6, porchDepth = 1.0;
+    const porchFront = gz + d / 2 + porchDepth; // front plane of the porch
+    // two glass side walls of the porch (tucked under the cap at y≈2.5)
+    for (const sx of [-porchW / 2, porchW / 2]) {
+      const side = new THREE.Mesh(unitBox, glassMat);
+      side.scale.set(0.12, 2.4, porchDepth);
+      side.position.set(gx + sx, 1.25, gz + d / 2 + porchDepth / 2);
+      group.add(side);
+    }
+    // glass front of the porch (above the doorway)
+    const porchGlass = new THREE.Mesh(unitBox, glassMat);
+    porchGlass.scale.set(porchW, 1.1, 0.12);
+    porchGlass.position.set(gx, 1.95, porchFront);
+    group.add(porchGlass);
+    // solid framed lintel capping the porch (flat roof of the vestibule)
+    const porchCap = new THREE.Mesh(unitBox, frameMat);
+    porchCap.scale.set(porchW + 0.3, 0.22, porchDepth + 0.2);
+    porchCap.position.set(gx, 2.62, gz + d / 2 + porchDepth / 2);
+    porchCap.castShadow = true;
+    group.add(porchCap);
 
     // Lit instanced window grids on the upper floor of the back faces (-Z, -X)
     // which front no mural — keeps the plaza faces clean for the art.
@@ -521,15 +619,39 @@ export function buildArts() {
     group.add(makeSpotlight(gx + 4, 6.8, gz - d / 2 - 0.2, Math.PI));
   }
 
+  // --- Cafe building — front-right corner (+x,-z), a FULL VOLUME (15x12x7.5) ---
+  // Storefront FRONT faces the plaza (-Z, along the E-W lane); a second active
+  // frontage faces the N-S lane (-X). Real depth + height, not a facade card.
+  addShopBuilding(group, colliders, {
+    cx: 19.5, cz: -19.5, w: 15, d: 12, h: 7.5,
+    wall: cafeWall, trim: trimMat2, awning: awningMat2,
+    dir: new THREE.Vector3(0, 0, 1),    // primary face +Z -> E-W lane / plaza
+    side: new THREE.Vector3(-1, 0, 0),  // secondary face -X -> N-S lane / plaza
+    sign: { text: "CAFE CITY", bg: "#2b7a78", fg: "#f6efe0", file: "arts-shop-cafe.png" },
+  });
+
+  // --- Studio / print shop — back-left corner (-x,+z), FULL VOLUME (15x12x7.5) -
+  // Storefront FRONT faces the plaza (+Z); second frontage faces the N-S lane (+X).
+  addShopBuilding(group, colliders, {
+    cx: -19.5, cz: 19.5, w: 15, d: 12, h: 7.5,
+    wall: studioWall, trim: trimMat, awning: awningMat,
+    dir: new THREE.Vector3(0, 0, -1),   // primary face -Z -> E-W lane / plaza
+    side: new THREE.Vector3(1, 0, 0),   // secondary face +X -> N-S lane / plaza
+    sign: { text: "ART STUDIO", bg: "#c0392b", fg: "#f6efe0", file: "arts-shop-studio.png" },
+  });
+
   // --- Banner flags on a row of slim poles flanking the plaza approach ------
   // Placed in the open corner quadrants, clear of BOTH through-lanes
   // (|x| and |z| both well over the ~4 m lane half-width). Tiny colliders.
   const flagSwayers = [];
+  // Moved off the corners (now occupied by the Cafe / Studio buildings): the
+  // flags line the plaza-facing frontage of each new building, clear of both
+  // footprints (|x|<12) AND the through-lanes (|x|,|z| > ~4.5).
   const flagSpots = [
-    { x: 24, z: -10, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
-    { x: 24, z: -14, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
-    { x: -24, z: 10, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
-    { x: -24, z: 14, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
+    { x: 10, z: -13, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
+    { x: 6, z: -13, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
+    { x: -10, z: 13, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
+    { x: -6, z: 13, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
   ];
   for (let i = 0; i < flagSpots.length; i++) {
     const f = flagSpots[i];
@@ -558,8 +680,8 @@ export function buildArts() {
     { x: 7, z: -7, kind: "cone", r: 1.0 },
     { x: -7, z: 7, kind: "stack", r: 1.4 },
     { x: 7, z: 7, kind: "sphere", r: 1.3 },
-    { x: -10.5, z: 0.0, kind: "blob", r: 1.1 },
-    { x: 10.5, z: 0.0, kind: "cone", r: 1.0 },
+    { x: -10, z: 6, kind: "blob", r: 1.1 },   // pulled off the E-W lane (z=0)
+    { x: 10, z: -6, kind: "cone", r: 1.0 },   // pulled off the E-W lane (z=0)
   ];
   for (const s of sculptSpots) {
     const m = makeSculpture(s.kind);
@@ -590,9 +712,10 @@ export function buildArts() {
   addCollider(colliders, 0, 0, 2.2, 2.2);
 
   // --- Welcome billboard + neon (glow) at a plaza edge ---------------------
-  // Billboard on a post near the back-right, off the lanes.
+  // Billboard on a post on the plaza rim (off the lanes AND clear of the corner
+  // buildings' frontages), facing in toward the plaza centre.
   const bbPost = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 4.2, 8), poleMat);
-  bbPost.position.set(13, 2.1, -13);
+  bbPost.position.set(13, 2.1, -7);
   bbPost.castShadow = true;
   group.add(bbPost);
   const billboard = artPanel(6, 3.2, "billboard", {
@@ -600,21 +723,21 @@ export function buildArts() {
     a: "#3a1f5d", b: "#0c1830", accent: "#f4c93b", glyph: "✺",
     emissiveIntensity: 0.5, file: "arts-billboard.png",
   });
-  billboard.position.set(13, 5.4, -13);
-  billboard.rotation.y = -Math.PI * 0.75;
+  billboard.position.set(13, 5.4, -7);
+  billboard.rotation.y = -Math.PI * 0.62; // front faces the plaza centre
   group.add(billboard);
 
-  // Flickering neon "GALLERY" sign near the front-left.
+  // Flickering neon "GALLERY" sign on the opposite plaza rim.
   const neonPost = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3.4, 8), poleMat);
-  neonPost.position.set(-13, 1.7, 13);
+  neonPost.position.set(-13, 1.7, 7);
   neonPost.castShadow = true;
   group.add(neonPost);
   const neon = artPanel(3.2, 3.2, "neon", {
     lines: ["OPEN", "GALLERY"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arts-neon.png",
   });
-  neon.position.set(-13, 4.4, 13);
-  neon.rotation.y = Math.PI * 0.25;
+  neon.position.set(-13, 4.4, 7);
+  neon.rotation.y = Math.PI * 0.38; // front faces the plaza centre
   group.add(neon);
 
   // Swaying banner near plaza entrance (animated, no collider — thin/high).
@@ -630,8 +753,11 @@ export function buildArts() {
   group.add(banner);
 
   // --- Planter trees softening the corners (decorative, small colliders) ---
+  // Placed to FLANK the lane mouths (not block them): pulled off both the N-S
+  // (x=0) and E-W (z=0) centrelines, and clear of every building footprint.
   const treeSpots = [
-    [-25, 0], [25, 0], [0, -25], [0, 25],
+    [5.5, 27], [-5.5, -27],   // flank the N-S lane mouths
+    [27, 5.5], [-27, -5.5],   // flank the E-W lane mouths
   ];
   for (const [tx, tz] of treeSpots) {
     const t = makePlanterTree(tx, tz);

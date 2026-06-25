@@ -13,8 +13,9 @@
 //
 // Cars: wide-open grass lanes run N–S along x≈±20 and E–W along z≈±20; the only
 // obstacles a driver must avoid are the pond (centre), the gazebo (NW), the
-// fountain (SE corner of the central green) and the tree-line colliders. Keep
-// to the perimeter and the cross-axes and there's clear >6 m driving room.
+// visitor pavilion (W edge, footprint pulled to x≈-25 so the lane stays clear),
+// the fountain (SE corner of the central green) and the tree-line colliders.
+// Keep to the perimeter and the cross-axes and there's clear >6 m driving room.
 
 import * as THREE from "three";
 import { artPanel } from "../cityArt.js";
@@ -99,6 +100,13 @@ const metalMat = new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness: 0
 const stoneMat = new THREE.MeshStandardMaterial({ color: "#c4bdae", roughness: 0.95, flatShading: true });
 const woodMat = new THREE.MeshStandardMaterial({ color: "#7a5230", roughness: 0.85 });
 const roofMat = new THREE.MeshStandardMaterial({ color: "#8c4a3a", roughness: 0.8 });
+// Pavilion building materials (full-volume park lodge): plaster walls, timber
+// trim, a darker base course and warm-lit windows so it reads solid all round.
+const pavilionWall = new THREE.MeshStandardMaterial({ color: "#e7dcc4", roughness: 0.92 });
+const pavilionBase = new THREE.MeshStandardMaterial({ color: "#7d6a4f", roughness: 0.95 });
+const pavilionWindow = new THREE.MeshStandardMaterial({
+  color: "#fff2cf", emissive: "#ffcf7a", emissiveIntensity: 0.55, roughness: 0.4,
+});
 const lampGlass = new THREE.MeshStandardMaterial({
   color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 0.9, roughness: 0.4,
 });
@@ -234,6 +242,92 @@ function makeDuck() {
   bill.position.set(0, 0.33, 0.6);
   g.add(body, tail, neck, head, bill);
   return g;
+}
+
+// A full-volume park visitor pavilion: a real little building with substantial
+// WIDTH (X) × DEPTH (Z) × HEIGHT, not a flat card. Base course + plaster walls
+// + overhanging hipped roof + a doorway and warm-lit windows wrapped on ALL
+// four sides so it reads solid from front, sides AND back. The detailed FRONT
+// (door + porch) faces +X by default; the caller rotates/positions it and the
+// welcome sign is mounted flush on that front wall. Footprint = W × D; the
+// caller adds a matching collider. Returns { group, W, D, wallH }.
+function makePavilion(W = 7.2, D = 6.2, wallH = 3.6) {
+  const g = new THREE.Group();
+
+  // Dark stone base course (slightly larger footprint than the walls).
+  const base = box(W + 0.5, 0.5, D + 0.5, pavilionBase);
+  base.position.y = 0.25;
+  base.receiveShadow = true;
+  g.add(base);
+
+  // Solid plaster wall block — the main mass with real width AND depth.
+  const walls = box(W, wallH, D, pavilionWall);
+  walls.position.y = 0.5 + wallH / 2;
+  walls.castShadow = true;
+  walls.receiveShadow = true;
+  g.add(walls);
+
+  // Recessed doorway on the FRONT (+X) face: a dark inset panel + timber frame.
+  const door = box(0.12, 2.1, 1.5, pavilionBase);
+  door.position.set(W / 2 + 0.02, 0.5 + 1.05, 0);
+  g.add(door);
+  const lintel = box(0.3, 0.25, 1.9, woodMat);
+  lintel.position.set(W / 2, 0.5 + 2.2, 0);
+  g.add(lintel);
+
+  // Two porch posts + a small flat porch roof over the entrance (front detail).
+  for (const pz of [-1.3, 1.3]) {
+    const post = box(0.22, 2.6, 0.22, woodMat);
+    post.position.set(W / 2 + 1.1, 0.5 + 1.3, pz);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const porchRoof = box(1.6, 0.18, 3.4, roofMat);
+  porchRoof.position.set(W / 2 + 0.7, 0.5 + 2.7, 0);
+  porchRoof.castShadow = true;
+  g.add(porchRoof);
+
+  // Overhanging hipped roof: a wide low pyramid covering the whole footprint
+  // with eaves past every wall, so the silhouette reads as a building from all
+  // sides (front, back and both flanks).
+  const roofGeo = new THREE.ConeGeometry(Math.max(W, D) * 0.82, 1.8, 4);
+  const roof = new THREE.Mesh(roofGeo, roofMat);
+  roof.rotation.y = Math.PI / 4; // align the 4-sided cone to the box footprint
+  roof.scale.set(1, 1, D / W);    // stretch to cover the rectangular plan
+  roof.position.y = 0.5 + wallH + 0.9;
+  roof.castShadow = true;
+  g.add(roof);
+
+  // Warm-lit windows wrapped on ALL four faces (instanced). Front gets two
+  // flanking the door; back gets three; each flank gets two — so the back is
+  // never a blank wall.
+  const winGeo = new THREE.BoxGeometry(0.14, 1.1, 0.9);
+  const wy = 0.5 + 1.7;
+  const specs = []; // [x, z, rotY]
+  // Front (+X), beside the door.
+  specs.push([W / 2 + 0.01, -2.0, 0], [W / 2 + 0.01, 2.0, 0]);
+  // Back (-X).
+  specs.push([-W / 2 - 0.01, -1.7, 0], [-W / 2 - 0.01, 0, 0], [-W / 2 - 0.01, 1.7, 0]);
+  // Right flank (+Z).
+  specs.push([-1.8, D / 2 + 0.01, Math.PI / 2], [1.8, D / 2 + 0.01, Math.PI / 2]);
+  // Left flank (-Z).
+  specs.push([-1.8, -D / 2 - 0.01, Math.PI / 2], [1.8, -D / 2 - 0.01, Math.PI / 2]);
+  const wins = new THREE.InstancedMesh(winGeo, pavilionWindow, specs.length);
+  const wm = new THREE.Matrix4();
+  const wq = new THREE.Quaternion();
+  const wp = new THREE.Vector3();
+  const ws = new THREE.Vector3(1, 1, 1);
+  for (let i = 0; i < specs.length; i++) {
+    const [x, z, ry] = specs[i];
+    wq.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry);
+    wp.set(x, wy, z);
+    wm.compose(wp, wq, ws);
+    wins.setMatrixAt(i, wm);
+  }
+  wins.instanceMatrix.needsUpdate = true;
+  g.add(wins);
+
+  return { group: g, W, D, wallH };
 }
 
 export function buildPark() {
@@ -479,17 +573,30 @@ export function buildPark() {
   group.add(gazebo);
   addCollider(colliders, gx, gz, 6, 6);
 
-  // A welcome sign by the gazebo (billboard art panel that glows + rotates).
+  // --- Park Visitor Pavilion (W edge): a REAL full-volume building -----------
+  // A substantial little lodge (≈7.2 m wide × 6.2 m deep × 3.6 m tall) with
+  // plaster walls, a stone base, an overhanging hipped roof, a porch entrance
+  // and warm-lit windows wrapped on every face — solid from front, back AND
+  // sides, never a flat card. Its detailed FRONT (porch + door + sign) faces
+  // +X, i.e. east toward the central green/plaza and the nearest avenue.
+  const pavW = 7.2, pavD = 6.2, pavWallH = 3.6;
+  const px = -25, pz = -7;
+  const pav = makePavilion(pavW, pavD, pavWallH);
+  pav.group.position.set(px, 0, pz);
+  group.add(pav.group);
+  // Solid footprint collider matching the pavilion's full plan (incl. base).
+  addCollider(colliders, px, pz, pavW + 0.5, pavD + 0.5);
+
+  // Welcome sign mounted FLUSH on the pavilion's front (+X) wall, just above the
+  // porch roof, reading outward toward the green so the text is never mirrored.
   const sign = artPanel(2.4, 1.4, "billboard", {
     title: "CITY PARK", sub: "Est. 1908", accent: "#ffd86b",
     a: "#2c6e3f", b: "#123a22", glyph: "❀",
     emissiveIntensity: 0.55, file: "billboard-park.png",
   });
-  sign.position.set(gx + 4.2, 1.6, gz + 1.0);
-  sign.rotation.y = 0.4;
-  const signPost = box(0.12, 1.6, 0.12, metalMat);
-  signPost.position.set(gx + 4.2, 0.8, gz + 1.0);
-  group.add(signPost, sign);
+  sign.position.set(px + pavW / 2 + 0.08, 0.5 + pavWallH - 0.2, pz);
+  sign.rotation.y = Math.PI / 2; // artPanel faces +Z at ry=0; turn it to face +X
+  group.add(sign);
 
   // --- Fountain (SE): tiered stone basin with a translucent pool + spray. ---
   const fountain = new THREE.Group();

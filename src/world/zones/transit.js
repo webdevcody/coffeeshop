@@ -107,6 +107,19 @@ function addCollider(colliders, cx, cz, w, d) {
   colliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 }
 
+// A "sign"/billboard artPanel whose readable FRONT faces −Z (toward the plaza /
+// platform crowd that approaches the station from the south). artPanel's textured
+// front faces +Z and the canvas text reads correctly only from the +Z side; the
+// OLD code rotated these panels 180° about Y to point at the −Z crowd, which
+// renders the text MIRRORED ("backwards SHOP-style"). Mirroring the mesh on X
+// (scale.x = −1) instead points the front at −Z *and* un-mirrors the glyphs, and
+// — unlike flipping the texture — it survives the async PNG swap in artMaterial().
+function signFacingNorthApproach(w, h, opts) {
+  const panel = artPanel(w, h, "sign", opts);
+  panel.scale.x = -1; // face −Z with correct (non-mirrored) text
+  return panel;
+}
+
 // --- Prop builders ----------------------------------------------------------
 
 // One train coach: red box with cream window-band + windows, dark roof, bogies.
@@ -227,6 +240,42 @@ function makeBin() {
   return g;
 }
 
+// A platform KIOSK building: a genuine little structure (brick base, glazed
+// shopfront on the −Z platform-facing side, parapet roof) with real WIDTH, DEPTH
+// AND HEIGHT — NOT a flat card. Returns the group; the caller adds a footprint
+// collider sized to (w, d). The readable shop sign faces −Z (platform crowd).
+function makeKiosk(w, d, h, signText, signBg) {
+  const g = new THREE.Group();
+  // solid brick body — full volume, reads from front, sides and back
+  const body = box(w, h, d, MAT.brick, true, true);
+  body.position.y = h / 2;
+  g.add(body);
+  // flat roof slab + parapet lip so the top reads as a real building, not a box
+  const roof = box(w + 0.4, 0.4, d + 0.4, MAT.cornice, true, false);
+  roof.position.y = h + 0.1;
+  g.add(roof);
+  // glazed shopfront recessed into the −Z (platform-facing) wall
+  const glass = box(w - 1.2, h - 1.6, 0.12, MAT.glazing, false, false);
+  glass.position.set(0, (h - 1.6) / 2 + 0.5, -d / 2 - 0.02);
+  g.add(glass);
+  // a stall counter / sill projecting from the shopfront
+  const counter = box(w - 0.8, 0.3, 0.6, MAT.concourseTrim, true, false);
+  counter.position.set(0, 1.0, -d / 2 - 0.35);
+  g.add(counter);
+  // a small striped awning over the shopfront (sloped, slab — clearly an awning)
+  const awn = box(w - 0.6, 0.12, 1.1, MAT.awning, true, false);
+  awn.position.set(0, h - 1.0, -d / 2 - 0.55);
+  awn.rotation.x = 0.2;
+  g.add(awn);
+  // a fascia sign board on the −Z face, text reading toward the platform (−Z)
+  const sign = signFacingNorthApproach(w - 1.0, 0.8, {
+    text: signText, bg: signBg, fg: "#ffffff", emissiveIntensity: 0.45,
+  });
+  sign.position.set(0, h - 0.5, -d / 2 - 0.08);
+  g.add(sign);
+  return g;
+}
+
 export function buildTransit() {
   const group = new THREE.Group();
   const colliders = [];
@@ -260,12 +309,36 @@ export function buildTransit() {
   // The platform is a SOLID raised block — collide its full footprint.
   addCollider(colliders, 0, PLAT_Z, 58, PLAT_DEPTH);
 
+  // --- PLATFORM KIOSK BUILDINGS: two real little structures standing ON the
+  // platform (a newsstand + a coffee bar). Each is a SUBSTANTIAL 3D volume
+  // (5 m wide × 4.5 m deep × 3.6 m tall) with brick body, glazed shopfront,
+  // counter, awning and a sign — NOT a flat facade card — so it reads solid from
+  // every side. Placed toward the back of the platform, between the canopy
+  // columns (x=±18,0) and benches, with the shopfront facing −Z (the crowd).
+  const KIOSK_W = 5, KIOSK_D = 4.5, KIOSK_H = 3.6;
+  const kioskZ = PLAT_Z + 0.6;                 // ≈12.6 → spans Z 10.35..14.85 (on platform)
+  const kiosks = [
+    { x: -10, text: "NEWS", bg: "#1f4fa0" },
+    { x: 10, text: "COFFEE", bg: "#7a3b1f" },
+  ];
+  for (const k of kiosks) {
+    const kg = makeKiosk(KIOSK_W, KIOSK_D, KIOSK_H, k.text, k.bg);
+    kg.position.set(k.x, PLAT_H, kioskZ);      // sits on the raised platform top
+    group.add(kg);
+    addCollider(colliders, k.x, kioskZ, KIOSK_W, KIOSK_D);
+  }
+
   // --- Glazed CONCOURSE building along the far north back edge (Z ≈ +16..+22)
   // Sits behind the platform, well clear of the open car/walk lanes. It's the
   // station head-house: a long brick base with a tall glazed concourse facade,
   // mullion grid, cornice/parapet, lit upper windows and rooftop clutter.
-  const CONC_Z = 19;          // building centre in Z (back of tile)
-  const CONC_DEPTH = 7;       // 15.5 .. 22.5 — stays inside the tile (maxZ 30)
+  // A real head-house needs genuine DEPTH, not a tall card: the building is now a
+  // full 10 m-deep mass (front kept just behind the platform at Z≈15.6, back at
+  // Z≈25.6 — well inside the tile) so it reads solid from the front, sides AND
+  // back, with a stepped-back upper storey adding rooftop massing.
+  const CONC_DEPTH = 10;      // building depth in Z (front Z≈15.6 .. back Z≈25.6)
+  const CONC_FRONT = 15.6;    // platform-facing wall (platform back edge is Z=15)
+  const CONC_Z = CONC_FRONT + CONC_DEPTH / 2; // centre = 20.6 (kept clear of lanes)
   const CONC_W = 50;          // building width in X
   const CONC_H = 11;          // wall height
   const concX = -3;           // shift slightly so the clock tower can sit at +X end
@@ -288,6 +361,40 @@ export function buildTransit() {
   group.add(parapet);
   // The concourse is solid mass — collide its footprint (clear of all lanes).
   addCollider(colliders, concX, CONC_Z, CONC_W, CONC_DEPTH);
+
+  // STEPPED-BACK UPPER STOREY: a second, narrower+shallower block set on top and
+  // toward the back of the head-house, so the building has real volume/massing
+  // when seen from the platform AND from behind (not just a tall flat facade).
+  const upperW = CONC_W - 14;
+  const upperD = CONC_DEPTH - 3.5;
+  const upperH = 5.0;
+  const upperZ = CONC_Z + 1.4;                 // shifted back off the front wall
+  const upper = box(upperW, upperH, upperD, MAT.concourse, true, true);
+  upper.position.set(concX, CONC_H + upperH / 2, upperZ);
+  group.add(upper);
+  const upperCornice = box(upperW + 0.6, 0.7, upperD + 0.6, MAT.cornice, true, false);
+  upperCornice.position.set(concX, CONC_H + upperH + 0.2, upperZ);
+  group.add(upperCornice);
+
+  // END PAVILION WING (−X end): a taller, DEEPER solid brick corner block anchoring
+  // the −X end of the head-house. It extends further back than the main mass and
+  // rises above it, breaking the long facade into real stepped massing with its
+  // own side + back faces (so the building reads solid from every angle, not as a
+  // uniform slab). (The +X end is anchored by the clock TOWER below, so only the
+  // −X end gets a wing — avoids the wing clashing with the tower.)
+  const WING_W = 8;
+  const WING_D = CONC_DEPTH + 3.0;             // 13 m deep — deeper than the main mass
+  const WING_H = CONC_H + 1.5;                 // taller than the main mass
+  const wingFront = 15.7;                      // front kept just behind platform (Z=15)
+  const wingCz = wingFront + WING_D / 2;       // ≈ 22.2 (back ≈ 28.7, inside tile)
+  const wingX = concX - (CONC_W / 2 - WING_W / 2 + 0.5);
+  const wing = box(WING_W, WING_H, WING_D, MAT.brick, true, true);
+  wing.position.set(wingX, WING_H / 2, wingCz);
+  group.add(wing);
+  const wingCap = box(WING_W + 0.6, 0.8, WING_D + 0.6, MAT.cornice, true, false);
+  wingCap.position.set(wingX, WING_H + 0.3, wingCz);
+  group.add(wingCap);
+  addCollider(colliders, wingX, wingCz, WING_W, WING_D);
 
   // GLAZED FACADE: a tall glass curtain wall on the platform-facing (-Z) side,
   // with a regular MULLION grid. The big glass sheet is ONE mesh; the mullions
@@ -407,41 +514,46 @@ export function buildTransit() {
   // The tower is solid — collide its footprint.
   addCollider(colliders, TOWER_X, CONC_Z, 6, 6);
 
-  // ROOFTOP CLUTTER on the concourse roof: AC units, vents, a water tank and a
-  // skylight, plus a stub antenna. Visual-only (above head height, no colliders).
-  const roofY = CONC_H + 0.75;
+  // ROOFTOP CLUTTER. The roof is now two levels: a LOWER front-roof strip (in
+  // front of the stepped-back upper storey, Z≈17) and the UPPER storey roof on
+  // top (Z≈22). Clutter is split between them so nothing buries itself inside the
+  // upper storey block. Visual-only (above head height, no colliders).
+  const roofY = CONC_H + 0.1;                          // lower (front) roof deck level
+  const frontRoofZ = CONC_FRONT + 1.6;                 // ≈17.2 — front of the upper step
+  const upperRoofY = CONC_H + upperH + 0.4;            // top of the upper storey
+  // AC units sit on the LOWER front roof strip, clear of the upper storey.
   const acXs = [-18, -10, 6, 14];
   for (const ax of acXs) {
     const ac = box(2.0, 1.0, 1.6, MAT.rooftop);
-    ac.position.set(concX + ax, roofY + 0.5, CONC_Z + 1.2);
+    ac.position.set(concX + ax, roofY + 0.5, frontRoofZ);
     group.add(ac);
     // small fan grille on top
     const grille = box(1.4, 0.12, 1.2, MAT.steel, false, false);
-    grille.position.set(concX + ax, roofY + 1.05, CONC_Z + 1.2);
+    grille.position.set(concX + ax, roofY + 1.05, frontRoofZ);
     group.add(grille);
   }
-  // cylindrical vents
+  // cylindrical vents — also on the lower front roof strip
   for (const vx of [-14, -2, 10]) {
     const v = new THREE.Mesh(GEO.vent, MAT.rooftop);
-    v.position.set(concX + vx, roofY + 0.2, CONC_Z - 1.6);
+    v.position.set(concX + vx, roofY + 0.2, frontRoofZ + 0.9);
     group.add(v);
   }
-  // a raised water tank on stubby legs
+  // a raised water tank on stubby legs — perched ON the upper storey roof
   const tankBody = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 2.4, 12), MAT.tank);
-  tankBody.position.set(concX - 6, roofY + 2.4, CONC_Z - 1.5);
+  tankBody.position.set(concX - 6, upperRoofY + 1.5, upperZ);
   tankBody.castShadow = true;
   group.add(tankBody);
   const tankCap = new THREE.Mesh(new THREE.ConeGeometry(1.7, 0.9, 12), MAT.rooftop);
-  tankCap.position.set(concX - 6, roofY + 4.0, CONC_Z - 1.5);
+  tankCap.position.set(concX - 6, upperRoofY + 3.1, upperZ);
   group.add(tankCap);
   for (const lx of [-1, 1]) for (const lz of [-1, 1]) {
     const leg = box(0.18, 1.2, 0.18, MAT.steel, false, false);
-    leg.position.set(concX - 6 + lx * 1.0, roofY + 0.6, CONC_Z - 1.5 + lz * 1.0);
+    leg.position.set(concX - 6 + lx * 1.0, upperRoofY - 0.3, upperZ + lz * 1.0);
     group.add(leg);
   }
-  // glowing skylight strip
+  // glowing skylight strip — set into the upper storey roof
   const skylight = box(8, 0.3, 2.2, MAT.litWin, false, false);
-  skylight.position.set(concX + 16, roofY + 0.2, CONC_Z);
+  skylight.position.set(concX + 10, upperRoofY - 0.1, upperZ);
   group.add(skylight);
   // antenna mast
   const antenna = box(0.1, 4.0, 0.1, MAT.steel, false, false);
@@ -541,7 +653,7 @@ export function buildTransit() {
 
   // --- Departure-board sign: artPanel "sign" "TRANSIT" ----------------------
   // Mounted on a frame hanging under the canopy, facing the platform (+Z look).
-  const board = artPanel(7.0, 2.6, "sign", {
+  const board = signFacingNorthApproach(7.0, 2.6, {
     text: "TRANSIT",
     bg: "#10324a",
     fg: "#ffd34d",
@@ -549,7 +661,7 @@ export function buildTransit() {
     file: "sign-transit.png",
   });
   board.position.set(0, PLAT_H + 3.0, CANOPY_Z + 1.7);
-  board.rotation.y = Math.PI; // face the platform / approach side
+  // readable front already faces −Z (the approaching platform crowd) via scale.x
   group.add(board);
   // dark frame behind the board
   const boardFrame = box(7.4, 3.0, 0.18, MAT.steel, true, false);
@@ -576,18 +688,21 @@ export function buildTransit() {
     addCollider(colliders, x, PLAT_Z - 2.2, 0.3, 0.3);
   }
 
-  // --- Station clock pillar at the plaza, by the platform ramp --------------
+  // --- Station clock pillar on the plaza verge (SOUTH of the open car lane) --
+  // Pulled clear of the drivable band (Z≈[−8,+5]) onto the south verge so it
+  // never blocks a car crossing the tile; its face points −Z toward the plaza
+  // crowd that approaches from the cafe side.
   const clock = new THREE.Group();
   const clockBody = new THREE.Mesh(GEO.clockBody, MAT.clockMat);
   clockBody.position.y = 1.8;
   clockBody.castShadow = true;
   const face = new THREE.Mesh(GEO.clockFace, MAT.clockFaceMat);
   face.rotation.x = Math.PI / 2;
-  face.position.set(0, 3.5, 0.32);
+  face.position.set(0, 3.5, -0.32);            // face the approaching plaza (−Z)
   clock.add(clockBody, face);
-  clock.position.set(-2, 0, -4);
+  clock.position.set(-2, 0, -11);              // south verge, clear of the lane
   group.add(clock);
-  addCollider(colliders, -2, -4, 1.0, 1.0);
+  addCollider(colliders, -2, -11, 1.0, 1.0);
 
   // --- DEPARTURE BOARDS: two extra "sign" artPanels mounted on posts at the
   // platform ends, listing services. They face the platform (+Z look). Each
@@ -598,11 +713,11 @@ export function buildTransit() {
     { x: 22, text: "ARRIVALS", bg: "#2b1410", fg: "#ffb37d", file: "sign-arrivals.png" },
   ];
   for (const s of depSpecs) {
-    const dep = artPanel(4.6, 1.7, "sign", {
+    const dep = signFacingNorthApproach(4.6, 1.7, {
       text: s.text, bg: s.bg, fg: s.fg, emissiveIntensity: 0.5, file: s.file,
     });
     dep.position.set(s.x, PLAT_H + 2.9, CANOPY_Z + 1.55);
-    dep.rotation.y = Math.PI;
+    // front faces −Z (the platform), text non-mirrored
     group.add(dep);
     depMats.push(dep.material);
     const depFrame = box(4.9, 2.0, 0.14, MAT.steel, true, false);
@@ -628,14 +743,18 @@ export function buildTransit() {
   group.add(tsRail);
 
   // --- WAYFINDING SIGNAGE: a freestanding totem near the turnstiles. ---------
+  // The player APPROACHES from the plaza/cafe side (−Z), so the readable face is
+  // mounted on the −Z side of the post and rotated to face −Z (not the platform,
+  // which would show the text mirrored to anyone walking up to the gates).
   const totemPost = box(0.22, 3.4, 0.22, MAT.steel, true, false);
   totemPost.position.set(9.5, 1.7, tsZ);
   group.add(totemPost);
-  const totem = artPanel(1.6, 2.0, "sign", {
+  const totem = signFacingNorthApproach(1.6, 2.0, {
     text: "PLATFORM 1", bg: "#10324a", fg: "#ffffff", emissiveIntensity: 0.4,
     file: "sign-platform1.png",
   });
-  totem.position.set(9.5, 2.7, tsZ + 0.13);
+  totem.position.set(9.5, 2.7, tsZ - 0.13);   // panel on the approach (−Z) face,
+  // its readable front facing −Z toward the oncoming plaza crowd (non-mirrored)
   group.add(totem);
   addCollider(colliders, 9.5, tsZ, 0.4, 0.4);
 
@@ -672,15 +791,15 @@ export function buildTransit() {
     group.add(bol);
     addCollider(colliders, bx, bollardZ, 0.32, 0.32);
   }
-  // planters + bins flanking the clock, along the back/north verge near building
-  const planterL = makePlanter();
-  planterL.position.set(-14, 0, CONC_Z - CONC_DEPTH / 2 - 1.4);
-  group.add(planterL);
-  addCollider(colliders, -14, CONC_Z - CONC_DEPTH / 2 - 1.4, 1.4, 1.4);
-  const planterR = makePlanter();
-  planterR.position.set(16, 0, CONC_Z - CONC_DEPTH / 2 - 1.4);
-  group.add(planterR);
-  addCollider(colliders, 16, CONC_Z - CONC_DEPTH / 2 - 1.4, 1.4, 1.4);
+  // planters at the BACK of the platform (on the raised top), flanking the
+  // concourse glazed entrance. Placed clear of the kiosks (x=±10) and tower (x≈19).
+  const planterZ = PLAT_Z + PLAT_DEPTH / 2 - 0.8;   // ≈14.2, just in front of concourse
+  for (const px of [-16, 4]) {
+    const planter = makePlanter();
+    planter.position.set(px, PLAT_H, planterZ);     // sits on the platform top
+    group.add(planter);
+    addCollider(colliders, px, planterZ, 1.4, 1.4);
+  }
   const bin1 = makeBin();
   bin1.position.set(-9, 0, bollardZ - 0.8);
   group.add(bin1);
