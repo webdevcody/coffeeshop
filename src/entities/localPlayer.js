@@ -246,9 +246,20 @@ export class LocalPlayer {
     }
 
     if (seatedView && seatedView.active) {
+      // Drop the camera near plane while seated. The global near (1.0) is tuned to
+      // fight z-fighting at city distances, but at the over-the-table framing the
+      // eye sits only ~0.65 m above the board, so a 1.0 m near plane CLIPS the near
+      // half of the table ("half the table gone until I zoom out"). The seated view
+      // looks down at the table with no distant geometry to z-fight, so a 0.2 m near
+      // is safe here. Restored to the captured base near the moment we stand.
+      if (this._baseNear == null) this._baseNear = camera.near;
+      if (camera.near !== 0.2) { camera.near = 0.2; camera.updateProjectionMatrix(); }
       this._updateSeatedCamera(dt, camera, orbit, zoom, seatedView);
     } else {
       this._seatLookSet = false; // forget the seated aim so re-entry re-seeds it
+      if (this._baseNear != null && camera.near !== this._baseNear) {
+        camera.near = this._baseNear; camera.updateProjectionMatrix();
+      }
       this._updateCamera(dt, camera, orbit, zoom);
     }
   }
