@@ -51,6 +51,10 @@ export function createRides(scene, opts) {
   const colliders = opts.colliders;
   const isGround = opts.isGround || (() => true);
   const spawn = opts.carSpawn || { x: 4, z: 18, heading: 0 };
+  // Interactable world objects (bench, piano, hoop, ATM, photo spot, hot-dog).
+  // Given E-priority in the walk branch BETWEEN entering the car and mounting the
+  // board: car > interactable > skateboard. null when none were threaded in.
+  const interactables = opts.interactables || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -176,6 +180,13 @@ export function createRides(scene, opts) {
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
+      // INTERACTABLES: a world object in range claims E before the skateboard.
+      // tryUse returns its HUD line (truthy) only when something was in range;
+      // null falls through so pressing E in the open still mounts the board.
+      if (interactables) {
+        const used = interactables.tryUse(local.pos.x, local.pos.z, local.facing, local);
+        if (used) return { mode, prompt: used, overrideWalk: false };
+      }
       if (outdoors) {
         mountBoard(local);
         mode = "skate";
@@ -183,7 +194,9 @@ export function createRides(scene, opts) {
       }
     }
     let prompt = null;
+    const ip = interactables && !local.sitting ? interactables.nearestPrompt(local.pos.x, local.pos.z) : null;
     if (nearCar) prompt = "🚗 Press E to drive";
+    else if (ip) prompt = ip; // interactable hover prompt sits between car and skate
     else if (outdoors && !local.sitting) prompt = "🛹 Press E to skateboard";
     return { mode, prompt, overrideWalk: false };
   }

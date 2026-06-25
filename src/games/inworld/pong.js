@@ -756,12 +756,17 @@ export function createGame(ctx) {
     // never touches sim/view, identical-ish for all viewers (keyed off shared speed).
     let bobY = 0;
     if (phase !== "play" && speed < 1) {
-      bobY = Math.sin(now / 620) * BALL_RADIUS * 0.5;
+      // Upward-biased bob (0 -> +) so the down-swing never sinks the ball into the
+      // plank — the ball only has ~1 mm of floor clearance at rest.
+      bobY = (0.5 + 0.5 * Math.sin(now / 620)) * BALL_RADIUS * 0.5;
       ballMesh.rotation.y = now / 1400;
     } else {
       ballMesh.rotation.y = 0;
     }
-    ballMesh.position.set(bX, BALL_Y + bobY, bZ);
+    // Keep the ball's BOTTOM tangent to the plank during the hit pop: a uniform up-scale
+    // by `pop` would drop the lower hemisphere through the floor, so lift the center by
+    // BALL_RADIUS*(pop-1) to anchor the bottom (no-op when pop === 1).
+    ballMesh.position.set(bX, BALL_Y + bobY + BALL_RADIUS * (pop - 1), bZ);
     // Speed-line stretch: scale the ball along its travel axis as it speeds up so fast
     // volleys read with motion. Stretch factor eases from 1 (slow) up to ~1.5 at BALL_MAX,
     // squashed on the cross axis to conserve volume. Applied via a per-axis world scale

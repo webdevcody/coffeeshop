@@ -253,7 +253,9 @@ export function createGame(ctx) {
   // opponent's last move. One reused ring mesh per cell (built once), driven by a
   // per-card haloT in animateExtras. Derived from a card's down→up transition in
   // renderCards, so it's consistent for every role with no wire change.
-  const haloGeo = keep(new THREE.RingGeometry(cardW * 0.52, cardW * 0.66, 24));
+  // Outer radius kept under the cell half-pitch so two cards flipping up in the
+  // same turn don't overlap (and z-fight) their halo rings. (audit P2)
+  const haloGeo = keep(new THREE.RingGeometry(cardW * 0.42, cardW * 0.52, 24));
   const haloMeshes = [];
   const haloMats = []; // one material per cell so opacities pulse independently
 
@@ -307,7 +309,9 @@ export function createGame(ctx) {
   // A faint felt-toned recess plate per tray so empty slots read as "captured area".
   // Each tray owns its plate material so the WINNER's tray can be tinted at game
   // end (audit #10) — a clear per-side scoreboard read.
-  const trayPlateGeo = keep(new THREE.PlaneGeometry(TRAY_TILE * 1.5, TRAY_GAP * PAIRS + TRAY_TILE * 0.5));
+  // Plate width narrowed (1.5 -> 1.3) so its outer edge stays inside the plank
+  // rim (trayX + plateW/2 <= outer/2) instead of floating past the plank. (audit P3)
+  const trayPlateGeo = keep(new THREE.PlaneGeometry(TRAY_TILE * 1.3, TRAY_GAP * PAIRS + TRAY_TILE * 0.5));
   const TRAY_PLATE_BASE = 0x3a2614;
 
   // Per-side tray bookkeeping: meshes + the spring-in animation phase per slot.
@@ -1082,8 +1086,13 @@ export function createGame(ctx) {
       // Mismatch flip-back wobble: a few degrees of rotation.z oscillation while
       // the two unequal cards are revealed, so "no match" reads kinesthetically.
       // rotation.x (the flip) is owned by stepFlips; we only touch z here. (audit #13)
+      // Ease rotation.z toward the target rather than assigning it: the sine is
+      // driven by the free-running clock, so a hard assign would snap z from 0 to
+      // wherever sin() happens to be on arm (up to ~4 deg) and snap straight back
+      // on clear. A short critically-damped-ish lerp makes both ends continuous.
       const targetWobble = a.wobbleT > 0 ? Math.sin(clock * 22) * 0.07 : 0;
-      if (m.rotation.z !== targetWobble) m.rotation.z = targetWobble;
+      const next = m.rotation.z + (targetWobble - m.rotation.z) * Math.min(1, step / 0.08);
+      if (m.rotation.z !== next) m.rotation.z = next;
     }
 
     // Captured-pairs tray spring-in: each newly filed tile rises from the felt and

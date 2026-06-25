@@ -917,12 +917,21 @@ export function createGame(ctx) {
           if (busy || glides.length > 0) { raf(wait); return; }
           modelRepaintPending = false;
           paint();
+          // Prisoners are owned separately from the pieceMeshes ledger, so paint()
+          // never touches them. A capture that landed while the GLBs were still
+          // loading parked a PROCEDURAL prisoner that would otherwise stay a lathe
+          // shape for the rest of the game while live pieces upgrade to GLB models
+          // (visibly mismatched armies). Rebuild the tray from the board deficit so
+          // any procedural prisoners are reconstructed as models too. Same idle
+          // guard as paint() — never runs mid-glide.
+          rebuildPrisonersFromBoard();
         };
         raf(wait);
       }
       return;
     }
     paint();
+    rebuildPrisonersFromBoard();
   }
 
   // Normalise a loaded GLB scene into a template Group: recenter on XZ base, scale
@@ -1039,7 +1048,14 @@ export function createGame(ctx) {
     const dest = trayDest(capturedBy, trayCount[capturedBy]++);
     mesh.userData.cell = null;                       // off-board: never resolve clicks here
     mesh.rotation.set(0, 0, 0);
-    if (mesh.userData.pieceColor === "black") mesh.rotation.y = Math.PI;
+    // Black pieces face the tray by a blanket 180° flip — EXCEPT a procedural
+    // (fallback) knight, which already orients itself per-colour by mirroring its
+    // head (makeProceduralPiece). Flipping the group too would double-orient it,
+    // leaving the procedural black knight facing an odd direction on the tray.
+    // Model knights (isModel) DO need the flip — their orientation is applied at
+    // the group level in makeModelPiece. Symmetric pieces are unaffected either way.
+    const isProceduralKnight = victimType === "n" && !mesh.userData.isModel;
+    if (mesh.userData.pieceColor === "black" && !isProceduralKnight) mesh.rotation.y = Math.PI;
     mesh.scale.setScalar(TRAY_SCALE);
     mesh.position.set(dest.x, dest.y, dest.z);
     const mat = mesh.userData.pieceMat;
@@ -1539,6 +1555,28 @@ export function createGame(ctx) {
     paintSkipCell = (isPromo && mover) ? move.to.r * 8 + move.to.c : -1;
     paint(); // rebuilds rook on castle, en-passant square, everything but mover/victim
     paintSkipCell = -1;
+
+    // P4 polish: on a castle, paint() rebuilt the rook directly on its destination
+    // square, so it would otherwise snap there instantly while the king glides.
+    // Glide the rook alongside the king from its old corner to its new square. The
+    // rook mesh now lives at the destination; the glide loop drives its position
+    // from old->new each frame (first frame snaps to the old square), so this only
+    // animates the visual. Logical state already moved the rook in applyMoveToState.
+    if (move.flags.castle) {
+      const homeRow = movingColor === "white" ? 7 : 0;
+      const rookFromC = move.flags.castle === "k" ? 7 : 0;
+      const rookToC = move.flags.castle === "k" ? 5 : 3;
+      const rookMesh = pieceMeshes[homeRow][rookToC];
+      if (rookMesh) {
+        glides.push({
+          mesh: rookMesh, t: 0, dur: Math.min(0.42, 0.18 + 0.032 * Math.abs(rookToC - rookFromC)),
+          fromX: cellX(rookFromC), fromZ: cellZ(homeRow),
+          toX: cellX(rookToC), toZ: cellZ(homeRow),
+          arc: false, onDone: null, onPeak: null, peaked: false,
+        });
+        startLoop();
+      }
+    }
 
     // I5: trace the move so the waiting player + spectators can read it. Stash it
     // into lastMove so snapshot() can carry it to converged viewers.

@@ -8,6 +8,7 @@ import { createEngine } from "./engine/scene.js";
 import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
+import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
 import { RemotePlayers } from "./entities/remotePlayers.js";
@@ -41,8 +42,21 @@ const controls = createControls(canvas);
 // skateboard. Pushes the parked car's footprint into `colliders`; drives off the
 // shared `ground` so it can roam the whole expanded map. main.js calls
 // rides.update() each frame and branches on the returned mode.
+// THINGS TO DO: a handful of placeable interactive world objects (bench, street
+// piano, basketball hoop, ATM, photo spot, hot-dog stand) the player triggers
+// with E. Built here (not inside city.js) so main.js can thread it into the
+// E-flow + frame loop; its group is added straight to the scene. Decorative —
+// registers no colliders, so it can't wedge the player.
+const interactables = buildInteractables();
+scene.add(interactables.group);
+
 const isGroundFn = (x, z) => ground.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
-const rides = createRides(scene, { colliders, isGround: isGroundFn, carSpawn: { x: 4, z: 18, heading: 0 } });
+const rides = createRides(scene, {
+  colliders,
+  isGround: isGroundFn,
+  carSpawn: { x: 4, z: 18, heading: 0 },
+  interactables, // E priority: car > interactable > skateboard (handled in rides.js)
+});
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
 const network = new Network();
@@ -443,6 +457,7 @@ function frame() {
   controls.update();
   updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
+  interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
 
   if (joined && local) {
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we

@@ -751,7 +751,13 @@ export function createGame(ctx) {
     // ---- render-side cosmetic interpolation (authority untouched) ----
     if (!Number.isFinite(dt) || dt <= 0) dt = 1 / 60;
     const now = nowMs();
-    const ease = Math.min(1, dt * 12); // smooth cell-to-cell head glide (I1)
+    // Smooth cell-to-cell head glide (I1). Tuned to CONVERGE within one TICK_MS:
+    // at 60fps a 90ms tick is ~5.4 frames, and 1-(1-dt*22)^5.4 ≈ 0.92, so the eased
+    // head reaches ~92% of its target before the next snapshot retargets — it no
+    // longer sits a chronic ~1/3 cell behind authority (which made the full-cell head
+    // overlap its own freshly-laid 0.92 trail and the crash ring read slightly ahead
+    // of where the head stopped). Still pure render-side; authority untouched.
+    const ease = Math.min(1, dt * 22);
 
     // Ease each visible head toward its snapshot target; the local head's halo
     // follows so the "this is me" glow glides with it.

@@ -445,8 +445,8 @@ export function createGame(ctx) {
   // applyFacing() rotates the whole group by orientFor(seatRy)(+PI for white) so
   // each client's OWN colour home bar ends up directly in front of them.
   const cue = {
-    black: { bar: null, lamp: null, tally: null },
-    white: { bar: null, lamp: null, tally: null },
+    black: { bar: null, lamp: null, tally: null, tallyPivot: null },
+    white: { bar: null, lamp: null, tally: null, tallyPivot: null },
   };
   // C5 — keep the home bar + lamp INSIDE the plank rim (outer half-extent 0.375)
   // so the bar no longer straddles the rim onto bare table; the bar (12 mm deep
@@ -480,12 +480,13 @@ export function createGame(ctx) {
       tallyPivot.position.set(-BOARD_SIZE * 0.34, TOP + 0.003, s.z);
       const tally = meshOf(THREE, tallyGeo, s.barMat, false);
       tally.position.x = TALLY_LEN / 2; // left edge sits on the pivot
-      tally.scale.x = 0.0001; // empty board → effectively zero length
+      tallyPivot.scale.x = 0.0001; // empty board → effectively zero length
       tallyPivot.add(tally);
       group.add(tallyPivot);
       cue[s.color].bar = bar;
       cue[s.color].lamp = lamp;
       cue[s.color].tally = tally;
+      cue[s.color].tallyPivot = tallyPivot;
     }
   }
 
@@ -510,10 +511,12 @@ export function createGame(ctx) {
       const isTurn = phase === "play" && turn === color;
       c.bar.material.emissiveIntensity = isMine ? 0.7 : 0.0;
       c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
-      if (c.tally) {
-        // Scale the unit-length tally to fill toward the board; clamp to a tiny
-        // floor so an empty side keeps a non-degenerate (invisible) sliver.
-        c.tally.scale.x = Math.max(0.0001, counts[color] / MAX_STONES);
+      if (c.tallyPivot) {
+        // Scale the left-anchored pivot (not the child mesh) so the unit-length
+        // tally fills rightward from its fixed inner end toward the board; clamp
+        // to a tiny floor so an empty side keeps a non-degenerate (invisible)
+        // sliver pinned at the anchor.
+        c.tallyPivot.scale.x = Math.max(0.0001, counts[color] / MAX_STONES);
       }
     }
     // (Re)arm or release the idle clock now that turn/phase may have changed.

@@ -959,7 +959,18 @@ export class InWorldBoard {
     const ax = x && typeof x === "object";
     const ay = y && typeof y === "object";
     if (!ax || !ay) return false; // one is the -1 sentinel, the other a cell
-    return x.r === y.r && x.c === y.c && (x.which ?? null) === (y.which ?? null);
+    // The modules use varied cell shapes — chess/checkers/gomoku {r,c},
+    // battleship {r,c,which}, mancala {pit}, memory {i}, ludo {color,token},
+    // ultimatettt {B,i}, dotsandboxes {o,r,c}. The old r/c/which-only compare made
+    // every {pit}/{i}/{color,token}/{B,i} pair compare EQUAL (so the hover ring
+    // never moved between pits/cells after the first one), and collapsed
+    // dotsandboxes' h/v edges that share one {r,c} (only `o` differs). Compare
+    // structurally by key/value so ANY cell shape is distinguished; for {r,c} and
+    // {r,c,which} this is identical to the old behaviour.
+    const kx = Object.keys(x), ky = Object.keys(y);
+    if (kx.length !== ky.length) return false;
+    for (const k of kx) if (x[k] !== y[k]) return false;
+    return true;
   }
 
   _onPointerDown(ev) {

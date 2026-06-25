@@ -470,7 +470,15 @@ export function createGame(ctx) {
       { btn: "clear", label: "Clear", mat: M.pillarIdle },
       { btn: "ready", label: "Ready ▸", mat: M.pillarGo },
     ];
-    const rowZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.55;
+    // Tuck the control pillars onto the very near base margin (toward the seat),
+    // pulled off the fleet placards' listed-ship rows so they stop occluding the
+    // live/sunk pips top-down during placement. CELL*0.18 sits the row as close to
+    // the seat as the base footprint allows: the pillar's near face (depth CELL*0.95,
+    // half ≈ CELL*0.475) lands ~3.6mm inside the base near rail (−baseD/2 ≈ −0.719),
+    // so nothing overhangs the table edge (preserves the no-overhang intent of
+    // P2 #4/#5). Was CELL*0.55, which floated the row over the placard interior.
+    // (Audit #1.)
+    const rowZ = OCEAN_CZ - GRID_SPAN / 2 + CELL * 0.18;
     const bx0 = -HALF * 0.72;
     const bxStep = (HALF * 1.44) / 3;
     defs.forEach((d, i) => {
@@ -1343,7 +1351,11 @@ export function createGame(ctx) {
     const mat = ok ? M.ghostOk : M.ghostBad;
     for (const cell of cells) {
       const block = new THREE.Mesh(new THREE.BoxGeometry(CELL * 0.8, HULL_H * 0.7, CELL * 0.8), mat);
-      block.position.set(cellX(cell.x), HULL_Y, cellZ(cell.y, "ocean"));
+      // Route through the single render-row choke point (cellZView, today the
+      // identity) like every other render site, so a future per-grid row remap
+      // keeps the ghost preview aligned with the placed hull instead of silently
+      // desyncing from it. (Audit #2.)
+      block.position.set(cellX(cell.x), HULL_Y, cellZView(cell.y, "ocean"));
       g.add(block);
     }
     // Purely a preview — never intercept a placement click. Without this the ghost

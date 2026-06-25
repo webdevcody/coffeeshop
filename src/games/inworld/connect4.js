@@ -142,11 +142,16 @@ function cellY(r) {
 
 // Y of the slot mouth above a column where a freshly dropped disc enters.
 // Kept close above row 0 so the hover ghost (radius DISC_R + idle bob) clears the
-// down-arrow cone parked higher up (whose tip descends to ~cellY(0)+1.275*CELL):
-// at 1.05*CELL the ghost top reaches ~cellY(0)+1.5*CELL only on the local-turn bob,
-// and the arrow itself sits at cellY(0)+1.55*CELL, so the two no longer interpenetrate
-// at rest. The drop still visibly falls from above the rack into the lowest hole (I4).
+// down-arrow cone parked higher up. The ghost top (on the local-turn idle bob)
+// reaches ~cellY(0)+1.5*CELL; the arrow now rests at cellY(0)+1.9*CELL (raised from
+// 1.55 so even at the full local-turn down-bob of CELL*0.14 its tip stays clear of
+// the ghost on the centre column). The two no longer interpenetrate at rest or while
+// bobbing. The drop still visibly falls from above the rack into the lowest hole (I4).
 const MOUTH_Y = cellY(0) + CELL * 1.05;
+
+// Resting Y of the down-arrow cone, raised above the hover ghost so the two never
+// overlap on the centre column even at the arrow's full local-turn down-bob (I1).
+const ARROW_Y = cellY(0) + CELL * 1.9;
 
 // Drop physics tuning (local metres, seconds).
 const GRAVITY = -3.4; // m/s² (snappy but readable across a table)
@@ -235,8 +240,11 @@ export function createGame(ctx) {
   const discGeo = keep(new THREE.CylinderGeometry(DISC_R, DISC_R, DISC_T, 30));
   discGeo.rotateX(Math.PI / 2);
   // Open hole bezel: a torus ring (NOT a filled cylinder) so the disc inside is
-  // fully visible. This is the key distinction from a drilled-socket build.
-  const bezelGeo = keep(new THREE.TorusGeometry(DISC_R * 1.12, CELL * 0.07, 10, 26));
+  // fully visible. This is the key distinction from a drilled-socket build. Mean
+  // radius pulled in to DISC_R*1.04 (outer reach ~0.043 < half-cell 0.0443) so
+  // adjacent bezels and the column dividers no longer interpenetrate at the cell
+  // boundary (I2).
+  const bezelGeo = keep(new THREE.TorusGeometry(DISC_R * 1.04, CELL * 0.07, 10, 26));
 
   function mesh(geo, mat, cast = true) {
     const m = new THREE.Mesh(geo, mat);
@@ -373,7 +381,7 @@ export function createGame(ctx) {
   const arrowGeo = keep(new THREE.ConeGeometry(CELL * 0.34, CELL * 0.55, 4));
   arrowGeo.rotateX(Math.PI); // point DOWN (−Y)
   const arrow = mesh(arrowGeo, matArrow, false);
-  arrow.position.set(0, cellY(0) + CELL * 1.55, DISC_Z);
+  arrow.position.set(0, ARROW_Y, DISC_Z);
   rack.add(arrow);
 
   // -- YOU identity ring on the local player's own lamp -----------------------
@@ -674,7 +682,7 @@ export function createGame(ctx) {
     const mine = canPlayLocally();
     const amp = mine ? CELL * 0.14 : CELL * 0.06;
     const speed = mine ? 4.2 : 2.6;
-    arrow.position.y = cellY(0) + CELL * 1.55 + Math.sin(arrowPhase * speed) * amp;
+    arrow.position.y = ARROW_Y + Math.sin(arrowPhase * speed) * amp;
     const baseI = mine ? 1.05 : 0.55;
     const swing = mine ? 0.45 : 0.12;
     matArrow.emissiveIntensity = baseI + swing * (0.5 + 0.5 * Math.sin(arrowPhase * speed));
@@ -1132,8 +1140,8 @@ export function createGame(ctx) {
     // Extend the top bound up to the column mouth (where the ghost cocks and a
     // player naturally aims) so clicks at the top of a column resolve. The brass
     // rail centre is at cellY(0)+0.85*CELL, the lamps share that y but sit OUTSIDE
-    // the grid's X span (so u<0/u>=1 rejects them), and the arrow is at
-    // cellY(0)+1.55*CELL — so a mouth-inclusive top of cellY(0)+1.35*CELL keeps the
+    // the grid's X span (so u<0/u>=1 rejects them), and the arrow now rests at
+    // cellY(0)+1.9*CELL — so a mouth-inclusive top of cellY(0)+1.35*CELL keeps the
     // grid clickable while still excluding the arrow tip above it.
     const yBot = cellY(ROWS - 1) - CELL * 0.7;
     const yTop = cellY(0) + CELL * 1.35;

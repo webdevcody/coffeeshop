@@ -211,11 +211,15 @@ export function createGame(ctx) {
   const bigOGeo = keep(new THREE.TorusGeometry(subSize * 0.3, subSize * 0.08, 10, 22));
   const bigMarks = Array(9).fill(null);
 
-  // Flat cell marks sit just above the plate (TOP+0.002) and BELOW the 0.03-tall
-  // hit collider (which spans TOP..TOP+0.03, so clicks still resolve via the
-  // collider regardless of the mark's exact height). Lowered from TOP+0.02 so the
-  // paper-thin bars sit ON the plate rather than visibly floating ~18mm above it.
-  const MARK_Y = TOP + 0.012;
+  // Flat cell marks sit just above the plate and BELOW the 0.03-tall hit collider
+  // (which spans TOP..TOP+0.03, so clicks still resolve via the collider regardless
+  // of the mark's exact height). The X bars are 0.01 tall (half-height 0.005), so at
+  // MARK_Y = TOP+0.0105 their underside lands at TOP+0.0055 — flush ON the cell-line
+  // tops (0.002-tall lines centered at TOP+0.0045 → top face TOP+0.0055) instead of
+  // floating ~3mm proud as the previous TOP+0.012 did. Lowering further would clip
+  // the bar underside below the cell lines / plate face (TOP+0.004), so this is the
+  // flush minimum.
+  const MARK_Y = TOP + 0.0105;
   const BIG_MARK_Y = TOP + 0.024;
 
   function makeMark(mark, big = false) {
@@ -647,7 +651,7 @@ export function createGame(ctx) {
   // Relayed move from the OTHER seat. We apply it as the side whose turn it is
   // (NOT myMark — that would corrupt 2-player identity). If the host receives a
   // guest move it must re-broadcast the resulting snapshot so spectators converge.
-  function applyMove(move) {
+  function applyMove(move, byRole) {
     if (!move || move.type !== "move") return false;
     // Idempotency guard FIRST (before the phase check): a late/duplicated relay of
     // the winning move arrives after phase has flipped to "over". The exact-repeat
@@ -659,6 +663,13 @@ export function createGame(ctx) {
     // phase.
     if (lastMove && move.B === lastMove.B && move.i === lastMove.i) return false;
     if (phase !== "play") throw new GameDesync("uttt: not in play");
+    // Identity/out-of-turn guard (mirrors connect4): the framework hands us the
+    // relaying seat's role (board.js passes m.byRole). When present, the mover's
+    // mark MUST equal the side whose turn it is — otherwise a mis-ordered or spoofed
+    // relay would be applied as the wrong side. Throw GameDesync to force a resync.
+    // We apply as `turn` (NOT myMark) so 2-player identity stays correct.
+    const movedMark = byRole ? (byRole === "host" ? "X" : "O") : turn;
+    if (movedMark !== turn) throw new GameDesync("uttt: out-of-turn relayed move");
     if (!legal(move.B, move.i)) throw new GameDesync("uttt: illegal move");
     animatePlace = true;
     try { performMove(move.B, move.i, turn); } finally { animatePlace = false; }
@@ -993,6 +1004,15 @@ export function createGame(ctx) {
     placeIdentityCues();
     updateIdentityCues();
   }
+  // Optional per-frame pump. Not required (we self-drive via rAF) but harmless;
+  // the framework calls update(dt) on modules that expose it (board.js). We use
+  // it only to guarantee the clock is alive while something is animating — e.g. a
+  // browser that throttled/cancelled our private rAF while backgrounded, which
+  // would otherwise leave the lamp pulse / forced-board glow / in-flight pop
+  // frozen until the next move calls ensureClock(). Mirrors connect4.
+  function update() {
+    if (needsAnim()) ensureClock();
+  }
   function dispose() {
     if (rafId && typeof cancelAnimationFrame === "function") { cancelAnimationFrame(rafId); rafId = 0; }
     pops.length = 0;
@@ -1013,7 +1033,7 @@ export function createGame(ctx) {
   // requestState() returns a real snapshot, hydrates, and animates the first move.
   // Host-gated inside pushSnapshot(); a no-op for guest/spectator instances.
   pushSnapshot();
-  return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, setHover, dispose };
+  return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, setHover, update, dispose };
 }
 
 export default createGame;

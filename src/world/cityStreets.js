@@ -15,6 +15,20 @@ const VROADS = [-60, 0, 60]; // vertical avenues (run along Z) on the column sea
 const HROADS = [35, 95, 155, 215]; // cross streets (run along X) on the row seams
 const ROADW = 12, HALFR = ROADW / 2;
 
+// True if world point (x,z) sits on the asphalt of ANY road lane (an avenue OR a
+// cross street). Roadside props line the kerbs (x = avenue ± ~7.4, just OUTSIDE
+// their own 6 m half-lane) but march down Z / across X, so without this guard they
+// land squarely in a PERPENDICULAR lane wherever the step coincides with a cross
+// street (z≈35/95/155/215) or an avenue (x≈-60/0/60) — that's the "pole in the
+// middle of the road" bug. Every prop generator below skips spots where this is
+// true. `pad` widens the lane a touch so props also clear the painted edge.
+// (scripts/props-in-road-test.mjs is the automated guard for this.)
+function onRoad(x, z, pad = 0.8) {
+  const onAvenue = z >= NEAR && z <= FAR && VROADS.some((ax) => Math.abs(x - ax) <= HALFR + pad);
+  const onCross = x >= LEFT && x <= RIGHT && HROADS.some((hz) => Math.abs(z - hz) <= HALFR + pad);
+  return onAvenue || onCross;
+}
+
 function cnv(w, h) { const c = document.createElement("canvas"); c.width = w; c.height = h; return [c, c.getContext("2d")]; }
 function tex(c, rx = 1, ry = 1) {
   const t = new THREE.CanvasTexture(c);
@@ -199,7 +213,9 @@ export function buildStreets() {
   const headGeo = new THREE.BoxGeometry(0.5, 0.3, 0.5);
   const headMat = new THREE.MeshStandardMaterial({ color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 0.9, roughness: 0.4 });
   const spots = [];
-  for (const x of VROADS) for (let z = NEAR + 12; z < FAR; z += 26) { spots.push([x - HALFR - 1.4, z]); spots.push([x + HALFR + 1.4, z]); }
+  for (const x of VROADS) for (let z = NEAR + 12; z < FAR; z += 26) {
+    for (const lx of [x - HALFR - 1.4, x + HALFR + 1.4]) if (!onRoad(lx, z)) spots.push([lx, z]);
+  }
   const posts = new THREE.InstancedMesh(postGeo, postMat, spots.length);
   const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
   const m = new THREE.Matrix4();
@@ -218,7 +234,9 @@ export function buildStreets() {
   const leafGeo = new THREE.IcosahedronGeometry(1.5, 0);
   const leafMat = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.9, flatShading: true });
   const tspots = [];
-  for (const z of HROADS) for (let x = LEFT + 16; x < RIGHT; x += 24) { if (Math.abs(x) < 7) continue; tspots.push([x, z - HALFR - 2.2]); tspots.push([x, z + HALFR + 2.2]); }
+  for (const z of HROADS) for (let x = LEFT + 16; x < RIGHT; x += 24) {
+    for (const tz of [z - HALFR - 2.2, z + HALFR + 2.2]) if (!onRoad(x, tz)) tspots.push([x, tz]);
+  }
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, tspots.length);
   const leaves = new THREE.InstancedMesh(leafGeo, leafMat, tspots.length);
   tspots.forEach(([x, z], i) => {
@@ -410,7 +428,7 @@ function addStreetLife(group, m) {
   // --- Fire hydrants on the pavement just outside the kerbs. ---
   const hydMat = new THREE.MeshStandardMaterial({ color: "#c43a2c", roughness: 0.55, metalness: 0.2 });
   const hydSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 30; z < FAR; z += 60) { hydSpots.push([ax - HALFR - 1.0, z]); }
+  for (const ax of VROADS) for (let z = NEAR + 30; z < FAR; z += 60) { const hx = ax - HALFR - 1.0; if (!onRoad(hx, z)) hydSpots.push([hx, z]); }
   const hydBody = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.26, 0.8, 8), hydMat, hydSpots.length);
   const hydCap = new THREE.InstancedMesh(new THREE.SphereGeometry(0.24, 8, 6), hydMat, hydSpots.length);
   hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); addAABB(x, z, 0.26, 0.26); });
@@ -482,7 +500,7 @@ function addStreetLife(group, m) {
   const binMat = new THREE.MeshStandardMaterial({ color: "#2f6f4a", roughness: 0.7, metalness: 0.2 });
   const lidMat = new THREE.MeshStandardMaterial({ color: "#244f37", roughness: 0.6 });
   const binSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 46; z < FAR; z += 62) binSpots.push([ax + HALFR + 1.0, z]);
+  for (const ax of VROADS) for (let z = NEAR + 46; z < FAR; z += 62) { const bx = ax + HALFR + 1.0; if (!onRoad(bx, z)) binSpots.push([bx, z]); }
   const bins = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.34, 0.3, 1.0, 8), binMat, binSpots.length);
   const lids = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.37, 0.37, 0.12, 8), lidMat, binSpots.length);
   binSpots.forEach(([x, z], i) => { place(bins, i, x, 0.5, z); place(lids, i, x, 1.06, z); });
@@ -514,7 +532,8 @@ function addStreetLife(group, m) {
   const benchMetalMat = new THREE.MeshStandardMaterial({ color: "#33373c", roughness: 0.5, metalness: 0.6 });
   const benchSpots = []; // [x, z, ry]
   for (const ax of VROADS) for (let z = NEAR + 38; z < FAR; z += 70) {
-    benchSpots.push([ax - HALFR - 2.4, z, Math.PI / 2]);   // long axis runs along Z (parallel to avenue)
+    const bx = ax - HALFR - 2.4;
+    if (!onRoad(bx, z)) benchSpots.push([bx, z, Math.PI / 2]);   // long axis runs along Z (parallel to avenue)
   }
   const bSeat = new THREE.InstancedMesh(new THREE.BoxGeometry(2.2, 0.12, 0.5), benchWoodMat, benchSpots.length);
   const bBack = new THREE.InstancedMesh(new THREE.BoxGeometry(2.2, 0.5, 0.1), benchWoodMat, benchSpots.length);
@@ -537,7 +556,7 @@ function addStreetLife(group, m) {
   // --- Bike racks: a low U-loop rail (a few bars) on the pavement. ---
   const bikeMat = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.4, metalness: 0.7 });
   const bikeSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 54; z < FAR; z += 64) bikeSpots.push([ax + HALFR + 2.2, z]);
+  for (const ax of VROADS) for (let z = NEAR + 54; z < FAR; z += 64) { const bx = ax + HALFR + 2.2; if (!onRoad(bx, z)) bikeSpots.push([bx, z]); }
   // Each rack = 3 vertical U-bars; instance the bars (3 per rack) along one rail.
   const bikeBars = new THREE.InstancedMesh(new THREE.TorusGeometry(0.32, 0.04, 5, 8, Math.PI), bikeMat, bikeSpots.length * 3);
   let bbi = 0;
@@ -554,7 +573,7 @@ function addStreetLife(group, m) {
   // --- Mailboxes: classic rounded-top blue boxes on a short pedestal. ---
   const mailMat = new THREE.MeshStandardMaterial({ color: "#2452a6", roughness: 0.5, metalness: 0.3 });
   const mailSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 58; z < FAR; z += 80) mailSpots.push([ax - HALFR - 2.0, z]);
+  for (const ax of VROADS) for (let z = NEAR + 58; z < FAR; z += 80) { const mx = ax - HALFR - 2.0; if (!onRoad(mx, z)) mailSpots.push([mx, z]); }
   const mailBody = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 0.7, 0.5), mailMat, mailSpots.length);
   const mailTop = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.3, 0.5, 10, 1, false, 0, Math.PI), mailMat, mailSpots.length);
   const mailLeg = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.07, 0.5, 6), benchMetalMat, mailSpots.length);
@@ -576,7 +595,9 @@ function addStreetLife(group, m) {
   const newsMat = new THREE.MeshStandardMaterial({ map: newsTex, roughness: 0.6, metalness: 0.2 });
   const newsSpots = [];
   for (const ax of VROADS) for (let z = NEAR + 64; z < FAR; z += 88) {
-    newsSpots.push([ax + HALFR + 1.8, z]); newsSpots.push([ax + HALFR + 2.4, z + 0.7]);
+    const a = [ax + HALFR + 1.8, z], b = [ax + HALFR + 2.4, z + 0.7];
+    if (!onRoad(a[0], a[1])) newsSpots.push(a);
+    if (!onRoad(b[0], b[1])) newsSpots.push(b);
   }
   const newsboxes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), newsMat, newsSpots.length);
   newsSpots.forEach(([x, z], i) => {
@@ -593,7 +614,8 @@ function addStreetLife(group, m) {
   const plantMat = new THREE.MeshStandardMaterial({ color: "#4f8a53", roughness: 0.9, flatShading: true });
   const planterSpots = [];
   for (const ax of VROADS) for (let z = NEAR + 28; z < FAR; z += 34) {
-    planterSpots.push([ax + (z % 2 < 1 ? -1 : 1) * (HALFR + 1.6), z]);
+    const px = ax + (z % 2 < 1 ? -1 : 1) * (HALFR + 1.6);
+    if (!onRoad(px, z)) planterSpots.push([px, z]);
   }
   const planterBox = new THREE.InstancedMesh(new THREE.BoxGeometry(1.1, 0.5, 1.1), planterMat, planterSpots.length);
   const planterBush = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.6, 0), plantMat, planterSpots.length);

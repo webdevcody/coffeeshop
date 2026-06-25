@@ -250,8 +250,11 @@ export function createGame(ctx) {
   for (const col of COLORS) {
     homeTiles[col] = HOME[col].map(([c, r]) => addTile(c, r, pathMat[col]));
   }
-  // Centre triangle plate.
-  const centreGeo = keep(new THREE.CylinderGeometry(cell * 1.1, cell * 1.1, 0.005, 4));
+  // Centre triangle plate. Radius kept under one cell (cell*0.9) so its diamond
+  // corners do not reach into / z-fight the innermost home-column tiles (which
+  // sit exactly one cell away), while still clearing the finished-token fan
+  // (radius cell*0.78).
+  const centreGeo = keep(new THREE.CylinderGeometry(cell * 0.9, cell * 0.9, 0.005, 4));
   const centre = meshOf(THREE, centreGeo, M.centre, false);
   centre.rotation.y = Math.PI / 4;
   centre.position.set(gx(7), TOP + 0.003, gz(7));
@@ -642,7 +645,10 @@ export function createGame(ctx) {
             }
             captureHappened = true;
           } else if (was[i] < 58 && now[i] === 58) {
-            // finish: a token reached the centre.
+            // finish: a token reached the centre. Count it as a real advance so a
+            // non-6 exact finish (e.g. step 53 + die 5) that advances the turn is
+            // NOT mislabeled "No move — passing" by the banner check below.
+            someTokenAdvanced = true;
             const fp = tokenPos(c, i);
             spawnFx(fp.x, fp.z, c);
             const a = tokAnim[c][i];

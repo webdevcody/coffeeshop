@@ -374,6 +374,14 @@ export function createGame(ctx) {
       if (f.kind === "flip") {
         const e = easeInOut(k);
         f.mesh.rotation.x = e * Math.PI;
+        // Lift the disc as it goes on-edge so its rim never scythes through the
+        // board. The disc spins about its centre at discRestY, so at the edge-on
+        // pose (rotation ~ pi/2) the lowest rim reaches centreY - DISC_R; without
+        // a lift that dips ~DISC_R below the tile top. Raise the centre by a
+        // sin() arc peaking at e=0.5 so the lowest rim stays just above the tile
+        // surface (REST_Y) with a sub-mm margin.
+        f.mesh.position.y =
+          discRestY + Math.sin(e * Math.PI) * (REST_Y + DISC_R + 0.001 - discRestY);
         if (k >= 0.5 && !f.swapped) {
           f.swapped = true;
           f.mesh.material = f.to === "black" ? M.black : M.white;
@@ -385,6 +393,7 @@ export function createGame(ctx) {
         if (k >= 1) {
           f.mesh.rotation.x = 0;
           f.mesh.scale.set(1, 1, 1);
+          f.mesh.position.y = discRestY;
           anims.splice(i, 1);
         }
       } else if (f.kind === "place") {
@@ -624,6 +633,12 @@ export function createGame(ctx) {
   // Is (r,c) a legal placement for the local player right now?
   function canPlay(r, c) {
     return (
+      // Suppress the hover preview while an animation is in flight: onPointer
+      // also rejects clicks when `busy`, so lighting the placement disc/flip-hints
+      // during a relayed-move's capture spin would invite a click that silently
+      // no-ops. The preview re-arms on the next pointer move once `busy` clears
+      // (ghosts aren't busy-gated, so the legal-move dots stay visible throughout).
+      !busy &&
       myColor != null &&
       phase === "play" &&
       turn === myColor &&

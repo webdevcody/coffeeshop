@@ -11,6 +11,7 @@
 //   UnrealBloomPass   — subtle threshold bloom over the bright emissive bits
 //   ShaderPass(FXAA)  — cheap post-AA so bloom-softened edges stay clean
 //   OutputPass        — tone-mapping/color-space resolve to the screen
+//   ShaderPass(Grade) — final cheap cinematic color-grade + vignette (last!)
 //
 // IMPORTANT — tone mapping lives on the renderer (scene.js sets
 // ACESFilmicToneMapping + per-frame toneMappingExposure via the day/night
@@ -36,6 +37,90 @@ import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 const BLOOM_THRESHOLD = 0.85;
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.5;
+
+// Cinematic color-grade tuning — deliberately gentle. This runs LAST, on the
+// already-tone-mapped + sRGB-resolved OutputPass result, so it only *grades*
+// whatever pixels come out (day or night) and must NOT re-tonemap. Keep every
+// constant subtle: the goal is "enhance", not "stylize".
+//   GRADE_VIGNETTE_STRENGTH : how much corners darken (0 = off). 0.28 is barely
+//                             noticeable but adds depth.
+//   GRADE_VIGNETTE_SMOOTH   : start/end radii of the corner falloff (smoothstep).
+//   GRADE_CONTRAST          : pivot-based contrast lift around mid-grey (1 = none).
+//   GRADE_SATURATION        : saturation lift (1 = none). A small push for punch.
+//   GRADE_SPLIT_STRENGTH    : how strongly the warm-shadows / teal-highlights
+//                             split-tone tints the image (0 = off).
+//   GRADE_WARM / GRADE_TEAL : the shadow (warm) and highlight (teal) tint colors.
+const GRADE_VIGNETTE_STRENGTH = 0.28;
+const GRADE_VIGNETTE_SMOOTH = new THREE.Vector2(0.72, 0.18); // (outer, inner)
+const GRADE_CONTRAST = 1.045;
+const GRADE_SATURATION = 1.08;
+const GRADE_SPLIT_STRENGTH = 0.06;
+const GRADE_WARM = new THREE.Color(1.0, 0.86, 0.72); // warm tint pushed into shadows
+const GRADE_TEAL = new THREE.Color(0.78, 0.92, 1.0); // teal tint pushed into highlights
+
+// Tiny single-pass cinematic grade. Operates on the LDR, already tone-mapped
+// sRGB output (so it is purely cosmetic — no tone mapping, no color-space work).
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uVignetteStrength: { value: GRADE_VIGNETTE_STRENGTH },
+    uVignetteSmooth: { value: GRADE_VIGNETTE_SMOOTH.clone() },
+    uContrast: { value: GRADE_CONTRAST },
+    uSaturation: { value: GRADE_SATURATION },
+    uSplitStrength: { value: GRADE_SPLIT_STRENGTH },
+    uWarm: { value: GRADE_WARM.clone() },
+    uTeal: { value: GRADE_TEAL.clone() },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uVignetteStrength;
+    uniform vec2  uVignetteSmooth; // x = outer radius, y = inner radius
+    uniform float uContrast;
+    uniform float uSaturation;
+    uniform float uSplitStrength;
+    uniform vec3  uWarm;
+    uniform vec3  uTeal;
+    varying vec2 vUv;
+
+    // Rec. 709 luma — used for saturation and split-tone weighting.
+    const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+    void main() {
+      vec4 texel = texture2D(tDiffuse, vUv);
+      vec3 color = texel.rgb;
+
+      // 1) Contrast around mid-grey pivot (0.5). Cheap and stable for LDR.
+      color = (color - 0.5) * uContrast + 0.5;
+
+      // 2) Saturation lift — blend toward/away from luma.
+      float luma = dot(color, LUMA);
+      color = mix(vec3(luma), color, uSaturation);
+
+      // 3) Faint warm-shadow / teal-highlight split-tone. Weight by luma so
+      //    shadows get warmth and highlights get a cool teal cast, subtly.
+      float t = clamp(dot(color, LUMA), 0.0, 1.0);
+      vec3 splitTint = mix(uWarm, uTeal, t);
+      // Center the tint around neutral grey so it tints rather than brightens.
+      color += (splitTint - vec3(1.0)) * uSplitStrength;
+
+      // 4) Gentle vignette — darken corners via distance from center.
+      vec2 d = vUv - 0.5;
+      float dist = length(d) * 1.41421356; // normalize so corner ~= 1.0
+      float vig = smoothstep(uVignetteSmooth.x, uVignetteSmooth.y, dist);
+      // vig is 1 at center, ->0 toward corners; lerp toward darkened corners.
+      color *= mix(1.0 - uVignetteStrength, 1.0, vig);
+
+      gl_FragColor = vec4(clamp(color, 0.0, 1.0), texel.a);
+    }
+  `,
+};
 
 export function createPostFX(renderer, scene, camera) {
   // Honour the renderer's device-pixel-ratio cap (scene.js clamps it to <=2) so
@@ -75,6 +160,13 @@ export function createPostFX(renderer, scene, camera) {
   const outputPass = new OutputPass();
   composer.addPass(outputPass);
 
+  // 5) Final cinematic color-grade + vignette. Runs LAST on the already
+  //    tone-mapped / sRGB output, so it only grades the LDR result and never
+  //    re-tonemaps. Resolution-independent (vignette uses normalized UVs), so
+  //    no resize handling is needed for this pass.
+  const gradePass = new ShaderPass(GradeShader);
+  composer.addPass(gradePass);
+
   function setSize(w, h) {
     // Keep in step with the renderer's current pixel ratio (it can change if the
     // window moves between displays).
@@ -94,6 +186,7 @@ export function createPostFX(renderer, scene, camera) {
     bloomPass.dispose?.();
     fxaaPass.dispose?.();
     outputPass.dispose?.();
+    gradePass.dispose?.();
     renderPass.dispose?.();
   }
 

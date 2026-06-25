@@ -12,10 +12,11 @@
     "start": "node server/server.js",
     "check": "node scripts/check-syntax.js",
     "test:collision": "node scripts/collision-test.mjs",
+    "test:props": "node scripts/props-in-road-test.mjs",
     "test:ws": "PORT=8090 node scripts/ws-test.mjs",
     "test:game": "PORT=8092 node scripts/game-room-test.mjs",
     "test:e2e": "npm run build && node scripts/browser-test.mjs",
-    "test": "npm run check && node scripts/collision-test.mjs && node scripts/ws-test.mjs && npm run test:game && npm run test:e2e"
+    "test": "npm run check && node scripts/collision-test.mjs && node scripts/props-in-road-test.mjs && node scripts/ws-test.mjs && npm run test:game && npm run test:e2e"
   },
   "dependencies": {
     "ws": "^8.18.0"
