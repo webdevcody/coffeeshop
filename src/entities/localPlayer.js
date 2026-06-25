@@ -53,6 +53,11 @@ export class LocalPlayer {
     // group-transform write below applies them.
     this.rideLift = 0;
     this.rideSpin = 0;
+    // True while rides.js is flying us with the jetpack: rides owns pos.y
+    // (altitude) each frame, so _updateVertical skips the ground-snap + void
+    // respawn and the Space=jump/sit handling is suppressed (Space is thrust).
+    // Cleared back to false on landing, which resumes normal gravity/ground.
+    this.flying = false;
     // When seated, the seat object we're on; otherwise null. `sitting`/`seatY`
     // are the network-visible bits so remote players can pose us correctly.
     this.seat = null;
@@ -174,7 +179,11 @@ export class LocalPlayer {
     // Space is contextual: stand up if seated, sit if a seat is in reach, else
     // hop. Keeping sit/stand on Space preserves stand-up-to-quit-a-game; the jump
     // only happens when there's nothing to sit on, so it never blocks sitting.
-    if (this.controls.consumeSit?.()) {
+    // Always drain the Space edge so it can't leak between modes. While flying
+    // (jetpack), Space is the ASCEND thrust (rides.js reads it via flyThrust), so
+    // swallow the edge here without sitting/standing/jumping.
+    const sitEdge = this.controls.consumeSit?.();
+    if (sitEdge && !this.flying) {
       if (this.sitting) this._stand();
       else if (this._nearestSeat()) this._trySit();
       else this._jump();
@@ -270,6 +279,14 @@ export class LocalPlayer {
   _updateVertical(dt) {
     if (this.sitting) {
       this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
+      return;
+    }
+    // FLY (jetpack): rides.js owns pos.y (altitude) this frame, so skip the
+    // ground snap AND the void respawn — you can hover over land, sea, or the
+    // void. Keep the gravity integrator disengaged so landing (flying=false)
+    // resumes the normal walk/fall logic cleanly next frame.
+    if (this.flying) {
+      this.vy = 0; this.airborne = false; this.falling = false;
       return;
     }
     const onGround = this._isGround(this.pos.x, this.pos.z);

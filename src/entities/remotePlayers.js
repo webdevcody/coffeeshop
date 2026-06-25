@@ -7,6 +7,8 @@ import { Character } from "./character.js";
 import { makeCar } from "./car.js";
 import { makeBoat } from "./boat.js";
 import { makeSkateboard } from "./skateboard.js";
+import { makeRocket } from "./rocket.js";
+import { makeJetpack } from "./jetpack.js";
 import { getItem } from "../world/items.js";
 import {
   makeNameLabel,
@@ -20,6 +22,13 @@ import { NET } from "../config.js";
 // Sea surface height — mirrors ocean.js's waterY so a remote player's boat floats
 // at the same level as the local sea (this module can't see the live ocean instance).
 const WATER_Y = -0.8;
+// Rocket base sits on the pad platform top (mirrors rocket.js ROCKET.padTop). We
+// don't receive the pilot's live altitude over the wire, so a remote rocket rests
+// here at their synced ground position.
+const ROCKET_BASE_Y = 0.5;
+// Where a remote's jetpack mounts on their back (mirrors rides.js mountJetpack).
+const JETPACK_BACK_Y = 1.12;
+const JETPACK_BACK_Z = -0.14;
 
 export class RemotePlayers {
   constructor(scene) {
@@ -85,8 +94,9 @@ export class RemotePlayers {
       color: p.color,
       // Ride state: tag + the meshes we attach for it (built lazily in _setRide).
       ride: null,
-      rideGroup: null, // car group, lives in scene space, follows the lerp
+      rideGroup: null, // car / boat / rocket group, lives in scene space, follows the lerp
       board: null, // skateboard group, parented under the avatar's feet
+      jetpack: null, // jetpack group, parented on the avatar's back (avatar visible)
       // Held item: the wire id + the mesh we attach under the hand (built in _setHeld).
       held: null,
       heldObj: null,
@@ -112,6 +122,8 @@ export class RemotePlayers {
     }
     if (e.board && e.board.parent) e.board.parent.remove(e.board);
     e.board = null;
+    if (e.jetpack && e.jetpack.parent) e.jetpack.parent.remove(e.jetpack);
+    e.jetpack = null;
 
     const body = e.character.group;
     if (ride === "car") {
@@ -128,6 +140,21 @@ export class RemotePlayers {
       e.rideGroup = makeBoat({ waterY: WATER_Y }).group;
       this.scene.add(e.rideGroup);
       body.visible = false;
+    } else if (ride === "rocket") {
+      // Fresh rocket mesh standing in scene space (like the car/boat). The avatar
+      // is hidden so the rocket represents the launching player; it follows the
+      // lerped XZ in update(). We only use .group (never edit rocket.js). Without
+      // the pilot's live altitude over the wire it rests on the pad.
+      e.rideGroup = makeRocket({}).group;
+      this.scene.add(e.rideGroup);
+      body.visible = false;
+    } else if (ride === "jetpack") {
+      // Jetpack rides on the (still-visible) avatar's back, the same mount the
+      // local rides.js uses, parented so it tracks the character automatically.
+      e.jetpack = makeJetpack().group;
+      e.jetpack.position.set(0, JETPACK_BACK_Y, JETPACK_BACK_Z);
+      body.add(e.jetpack);
+      body.visible = true;
     } else if (ride === "skate") {
       // Board rides under the (still-visible) avatar's feet, same offset the local
       // rides.js uses, parented so it moves with the character automatically.
@@ -241,7 +268,7 @@ export class RemotePlayers {
       // preserve the group's own base y instead of stomping it to 0. The board needs
       // no handling — it's parented under the avatar and moves with it.
       if (e.rideGroup) {
-        const ry = e.ride === "boat" ? WATER_Y : 0;
+        const ry = e.ride === "boat" ? WATER_Y : e.ride === "rocket" ? ROCKET_BASE_Y : 0;
         e.rideGroup.position.set(g.position.x, ry, g.position.z);
         e.rideGroup.rotation.y = g.rotation.y;
       }

@@ -14,6 +14,7 @@ export function createControls(domElement) {
   let sitPressed = false; // edge-triggered Space, drained by consumeSit()
   let dropPressed = false; // edge-triggered G, drained by consumeDrop()
   let usePressed = false; // edge-triggered E, drained by consumeUse() (enter/exit a ride)
+  let jetpackPressed = false; // edge-triggered F, drained by consumeJetpack() (toggle jetpack fly mode)
   // Skate trick edges (drained only while skating by rides.js). Ollie is also
   // queued by Space so the natural "jump" key works on the board; when NOT
   // skating that Space ollie-flag is simply never read (sit drains it via
@@ -47,6 +48,8 @@ export function createControls(domElement) {
     if (e.code === "KeyG" && !keys.has("KeyG")) dropPressed = true;
     // E enters/exits a ride (car / skateboard). Edge-triggered like sit/drop.
     if (e.code === "KeyE" && !keys.has("KeyE")) usePressed = true;
+    // F toggles the wearable JETPACK fly mode on/off (a FREE key). Edge-triggered.
+    if (e.code === "KeyF" && !keys.has("KeyF")) jetpackPressed = true;
     // Skate trick keys (only consumed in skate mode): J ollie, K kickflip, L shuvit.
     if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
@@ -192,6 +195,31 @@ export function createControls(domElement) {
     return pressed;
   }
 
+  // Returns true once per F press (toggle jetpack fly mode), then resets. Like
+  // consumeUse, NOT gated by `locked` so you can always pop the pack off/on.
+  function consumeJetpack() {
+    const pressed = jetpackPressed;
+    jetpackPressed = false;
+    return pressed;
+  }
+
+  // Vertical jetpack thrust while flying: hold Space to ascend (+1), hold X or
+  // Shift/Ctrl to descend (-1), nothing held = 0 (gravity wins). Read each frame
+  // by rides.js in fly mode. Horizontal flight reuses the normal camera-relative
+  // `move` vector, so WASD still flies you around. Not gated by `locked`.
+  function flyThrust() {
+    let t = 0;
+    if (keys.has("Space")) t += 1;
+    if (
+      keys.has("KeyX") ||
+      keys.has("ShiftLeft") || keys.has("ShiftRight") ||
+      keys.has("ControlLeft") || keys.has("ControlRight")
+    ) {
+      t -= 1;
+    }
+    return clamp(t, -1, 1);
+  }
+
   // Skate trick edges — drained once per press by rides.js while skating.
   function consumeOllie() {
     const p = olliePressed;
@@ -272,13 +300,14 @@ export function createControls(domElement) {
       move.z = 0;
       sitPressed = false;
       dropPressed = false;
+      jetpackPressed = false;
       olliePressed = false;
       flipPressed = false;
       shuvPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

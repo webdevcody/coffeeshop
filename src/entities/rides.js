@@ -7,11 +7,19 @@ import * as THREE from "three";
 import { makeCar } from "./car.js";
 import { makeBoat } from "./boat.js";
 import { makeSkateboard } from "./skateboard.js";
+import { makeRocket } from "./rocket.js";
+import { makeJetpack, FLY } from "./jetpack.js";
 
 const FAR = 1e9;
 const CAR_REACH = 3.2; // how close you must be to enter the car
 const BOAT_REACH = 4.0; // how close (at a dock) you must be to board the boat
+const ROCKET_REACH = 6.0; // how close (on the launchpad) you must be to board the rocket
+const ROCKET_CEIL = 300; // rocket flight ceiling (m) passed to rocket.drive — clears the station
 const SKATE_SPEED = 1.9; // ground-speed multiplier while skating
+// Where the jetpack mounts on the local player's back (torso height, tucked just
+// behind the spine). Mirrored in remotePlayers.js for the networked version.
+const JETPACK_BACK_Y = 1.12;
+const JETPACK_BACK_Z = -0.14;
 
 // --- Skate trick tuning (arcade + forgiving) --------------------------------
 const SK_ORIGIN = { x: -30, z: 65 }; // skatepark world tile offset (city.js LAYOUT)
@@ -60,6 +68,9 @@ export function createRides(scene, opts) {
   // The ocean (water plane + docks + boat spawn + isWater predicate). null when no
   // ocean was threaded in — in that case the boat is simply never created/offered.
   const ocean = opts.ocean || null;
+  // The SPACE world (launchpad apron + gantry/tanks + station + rocketSpawn). null
+  // when no space was threaded in — then the rocket is never created/offered.
+  const space = opts.space || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -73,6 +84,25 @@ export function createRides(scene, opts) {
     scene.add(boat.group);
   }
 
+  // The launchable ROCKET — built once (like the car/boat), parked on the spaceport
+  // launchpad at space.rocketSpawn. On foot you board it with E while standing on
+  // the pad, then throttle up (W) to blast into orbit. Its parked footprint is a
+  // world collider (pushed inert while you're piloting it). null with no space.
+  let rocket = null;
+  let rocketCollider = null;
+  if (space) {
+    rocket = makeRocket({ spawn: space.rocketSpawn });
+    scene.add(rocket.group);
+    rocketCollider = { ...rocket.footprint() };
+    colliders.push(rocketCollider);
+  }
+
+  // The wearable JETPACK — built once, hidden until you toggle fly mode (F). Unlike
+  // the car/boat you don't sit in it: on mount it parents onto the local player's
+  // back and you keep your on-foot avatar; update() pulses its flame by thrust.
+  const jetpack = makeJetpack();
+  jetpack.setVisible(false);
+
   // Parked-car footprint, registered in the world colliders so you can't walk
   // through it. We mutate this same object in place: a tight box while parked,
   // pushed far away (inert) while you're driving it.
@@ -80,7 +110,12 @@ export function createRides(scene, opts) {
   colliders.push(carCollider);
 
   let board = null;
-  let mode = "walk"; // walk | drive | boat | skate
+  let mode = "walk"; // walk | drive | boat | skate | fly | rocket
+
+  // Per-frame jetpack fly sub-state. null while not flying; { vy, armed } while in
+  // fly mode. `armed` flips true once we've genuinely lifted off the ground, so a
+  // zero-thrust touchdown only lands you AFTER a real flight (never on take-off).
+  let fly = null;
 
   // Per-frame skate physics sub-state. null while not skating; otherwise a small
   // record threaded across frames so air/grind survive between update() calls.
@@ -114,6 +149,46 @@ export function createRides(scene, opts) {
   function parkCollider(on) {
     if (on) Object.assign(carCollider, car.footprint());
     else Object.assign(carCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // Same trick for the rocket: a tight footprint while parked, pushed far away
+  // (inert) while you're piloting it so the hidden avatar can't snag its own box.
+  function parkRocketCollider(on) {
+    if (!rocketCollider) return;
+    if (on) Object.assign(rocketCollider, rocket.footprint());
+    else Object.assign(rocketCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // Strap the jetpack onto the local player's back + enter fly mode. The avatar
+  // stays visible (you see yourself wearing it); rides.js will drive local.pos.y.
+  function mountJetpack(local) {
+    if (jetpack.group.parent) jetpack.group.parent.remove(jetpack.group);
+    jetpack.group.position.set(0, JETPACK_BACK_Y, JETPACK_BACK_Z);
+    jetpack.group.rotation.set(0, 0, 0);
+    local.character.group.add(jetpack.group);
+    jetpack.setVisible(true);
+    jetpack.update(0, 0); // reset the flame to idle
+    local.flying = true;
+    fly = { vy: 0, armed: false };
+  }
+
+  // Take the pack off + leave fly mode. If still airborne we hand control back to
+  // the normal gravity integrator (carry the vertical momentum) so cutting the
+  // pack drops you smoothly to the ground / sea instead of teleporting.
+  function dismountJetpack(local) {
+    jetpack.setVisible(false);
+    if (jetpack.group.parent) jetpack.group.parent.remove(jetpack.group);
+    local.flying = false;
+    if (local.pos.y > 0.02) {
+      local.airborne = true;
+      local.falling = true;
+      local.vy = fly ? Math.min(0, fly.vy) : 0;
+    } else {
+      local.pos.y = 0;
+      local.airborne = false;
+      local.vy = 0;
+    }
+    fly = null;
   }
 
   function mountBoard(local) {
@@ -151,11 +226,16 @@ export function createRides(scene, opts) {
   // owns the avatar + camera this frame).
   function update(dt, camera, controls, local) {
     const useE = controls.consumeUse ? controls.consumeUse() : false;
+    // Drain the F edge every frame (in any mode) so it can't carry over stale;
+    // only the walk + fly branches act on it (toggle the jetpack on / land).
+    const useJetpack = controls.consumeJetpack ? controls.consumeJetpack() : false;
     const outdoors = local.pos.z > 11.5; // only offer rides outside the cafe
     const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH;
     // The boat floats in the water at a dock tip, so this is only ever true when
     // you're standing on a dock right next to it (you can't reach it across water).
     const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH : false;
+    // The rocket sits at pad centre, so this is only true on the launchpad apron.
+    const nearRocket = rocket ? rocket.distanceTo(local.pos.x, local.pos.z) < ROCKET_REACH : false;
 
     if (mode === "boat") {
       const { throttle, steer } = controls.driveAxis();
@@ -202,6 +282,66 @@ export function createRides(scene, opts) {
       return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
     }
 
+    if (mode === "rocket") {
+      // Mirror the car/boat drive branch: throttle = main engine (W launches +
+      // climbs), steer = yaw aloft. The vehicle owns the avatar + camera.
+      const { throttle, steer } = controls.driveAxis();
+      rocket.drive(dt, throttle, steer, { maxAltitude: ROCKET_CEIL });
+      rocket.updateCamera(camera, dt);
+      // Glue the (hidden) avatar + networked position to the rocket so exiting is
+      // seamless and remotes track where you launched to (XZ + heading; pos.y
+      // carries the altitude for the HUD/minimap).
+      local.pos.x = rocket.state.x;
+      local.pos.z = rocket.state.z;
+      local.pos.y = rocket.state.altitude;
+      local.facing = rocket.state.heading;
+      if (useE) {
+        const s = rocket.exitSpot();
+        local.pos.x = s.x;
+        local.pos.z = s.z;
+        local.pos.y = 0;
+        local.facing = s.facing;
+        // Stand the avatar safely on the ground beside the pad so it doesn't fall.
+        local.character.group.position.set(s.x, 0, s.z);
+        local.character.group.rotation.y = s.facing;
+        parkRocketCollider(true);
+        mode = "walk";
+        return { mode, prompt: "🚀 Press E to board rocket", overrideWalk: false };
+      }
+      return { mode, prompt: "🚀 Throttle: W launch · A/D yaw · E exit", overrideWalk: true };
+    }
+
+    if (mode === "fly") {
+      const thrust = controls.flyThrust ? controls.flyThrust() : 0; // +1 up / -1 down / 0
+      if (!fly) fly = { vy: 0, armed: false };
+      // Vertical: the jetpack must overcome gravity to climb, so a positive thrust
+      // contributes (FLY.thrust + gravity) of lift (net +FLY.thrust up); gravity
+      // always pulls; X/Shift adds an extra downward shove. Damp + cap for a
+      // controllable feel, then integrate altitude clamped to [0, FLY.maxAltitude].
+      const up = thrust > 0 ? FLY.thrust + FLY.gravity : 0;
+      const down = FLY.gravity + (thrust < 0 ? FLY.thrust : 0);
+      fly.vy += (up - down) * dt;
+      fly.vy -= fly.vy * FLY.drag * dt;
+      fly.vy = Math.max(-FLY.maxUp, Math.min(FLY.maxUp, fly.vy));
+      let y = (local.pos.y || 0) + fly.vy * dt;
+      if (y <= 0) { y = 0; if (fly.vy < 0) fly.vy = 0; }
+      if (y >= FLY.maxAltitude) { y = FLY.maxAltitude; if (fly.vy > 0) fly.vy = 0; }
+      local.pos.y = y;             // rides owns altitude; _updateVertical skips it
+      if (y > 0.6) fly.armed = true; // we've genuinely left the ground
+      // Pulse the exhaust by upward thrust only (idle/descend = no flame).
+      jetpack.update(dt, thrust > 0 ? thrust : 0);
+      // Land on F, or by settling back onto the ground at zero/▼ thrust after a
+      // real flight. Horizontal flight is the NORMAL move integration (we never
+      // touch speedMul), so local.update flies us around with WASD.
+      const touchedDown = fly.armed && y <= 0.001 && thrust <= 0;
+      if (useJetpack || touchedDown) {
+        dismountJetpack(local);
+        mode = "walk";
+        return { mode, prompt: null, overrideWalk: false };
+      }
+      return { mode, prompt: "🚀 F to land · Space up / X down", overrideWalk: false };
+    }
+
     if (mode === "skate") {
       if (useE) {
         dismountBoard(local);
@@ -213,6 +353,13 @@ export function createRides(scene, opts) {
     }
 
     // mode === "walk"
+    // JETPACK: F toggles fly mode on its own free key — on foot, not seated, not
+    // in another ride (we're in the walk branch). Takes priority over E rides.
+    if (useJetpack && !local.sitting) {
+      mountJetpack(local);
+      mode = "fly";
+      return { mode, prompt: "🚀 F to land · Space up / X down", overrideWalk: false };
+    }
     if (useE && !local.sitting) {
       if (nearCar) {
         parkCollider(false);
@@ -226,6 +373,14 @@ export function createRides(scene, opts) {
         boat.resetCamera();
         mode = "boat";
         return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
+      }
+      // ROCKET: reachable only on the launchpad apron. Boards between the boat and
+      // the interactables in the E-priority order.
+      if (nearRocket) {
+        parkRocketCollider(false);
+        rocket.resetCamera();
+        mode = "rocket";
+        return { mode, prompt: "🚀 Throttle: W launch · A/D yaw · E exit", overrideWalk: true };
       }
       // INTERACTABLES: a world object in range claims E before the skateboard.
       // tryUse returns its HUD line (truthy) only when something was in range;
@@ -244,6 +399,7 @@ export function createRides(scene, opts) {
     const ip = interactables && !local.sitting ? interactables.nearestPrompt(local.pos.x, local.pos.z) : null;
     if (nearCar) prompt = "🚗 Press E to drive";
     else if (nearBoat && !local.sitting) prompt = "🚤 Press E to sail"; // boat hover sits between car and interactable
+    else if (nearRocket && !local.sitting) prompt = "🚀 Press E to board rocket"; // rocket hover, on the pad
     else if (ip) prompt = ip; // interactable hover prompt sits between car and skate
     else if (outdoors && !local.sitting) prompt = "🛹 Press E to skateboard";
     return { mode, prompt, overrideWalk: false };
@@ -428,13 +584,21 @@ export function createRides(scene, opts) {
     update,
     car,
     boat,
+    rocket,
     get trick() { return skate ? skate.lastTrick : null; },
     get score() { return skate ? skate.score : 0; },
     get mode() { return mode; },
     // Network-friendly ride tag: null while walking, "car" while driving, "boat"
-    // while sailing, "skate" while on the board. Threaded through sendState so
-    // remotes render the matching mesh.
-    get ride() { return mode === "drive" ? "car" : mode === "boat" ? "boat" : mode === "skate" ? "skate" : null; },
+    // while sailing, "skate" while on the board, "jetpack" while flying, "rocket"
+    // while launched. Threaded through sendState so remotes render the matching mesh.
+    get ride() {
+      return mode === "drive" ? "car"
+        : mode === "boat" ? "boat"
+        : mode === "skate" ? "skate"
+        : mode === "fly" ? "jetpack"
+        : mode === "rocket" ? "rocket"
+        : null;
+    },
   };
 }
 

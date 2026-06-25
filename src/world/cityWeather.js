@@ -45,6 +45,24 @@ const STREAK_LEN = 1.6;                     // half-length of a unit streak (geo
 const CLOUD_COUNT = 14;
 const CLOUD_Y = 95;                         // high in the sky
 
+// --- Tornadoes ----------------------------------------------------------------
+// A POOL of at most 2 funnels, built once and reused across events (toggled
+// visible). During heavy rain an "event" wakes 1 (rarely 2) funnels that roam
+// the map then dissipate, followed by a long calm gap before the next event.
+// Each funnel is a tapered stack of swirling rings (wide top, narrow base) with
+// a faster debris swirl orbiting the base and a dark ground smudge.
+const TORNADO_MAX = 2;                      // pool size (never more than this)
+const FUNNEL_RINGS = 12;                    // stacked rings forming the cone shell
+const FUNNEL_HEIGHT = 56;                   // base on the ground -> top in the air
+const FUNNEL_TOP_R = 13;                    // wide swirling top radius
+const FUNNEL_BASE_R = 1.2;                  // narrow base radius (touches ground)
+const FUNNEL_DEBRIS = 7;                    // debris quads orbiting the base
+const TORNADO_INFLUENCE = 5.5;             // ground "catch" radius at full size
+// Roam bounds, inset from the map edges so funnels stay over the play area.
+const T_MINX = LEFT + 10, T_MAXX = RIGHT - 10;
+const T_MINZ = NEAR + 14, T_MAXZ = FAR - 14;
+const TWO_PI = Math.PI * 2;
+
 // --- Weather state machine ----------------------------------------------------
 // Phases run in order on a multi-minute cycle. `rain` is the target rain density
 // for each phase (0..1); `cover` is the target cloud opacity (0..1). The machine
@@ -63,6 +81,7 @@ const _q = new THREE.Quaternion();
 const _pos = new THREE.Vector3();
 const _scl = new THREE.Vector3(1, 1, 1);
 const _euler = new THREE.Euler();
+const _white = new THREE.Color("#dfe6f2");  // lightning fog-tint target (const, never mutated)
 
 // A flat-bottomed low-poly cloud: a clump of squashed icosahedra merged visually
 // by overlapping them in one little group. Cheap, blocky, reads as a cloud.
@@ -71,10 +90,15 @@ function makeCloudGeo() {
   return new THREE.IcosahedronGeometry(1, 0);
 }
 
-export function buildCityWeather() {
+export function buildCityWeather(opts = {}) {
   const group = new THREE.Group();
   group.name = "cityWeather";
   group.frustumCulled = false;
+
+  // Optional scene fog: if a caller wires it in, lightning briefly tints it (light
+  // polish). Left null otherwise, so existing callers (no args) are unaffected.
+  const fog = opts && opts.fog ? opts.fog : null;
+  const _fogBase = fog ? fog.color.clone() : null;
 
   // ---------------------------------------------------------------- WIND -----
   // Slowly evolving wind. `wind` is the live state other systems can read.
@@ -186,6 +210,134 @@ export function buildCityWeather() {
   flash.frustumCulled = false;
   group.add(flash);
 
+  // ------------------------------------------------------- TORNADOES ---------
+  // Build the funnel POOL once. Geometry is shared across both funnels (each ring
+  // band, the debris quad, the ground smudge) so only materials are per-funnel
+  // (needed so their lifecycle opacity can differ). Nothing here runs per frame.
+  function funnelRingRadius(frac) {
+    // frac 0 at the base -> 1 at the top; curved taper (narrow base, wide top).
+    return FUNNEL_BASE_R + (FUNNEL_TOP_R - FUNNEL_BASE_R) * Math.pow(frac, 0.85);
+  }
+  const ringGeos = [];
+  for (let i = 0; i < FUNNEL_RINGS; i++) {
+    const fracB = i / FUNNEL_RINGS;
+    const fracT = (i + 1) / FUNNEL_RINGS;
+    const rB = funnelRingRadius(fracB);
+    const rT = funnelRingRadius(fracT);
+    const h = (fracT - fracB) * FUNNEL_HEIGHT * 1.25;   // overlap a touch
+    // Open-ended cylinder band: top radius < bottom only near the base, giving the
+    // stacked cone shell its taper. Double-sided material shows the hollow interior.
+    ringGeos.push(new THREE.CylinderGeometry(rT, rB, h, 16, 1, true));
+  }
+  const debrisGeo = new THREE.PlaneGeometry(2.2, 1.3);
+  const smudgeGeo = new THREE.CircleGeometry(FUNNEL_BASE_R * 3.4, 20);
+
+  function buildFunnel(seed) {
+    const root = new THREE.Group();      // roam position (x,z); visibility toggled
+    root.frustumCulled = false;
+    root.visible = false;
+
+    const bodyGroup = new THREE.Group(); // spins + sways + scales for the lifecycle
+    bodyGroup.frustumCulled = false;
+    root.add(bodyGroup);
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: "#7c6b58",                  // dusty grey-brown
+      roughness: 1.0, metalness: 0.0,
+      transparent: true, opacity: 0.0,   // faded in by the forming phase
+      depthWrite: false, side: THREE.DoubleSide, flatShading: true,
+    });
+
+    const rings = [];
+    for (let i = 0; i < FUNNEL_RINGS; i++) {
+      const frac = (i + 0.5) / FUNNEL_RINGS;
+      const m = new THREE.Mesh(ringGeos[i], bodyMat);
+      m.frustumCulled = false;
+      // Offset each ring centre into a gentle helix so the (otherwise symmetric)
+      // stack reads as a visibly twisting column once the body spins. Top sways out.
+      const off = 0.25 + frac * 2.4;
+      const hAng = frac * 3.2 + seed;
+      m.position.set(Math.cos(hAng) * off, frac * FUNNEL_HEIGHT, Math.sin(hAng) * off);
+      bodyGroup.add(m);
+      rings.push(m);
+    }
+
+    // Faster debris swirl orbiting the base.
+    const debrisGroup = new THREE.Group();
+    debrisGroup.frustumCulled = false;
+    const debrisMat = new THREE.MeshBasicMaterial({
+      color: "#5b4d3d",
+      transparent: true, opacity: 0.0,
+      depthWrite: false, side: THREE.DoubleSide, fog: false,
+    });
+    for (let i = 0; i < FUNNEL_DEBRIS; i++) {
+      const q = new THREE.Mesh(debrisGeo, debrisMat);
+      q.frustumCulled = false;
+      const a = (i / FUNNEL_DEBRIS) * TWO_PI + seed;
+      const r = FUNNEL_BASE_R + 1.2 + (i % 3) * 0.9;
+      q.position.set(Math.cos(a) * r, 0.6 + (i % 4) * 1.1, Math.sin(a) * r);
+      q.rotation.y = a;                  // roughly tangential
+      debrisGroup.add(q);
+    }
+    bodyGroup.add(debrisGroup);
+
+    // Dark ground smudge — sits flat under the funnel and does NOT tilt with the
+    // body sway, so it stays glued to the ground.
+    const smudgeMat = new THREE.MeshBasicMaterial({
+      color: "#3a3026",
+      transparent: true, opacity: 0.0,
+      depthWrite: false, fog: false,
+    });
+    const smudge = new THREE.Mesh(smudgeGeo, smudgeMat);
+    smudge.rotation.x = -Math.PI / 2;
+    smudge.position.y = 0.06;
+    smudge.frustumCulled = false;
+    root.add(smudge);
+
+    group.add(root);
+
+    // Plain reused state record (no per-frame allocation). `report` is the reused
+    // object handed out by getTornadoes() so that call never allocates either.
+    return {
+      root, bodyGroup, debrisGroup, rings,
+      bodyMat, debrisMat, smudgeMat,
+      phase: "idle",                     // idle | forming | active | dissipating
+      life: 0,
+      formDur: 0, activeDur: 0, dissDur: 0,
+      x: CENTER_X, z: CENTER_Z, vx: 0, vz: 0,
+      wanderT: 0,
+      spin: seed, debrisSpin: seed * 1.7, swayPhase: seed * 3,
+      radius: 0,
+      report: { x: 0, z: 0, radius: 0, active: false },
+    };
+  }
+
+  const funnels = [];
+  for (let i = 0; i < TORNADO_MAX; i++) funnels.push(buildFunnel(i * 2.1));
+
+  // Wake a pooled funnel for a fresh roam (called rarely; Math.random only — no `new`).
+  function spawnFunnel(f) {
+    f.phase = "forming";
+    f.life = 0;
+    f.formDur = 4 + Math.random() * 4;       // grow from a wisp
+    f.activeDur = 22 + Math.random() * 34;   // roam at full size
+    f.dissDur = 5 + Math.random() * 4;       // shrink + fade away
+    f.x = T_MINX + Math.random() * (T_MAXX - T_MINX);
+    f.z = T_MINZ + Math.random() * (T_MAXZ - T_MINZ);
+    const a = Math.random() * TWO_PI;
+    const spd = 2.5 + Math.random() * 4;
+    f.vx = Math.cos(a) * spd;
+    f.vz = Math.sin(a) * spd;
+    f.wanderT = 2 + Math.random() * 3;
+    f.root.position.set(f.x, 0, f.z);
+    f.root.visible = true;
+    f.bodyGroup.scale.setScalar(0.12);
+  }
+
+  // Event scheduler: a long initial calm, then events separated by long calm gaps.
+  let tornadoCooldown = 35 + Math.random() * 50;
+  let tornadoEvent = false;
+
   // ------------------------------------------------------- STATE MACHINE -----
   let phaseIdx = 0;
   let phaseT = 0;                 // seconds spent in the current phase
@@ -195,6 +347,7 @@ export function buildCityWeather() {
   // Lightning timing (only fires while it's actually raining).
   let flashTimer = 4 + Math.random() * 8;   // seconds until next strike
   let flashLevel = 0;                       // current flash brightness 0..1
+  let fogDirty = false;                     // true while the fog is tinted by a flash
 
   let t = 0;
 
@@ -252,7 +405,8 @@ export function buildCityWeather() {
     // ----- rain: fade material with density, fall + recycle the pool ----------
     // Opacity tracks live rain density; when essentially zero we can skip the heavy
     // per-instance work entirely (the streaks just hold position, invisible).
-    rainMat.opacity = liveRain * 0.55;
+    // Density curve: a touch denser as it nears the peak (Y-range unchanged).
+    rainMat.opacity = liveRain * (0.5 + liveRain * 0.18);
     if (liveRain > 0.01) {
       // Wind-driven slant: a small horizontal drift applied to every streak, plus a
       // matching tilt on the streak geometry so the rain leans into the wind.
@@ -303,12 +457,125 @@ export function buildCityWeather() {
       if (flashLevel < 0) flashLevel = 0;
       // Flicker a touch on the way down so it looks like a real strike.
       const flicker = 0.7 + 0.3 * Math.abs(Math.sin(t * 40));
-      flashMat.opacity = flashLevel * flicker * 0.5 * Math.min(1, liveRain * 1.5);
-    } else if (flashMat.opacity !== 0) {
-      flashMat.opacity = 0;
+      const fa = flashLevel * flicker * 0.5 * Math.min(1, liveRain * 1.5);
+      flashMat.opacity = fa;
+      // Polish: briefly tint the fog toward the flash colour (in-place lerp — no
+      // allocation). Only runs if a fog was wired in via opts; otherwise inert.
+      if (fog) {
+        fog.color.copy(_fogBase).lerp(_white, Math.min(0.6, fa * 0.9));
+        fogDirty = true;
+      }
+    } else {
+      if (flashMat.opacity !== 0) flashMat.opacity = 0;
+      if (fog && fogDirty) { fog.color.copy(_fogBase); fogDirty = false; }
+    }
+
+    // ----- tornadoes: roam during heavy rain; long calm gaps between events ----
+    // Start an event only when there is none running and the storm is heavy.
+    if (!tornadoEvent) {
+      tornadoCooldown -= dt;
+      if (liveRain > 0.55 && tornadoCooldown <= 0) {
+        const count = (Math.random() < 0.18 ? 2 : 1);   // 1, rarely 2
+        let started = 0;
+        for (let i = 0; i < funnels.length && started < count; i++) {
+          if (funnels[i].phase === "idle") { spawnFunnel(funnels[i]); started++; }
+        }
+        tornadoEvent = started > 0;
+      }
+    }
+
+    let anyAlive = false;
+    for (let i = 0; i < funnels.length; i++) {
+      const f = funnels[i];
+      if (f.phase === "idle") continue;
+      anyAlive = true;
+      f.life += dt;
+
+      // If the storm dies down, force the funnel to dissipate gracefully.
+      if (f.phase !== "dissipating" && liveRain < 0.30) { f.phase = "dissipating"; f.life = 0; }
+
+      // Lifecycle -> body scale + alpha. forming grows from a wisp; dissipating
+      // shrinks + fades; then it returns to the pool (idle, hidden) for reuse.
+      let scl = 1, alpha = 1;
+      if (f.phase === "forming") {
+        const p = f.life / f.formDur;
+        if (p >= 1) { f.phase = "active"; f.life = 0; }
+        else { const e = p * p * (3 - 2 * p); scl = 0.12 + e * 0.88; alpha = p; }
+      } else if (f.phase === "active") {
+        if (f.life >= f.activeDur) { f.phase = "dissipating"; f.life = 0; }
+      } else { // dissipating
+        const p = f.life / f.dissDur;
+        if (p >= 1) {
+          f.phase = "idle";
+          f.root.visible = false;
+          f.radius = 0;
+          f.bodyMat.opacity = 0; f.debrisMat.opacity = 0; f.smudgeMat.opacity = 0;
+          continue;
+        }
+        scl = 1 - p * 0.95; alpha = 1 - p;
+      }
+
+      // Wander a slow ground path, reflecting off the (inset) city bounds.
+      f.wanderT -= dt;
+      if (f.wanderT <= 0) {
+        f.wanderT = 3 + Math.random() * 4;
+        const a = Math.random() * TWO_PI;
+        const spd = 2.5 + Math.random() * 4.5;
+        f.vx = Math.cos(a) * spd + wind.dirX * wind.speed * 0.3;
+        f.vz = Math.sin(a) * spd + wind.dirZ * wind.speed * 0.3;
+      }
+      f.x += f.vx * dt; f.z += f.vz * dt;
+      if (f.x < T_MINX) { f.x = T_MINX; f.vx = Math.abs(f.vx); }
+      else if (f.x > T_MAXX) { f.x = T_MAXX; f.vx = -Math.abs(f.vx); }
+      if (f.z < T_MINZ) { f.z = T_MINZ; f.vz = Math.abs(f.vz); }
+      else if (f.z > T_MAXZ) { f.z = T_MAXZ; f.vz = -Math.abs(f.vz); }
+      f.root.position.x = f.x;
+      f.root.position.z = f.z;
+
+      // Spin the funnel, swirl the debris faster, and wobble the body a little.
+      f.spin += dt * 1.7;
+      f.bodyGroup.rotation.y = f.spin;
+      f.debrisSpin += dt * 4.2;
+      f.debrisGroup.rotation.y = f.debrisSpin;
+      f.swayPhase += dt;
+      f.bodyGroup.rotation.x = Math.sin(f.swayPhase * 0.7) * 0.06;
+      f.bodyGroup.rotation.z = Math.cos(f.swayPhase * 0.9) * 0.05;
+
+      // Apply lifecycle scale + alpha and update the exposed influence radius.
+      f.bodyGroup.scale.setScalar(scl);
+      f.bodyMat.opacity = 0.42 * alpha;
+      f.debrisMat.opacity = 0.55 * alpha;
+      f.smudgeMat.opacity = 0.5 * alpha;
+      f.radius = TORNADO_INFLUENCE * scl;
+    }
+
+    // Event ends once all its funnels are back in the pool -> long calm gap.
+    if (tornadoEvent && !anyAlive) {
+      tornadoEvent = false;
+      tornadoCooldown = 70 + Math.random() * 90;
     }
   }
 
+  // Live tornado report. Reuses one array + one object per funnel so repeated
+  // calls (even per frame from another system) never allocate.
+  const _tornadoReport = [];
+  function getTornadoes() {
+    _tornadoReport.length = 0;
+    for (let i = 0; i < funnels.length; i++) {
+      const f = funnels[i];
+      if (f.phase === "idle") continue;
+      const r = f.report;
+      r.x = f.x;
+      r.z = f.z;
+      r.radius = f.radius;
+      r.active = (f.phase === "active");   // true only at full strength
+      _tornadoReport.push(r);
+    }
+    return _tornadoReport;
+  }
+
   // `wind` is exposed so other ambient systems could read the current gust.
-  return { group, update, wind };
+  // `getRain` (a later audio pass reads it) and `getTornadoes` (a later gameplay
+  // pass reads it to detect a caught player) expose live state — visual only here.
+  return { group, update, wind, getRain: () => liveRain, getTornadoes };
 }

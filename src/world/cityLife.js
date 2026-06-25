@@ -19,6 +19,7 @@
 // writes straight into object transforms / the instance matrix buffer.
 
 import * as THREE from "three";
+import { buildWildlife } from "./wildlife.js";
 
 const NEAR = 13, FAR = 277, LEFT = -122, RIGHT = 122; // match cityStreets: keep traffic out of the cafe (front wall z=11)
 const VROADS = [-60, 0, 60];          // avenues — run along Z
@@ -564,6 +565,14 @@ export function buildCityLife() {
                 pauseTimer: 0, cooldown: 0, canPause: false, seated: true, baseY: 0.5 });
   }
 
+  // -------------------- WILDLIFE (animals + dinosaurs) -----------------------
+  // A standalone roaming menagerie that shares the city's roam rectangle (the
+  // road-grid span). It builds once here, parents under the cityLife group, and
+  // is pumped by cityLife's own update(dt) below so it animates automatically.
+  // Its update is allocation-free, matching cityLife's hot-path contract.
+  const wildlife = buildWildlife({ bounds: { minX: LEFT, maxX: RIGHT, minZ: NEAR, maxZ: FAR } });
+  group.add(wildlife.group);
+
   // -------------------- BIRDS (InstancedMesh) --------------------------------
   // A small flock that wheels in lazy horizontal circles high above the grid.
   const BIRD_COUNT = 18;
@@ -713,6 +722,9 @@ export function buildCityLife() {
       birds.setMatrixAt(i, _m);
     }
     birds.instanceMatrix.needsUpdate = true;
+
+    // Advance the roaming wildlife in lock-step with the rest of city life.
+    wildlife.update(dt);
   }
 
   return { group, update };
