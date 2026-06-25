@@ -11,6 +11,9 @@ import { PLAYER, CAMERA, WORLD, SEAT, SEATED_CAM } from "../config.js";
 // Falling off the edge of the world: how fast you accelerate down, and how far
 // you fall before respawning back at the coffeeshop.
 const FALL = { gravity: 22, respawnY: -12 };
+// A standing hop (walk mode only). Space jumps when you're on the ground and not
+// next to a seat — apex ≈ v²/(2·gravity) ≈ 1.3 m, airtime ≈ 0.7 s.
+const JUMP_V = 7.6;
 
 export class LocalPlayer {
   // `appearance` is { color, skin, hair } (a bare color string also works).
@@ -40,6 +43,9 @@ export class LocalPlayer {
     // Vertical state for walking off an edge.
     this.vy = 0;
     this.falling = false;
+    // True while airborne from a jump OR a walk-off-the-edge fall; one gravity
+    // integrator (_updateVertical) drives both.
+    this.airborne = false;
     // Trick channels owned by rides.js while skating: a vertical lift (m) applied
     // on top of the walk/fall offset for ollies/air/grinds, and an extra body yaw
     // (rad) for in-air 180/360 spins. Default 0 so walking/driving are untouched —
@@ -165,10 +171,13 @@ export class LocalPlayer {
   update(dt, camera, seatedView = null) {
     const { move, orbit, zoom } = this.controls;
 
-    // Space toggles sitting: sit on the nearest seat, or stand back up.
+    // Space is contextual: stand up if seated, sit if a seat is in reach, else
+    // hop. Keeping sit/stand on Space preserves stand-up-to-quit-a-game; the jump
+    // only happens when there's nothing to sit on, so it never blocks sitting.
     if (this.controls.consumeSit?.()) {
       if (this.sitting) this._stand();
-      else this._trySit();
+      else if (this._nearestSeat()) this._trySit();
+      else this._jump();
     }
 
     // G drops whatever you're holding (the controls layer already ignores keys
@@ -244,19 +253,43 @@ export class LocalPlayer {
     }
   }
 
-  // Vertical physics: snap to the ground if there's any under us, otherwise
-  // accelerate downward and respawn once we've fallen far enough.
+  // Vertical physics: one gravity integrator serves both a jump (pos.y arcs up
+  // then back) and walking off an edge (pos.y falls until respawn). While resting
+  // on solid ground, pin to y=0.
   _updateVertical(dt) {
-    if (this.sitting || this._isGround(this.pos.x, this.pos.z)) {
-      this.pos.y = 0;
-      this.vy = 0;
-      this.falling = false;
+    if (this.sitting) {
+      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
       return;
     }
-    this.falling = true;
+    const onGround = this._isGround(this.pos.x, this.pos.z);
+    if (!this.airborne) {
+      if (onGround) { this.pos.y = 0; this.vy = 0; this.falling = false; return; }
+      // Stepped off the edge with no jump: begin a fall from rest.
+      this.airborne = true; this.falling = true; this.vy = 0;
+    }
+    // Airborne (rising from a jump or falling): integrate gravity.
     this.vy -= FALL.gravity * dt;
     this.pos.y += this.vy * dt;
+    this.falling = this.vy < 0;
+    // Land when descending back to ground level over solid ground.
+    if (this.vy <= 0 && this.pos.y <= 0 && onGround) {
+      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
+      return;
+    }
+    // Fell into the void — respawn at the café.
     if (this.pos.y < FALL.respawnY) this._respawn();
+  }
+
+  // A standing hop. Only from the ground, on foot (not seated, not skating — a
+  // mounted board sets speedMul to the skate multiplier, never 1), and not
+  // already airborne. So Space-to-hop can't double-fire with the skate ollie.
+  _jump() {
+    if (this.sitting || this.airborne) return;
+    if (this.speedMul != null && this.speedMul !== 1) return; // on a board → no hop
+    if (!this._isGround(this.pos.x, this.pos.z)) return; // over a void → already falling
+    this.vy = JUMP_V;
+    this.airborne = true;
+    this.falling = false;
   }
 
   _isGround(x, z) {
@@ -271,6 +304,7 @@ export class LocalPlayer {
     this.pos.set(this.spawn.x, 0, this.spawn.z);
     this.vy = 0;
     this.falling = false;
+    this.airborne = false;
     this.facing = Math.PI;
   }
 
