@@ -141,6 +141,22 @@ const ambient = new AmbientBoards({
   getActiveTableId: () => inWorld.activeTableId,
 });
 
+// FLASHLIGHT (V): exactly ONE warm SpotLight, created once and parked in the
+// scene. Each frame it's snapped to the camera and aimed where the camera looks,
+// so it lights whatever you face — and since the camera tracks you on foot, while
+// flying, AND while driving, the beam follows you in every mode. Toggled on/off by
+// controls.consumeFlashlight(). Intensity/range/cone match the car headlight scale
+// (warm white, modest range + cone, soft penumbra). Reuses scratch vectors below
+// so the per-frame aim allocates nothing.
+const FLASHLIGHT_ON = 9; // beam intensity while lit (0 = off)
+const flashlight = new THREE.SpotLight(0xfff1d0, 0, 34, Math.PI / 7, 0.6, 1.3);
+flashlight.visible = false;
+scene.add(flashlight);
+scene.add(flashlight.target);
+let flashlightOn = false;
+const _flashDir = new THREE.Vector3();
+const _flashTgt = new THREE.Vector3();
+
 let local = null;
 let joined = false;
 let lastStateSent = 0;
@@ -407,9 +423,10 @@ function colorFor(id, fallbackName) {
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
   // The join click is the user gesture that unlocks WebAudio — start the ambient
-  // bed (soft wind + birdsong) the moment we enter the world.
-  audio.resume();
-  audio.setAmbient(true);
+  // bed (soft wind + birdsong) the moment we enter the world. Guarded so audio can
+  // NEVER block joining / building the player (a thrown audio call here once aborted
+  // join before the avatar was created — "no character loads").
+  try { audio.resume(); audio.setAmbient(true); } catch (e) { console.warn("[audio] init failed", e); }
   local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
@@ -550,6 +567,9 @@ function frame() {
       hud.setShopVisible(nearBar() && !local.sitting);
       hud.setHeldItem(local.heldName());
       hud.setDriveHud(false); // not driving — hide the speedometer
+      // Sprint stamina meter (walk mode): bar fills with the 0..1 value, tints
+      // while running and flashes when drained.
+      hud.setStamina(local.staminaPct, local.sprinting);
     }
     // City minimap: redraw from this frame's positions (local arrow + facing,
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
@@ -572,6 +592,22 @@ function frame() {
   voice.updateVolumes();
   voice.updateSpeaking(dt);
   screenShare.update(dt);
+
+  // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
+  // SpotLight to the camera and aim it along the camera's forward so it lights
+  // exactly what you face. Done AFTER all camera moves this frame (walk / drive /
+  // fly / preview) so the beam never lags a frame behind. Allocation-free.
+  if (controls.consumeFlashlight()) {
+    flashlightOn = !flashlightOn;
+    flashlight.visible = flashlightOn;
+    flashlight.intensity = flashlightOn ? FLASHLIGHT_ON : 0;
+  }
+  if (flashlightOn) {
+    camera.getWorldDirection(_flashDir);
+    flashlight.position.copy(camera.position);
+    _flashTgt.copy(camera.position).addScaledVector(_flashDir, 30);
+    flashlight.target.position.copy(_flashTgt);
+  }
 
   postFX.render();
   labelRenderer.render(scene, camera);

@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { WORLD } from "../config.js";
 import { buildOutside } from "./outside.js";
 import { buildCity } from "./city.js";
-import { woodFloorTexture, plasterTexture, chalkboardMenuTexture } from "./textures.js";
+import { woodFloorTexture, plasterTexture, chalkboardMenuTexture, brickTexture, fabricTexture } from "./textures.js";
 import {
   makeTable,
   makeChair,
@@ -682,6 +682,472 @@ export function buildCoffeeshop(scene) {
     group.add(shaft);
   }
 
+  // ========================================================================
+  // EXTRA COZY DECOR (pass 2) — a fireplace hearth nook, reading-nook side
+  // tables, a wall clock, a hanging menu, a coat rack, a magazine rack, a
+  // floor lamp, a wall shelf, a sidewalk specials board, runner rugs, floor
+  // cushions and more framed art. Each piece hugs a wall or sits in a dead
+  // corner; the only new colliders are tight boxes around solid stand-alone
+  // furniture, so the entrance, the bar approach, the central lounge (spawn)
+  // and every game TABLE + SEAT are completely untouched.
+  // ========================================================================
+
+  // Hearth location (back wall, in the clear span left of the counter) — reused
+  // by several blocks below. fireLight/fireT are flickered allocation-free in
+  // update(); declared here so they're in the closure's scope.
+  const FX = -9.5;
+  const FZ = -halfD;
+  let fireLight = null;
+  let fireT = 0;
+
+  // Build-time textures + materials for this pass (made once, reused across
+  // meshes, so update() stays allocation-free). Canvas textures are created
+  // here inside the build so they have a DOM to draw onto.
+  const brickTex = brickTexture("#7a4a36", "#cdbfa6");
+  brickTex.repeat.set(2, 2);
+  const COZY = {
+    brick: new THREE.MeshStandardMaterial({ map: brickTex, roughness: 0.95 }),
+    stone: new THREE.MeshStandardMaterial({ color: "#7d756a", roughness: 0.9 }),
+    firebox: new THREE.MeshStandardMaterial({ color: "#140f0b", roughness: 1 }),
+    ember: new THREE.MeshStandardMaterial({ color: "#ff7a2a", emissive: "#ff5a18", emissiveIntensity: 1.6, roughness: 0.6 }),
+    pole: new THREE.MeshStandardMaterial({ color: "#2b2b2f", roughness: 0.4, metalness: 0.7 }),
+    brass: new THREE.MeshStandardMaterial({ color: "#caa05a", roughness: 0.35, metalness: 0.8 }),
+    shade: new THREE.MeshStandardMaterial({ color: "#f3e3c2", emissive: "#ffcf8a", emissiveIntensity: 0.9, roughness: 0.7, side: THREE.DoubleSide }),
+    clockFace: new THREE.MeshStandardMaterial({ color: "#f4efe6", roughness: 0.8 }),
+    clockHand: new THREE.MeshStandardMaterial({ color: "#1c1c1c", roughness: 0.6 }),
+    candle: new THREE.MeshStandardMaterial({ color: "#efe6d0", roughness: 0.85 }),
+    flame: new THREE.MeshStandardMaterial({ color: "#ffd27a", emissive: "#ffb24a", emissiveIntensity: 2.0 }),
+    cushionA: new THREE.MeshStandardMaterial({ map: fabricTexture("#b5613a"), roughness: 0.95 }),
+    cushionB: new THREE.MeshStandardMaterial({ map: fabricTexture("#5d6f5a"), roughness: 0.95 }),
+    wood: DECOR.shelfWood,
+    log: DECOR.bean,
+  };
+
+  // --- Small reusable builders for this pass --------------------------------
+  function makeLowTable(w, d, hgt) {
+    const g = new THREE.Group();
+    const top = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), COZY.wood);
+    top.position.y = hgt;
+    top.castShadow = true;
+    top.receiveShadow = true;
+    g.add(top);
+    const legGeo = new THREE.BoxGeometry(0.07, hgt, 0.07);
+    const lx = w / 2 - 0.09;
+    const lz = d / 2 - 0.09;
+    for (const [sx, sz] of [[-lx, -lz], [lx, -lz], [-lx, lz], [lx, lz]]) {
+      const leg = new THREE.Mesh(legGeo, DECOR.couchLeg);
+      leg.position.set(sx, hgt / 2, sz);
+      leg.castShadow = true;
+      g.add(leg);
+    }
+    return g;
+  }
+  // A little napkin + sugar caddy that drops onto any tabletop.
+  function makeTableCaddy() {
+    const g = new THREE.Group();
+    const tray = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.03, 0.14), COZY.wood);
+    tray.position.y = 0.015;
+    tray.castShadow = true;
+    g.add(tray);
+    const shakerBody = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.1, 12), DECOR.sugarGlass);
+    shakerBody.position.set(-0.07, 0.08, 0);
+    const shakerLid = new THREE.Mesh(new THREE.CylinderGeometry(0.037, 0.037, 0.025, 12), DECOR.sugarLid);
+    shakerLid.position.set(-0.07, 0.14, 0);
+    g.add(shakerBody, shakerLid);
+    const napkins = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.06, 0.08), DECOR.napkin);
+    napkins.position.set(0.07, 0.05, 0);
+    g.add(napkins);
+    for (const hx of [0.025, 0.115]) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.08, 0.09), COZY.brass);
+      panel.position.set(hx, 0.06, 0);
+      g.add(panel);
+    }
+    return g;
+  }
+  // A floating wall shelf with two end brackets.
+  function makeWallShelf(len) {
+    const g = new THREE.Group();
+    const ledge = new THREE.Mesh(new THREE.BoxGeometry(len, 0.05, 0.26), COZY.wood);
+    ledge.castShadow = true;
+    ledge.receiveShadow = true;
+    g.add(ledge);
+    for (const bx of [-len / 2 + 0.12, len / 2 - 0.12]) {
+      const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.16, 0.22), COZY.wood);
+      bracket.position.set(bx, -0.1, -0.02);
+      g.add(bracket);
+    }
+    return g;
+  }
+  // A round wall clock reading roughly ten-past-ten.
+  function makeWallClock(radius) {
+    const c = new THREE.Group();
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.06, 28), DECOR.frame);
+    rim.rotation.x = Math.PI / 2;
+    rim.castShadow = true;
+    c.add(rim);
+    const face = new THREE.Mesh(new THREE.CircleGeometry(radius - 0.04, 28), COZY.clockFace);
+    face.position.z = 0.032;
+    c.add(face);
+    const tickGeo = new THREE.BoxGeometry(0.015, 0.05, 0.01);
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const tk = new THREE.Mesh(tickGeo, COZY.clockHand);
+      tk.position.set(Math.sin(a) * (radius - 0.09), Math.cos(a) * (radius - 0.09), 0.04);
+      tk.rotation.z = -a;
+      c.add(tk);
+    }
+    function hand(len, w, ang) {
+      const hg = new THREE.Group();
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(w, len, 0.012), COZY.clockHand);
+      bar.position.y = len / 2 - 0.03;
+      hg.add(bar);
+      hg.rotation.z = ang;
+      hg.position.z = 0.05;
+      return hg;
+    }
+    c.add(hand(radius * 0.55, 0.03, -1.1));
+    c.add(hand(radius * 0.82, 0.02, 0.7));
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.02, 12), COZY.brass);
+    hub.rotation.x = Math.PI / 2;
+    hub.position.z = 0.06;
+    c.add(hub);
+    return c;
+  }
+
+  // --- Fireplace hearth (back wall, in the clear span left of the counter) --
+  // The back wall is bare plaster from x=-13 to the counter at x=-6; the hearth
+  // sits centred at x=-9.5 against it, facing +Z into the room. Only its solid
+  // stone base gets a collider; the firebox opening is up off the floor. Bricks
+  // are buried a little into the wall so no face is coincident with the plaster.
+  {
+    const fireplace = new THREE.Group();
+    const hearthSlab = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.16, 0.8), COZY.stone);
+    hearthSlab.position.set(0, 0.08, 0.34);
+    hearthSlab.receiveShadow = true;
+    fireplace.add(hearthSlab);
+    const pillarGeo = new THREE.BoxGeometry(0.55, 2.0, 0.5);
+    for (const px of [-0.83, 0.83]) {
+      const pil = new THREE.Mesh(pillarGeo, COZY.brick);
+      pil.position.set(px, 1.0, 0.05);
+      pil.castShadow = true;
+      pil.receiveShadow = true;
+      fireplace.add(pil);
+    }
+    const lintelBrick = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.5), COZY.brick);
+    lintelBrick.position.set(0, 1.85, 0.05);
+    lintelBrick.castShadow = true;
+    fireplace.add(lintelBrick);
+    const fireboxBack = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.6, 0.06), COZY.firebox);
+    fireboxBack.position.set(0, 0.95, -0.18);
+    fireplace.add(fireboxBack);
+    const fireboxFloor = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.06, 0.45), COZY.firebox);
+    fireboxFloor.position.set(0, 0.18, 0.0);
+    fireplace.add(fireboxFloor);
+    const mantel = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.14, 0.62), COZY.wood);
+    mantel.position.set(0, 2.18, 0.06);
+    mantel.castShadow = true;
+    mantel.receiveShadow = true;
+    fireplace.add(mantel);
+    const logGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.7, 8);
+    for (const [lx, ly, lz, lr] of [[-0.12, 0.34, 0.02, 0.2], [0.1, 0.34, -0.04, -0.25], [-0.02, 0.46, 0.0, 0.05]]) {
+      const lg = new THREE.Mesh(logGeo, COZY.log);
+      lg.rotation.z = Math.PI / 2;
+      lg.rotation.y = lr;
+      lg.position.set(lx, ly, lz);
+      lg.castShadow = true;
+      fireplace.add(lg);
+    }
+    const emberBed = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.05, 0.3), COZY.ember);
+    emberBed.position.set(0, 0.24, 0.0);
+    fireplace.add(emberBed);
+    for (let i = 0; i < 5; i++) {
+      const e = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), COZY.ember);
+      e.position.set(-0.34 + i * 0.17, 0.3 + (i % 2) * 0.05, 0.02);
+      fireplace.add(e);
+    }
+    fireplace.position.set(FX, 0, FZ);
+    group.add(fireplace);
+    addBox(colliders, FX, FZ + 0.34, 2.5, 0.85); // tight box around the stone base
+    fireLight = new THREE.PointLight("#ff8a3c", 6, 7, 2);
+    fireLight.position.set(FX, 0.7, FZ + 0.3);
+    fireLight.castShadow = false;
+    group.add(fireLight);
+    lights.push(fireLight);
+    // Cosy objects on the mantel: a small plant, a candle, a leaning photo.
+    const mPlant = makePlant(0.42);
+    mPlant.position.set(FX - 1.0, 2.25, FZ + 0.06);
+    group.add(mPlant);
+    const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.16, 12), COZY.candle);
+    candle.position.set(FX + 0.95, 2.33, FZ + 0.06);
+    candle.castShadow = true;
+    const candleFlame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8), COZY.flame);
+    candleFlame.position.set(FX + 0.95, 2.46, FZ + 0.06);
+    group.add(candle, candleFlame);
+    const photo = new THREE.Group();
+    const photoFrame = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.26, 0.03), DECOR.frame);
+    const photoArt = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.16), DECOR.artB);
+    photoArt.position.z = 0.02;
+    photo.add(photoFrame, photoArt);
+    photo.position.set(FX + 0.35, 2.4, FZ + 0.05);
+    photo.rotation.x = -0.12;
+    group.add(photo);
+  }
+
+  // --- Firewood basket + magazine rack flanking the hearth (back-wall nook) --
+  {
+    const woodBasket = new THREE.Group();
+    const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.34, 14, 1, true), COZY.wood);
+    basket.position.y = 0.17;
+    basket.castShadow = true;
+    const basketBottom = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.04, 14), COZY.wood);
+    basketBottom.position.y = 0.02;
+    woodBasket.add(basket, basketBottom);
+    const fwGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.5, 8);
+    for (const [wx, wy, wz, wr] of [[-0.06, 0.4, 0, 0.1], [0.06, 0.42, 0.03, -0.15], [0, 0.5, -0.05, 0.3]]) {
+      const fw = new THREE.Mesh(fwGeo, COZY.log);
+      fw.rotation.x = Math.PI / 2 + wr;
+      fw.position.set(wx, wy, wz);
+      fw.castShadow = true;
+      woodBasket.add(fw);
+    }
+    woodBasket.position.set(-11.4, 0, -10.4);
+    group.add(woodBasket);
+    addBox(colliders, -11.4, -10.4, 0.5, 0.5);
+
+    const magRack = new THREE.Group();
+    for (const side of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5, 0.04), COZY.wood);
+      leg.position.set(0, 0.25, side * 0.16);
+      leg.rotation.x = side * 0.28;
+      magRack.add(leg);
+    }
+    const magTray = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.04, 0.3), COZY.wood);
+    magTray.position.y = 0.34;
+    magTray.castShadow = true;
+    magRack.add(magTray);
+    for (let i = 0; i < 4; i++) {
+      const mz = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.012, 0.26), DECOR.book[i % DECOR.book.length]);
+      mz.position.set(0, 0.37 + i * 0.014, -0.02 + i * 0.01);
+      mz.rotation.x = -0.18 + i * 0.02;
+      magRack.add(mz);
+    }
+    magRack.position.set(-7.55, 0, -10.4);
+    group.add(magRack);
+    addBox(colliders, -7.55, -10.4, 0.5, 0.4);
+  }
+
+  // --- Hearth-side reading nook: a small runner + two floor cushions --------
+  // Sits in the dead pocket in front of the hearth (no path runs through here).
+  // The cushions are low and soft, so no collider — you can step over them.
+  {
+    const hearthRunner = makeRug(2.6, 1.6, "#6b4423");
+    hearthRunner.position.set(FX, 0, FZ + 1.7);
+    group.add(hearthRunner);
+    const cushGeo = new THREE.BoxGeometry(0.55, 0.16, 0.55);
+    const hcA = new THREE.Mesh(cushGeo, COZY.cushionA);
+    hcA.position.set(FX - 0.45, 0.09, FZ + 1.6);
+    hcA.rotation.y = 0.3;
+    hcA.castShadow = true;
+    const hcB = new THREE.Mesh(cushGeo, COZY.cushionB);
+    hcB.position.set(FX + 0.5, 0.09, FZ + 1.75);
+    hcB.rotation.y = -0.4;
+    hcB.castShadow = true;
+    group.add(hcA, hcB);
+  }
+
+  // --- Reading-nook coffee table in front of the couch (front-left corner) --
+  {
+    const coffeeTable = makeLowTable(1.0, 0.6, 0.42);
+    coffeeTable.position.set(-9.7, 0, 7.9);
+    group.add(coffeeTable);
+    addBox(colliders, -9.7, 7.9, 1.0, 0.6);
+    for (const [mdx, col] of [[-0.28, 1], [-0.08, 3]]) {
+      const mug = makeMug(DECOR.mugColors[col]);
+      mug.position.set(-9.7 + mdx, 0.45, 7.78);
+      group.add(mug);
+    }
+    for (let i = 0; i < 2; i++) {
+      const bk = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.05, 0.24), DECOR.book[i + 1]);
+      bk.position.set(-9.55, 0.475 + i * 0.05, 8.02);
+      bk.rotation.y = 0.2 - i * 0.15;
+      bk.castShadow = true;
+      group.add(bk);
+    }
+    const caddy = makeTableCaddy();
+    caddy.position.set(-9.95, 0.45, 7.95);
+    group.add(caddy);
+  }
+
+  // --- Side table + reading lamp + caddy beside the armchair (front-right) ---
+  {
+    const sideTable = makeLowTable(0.5, 0.5, 0.52);
+    sideTable.position.set(11.7, 0, 7.1);
+    group.add(sideTable);
+    addBox(colliders, 11.7, 7.1, 0.5, 0.5);
+    const sMug = makeMug(DECOR.mugColors[2]);
+    sMug.position.set(11.6, 0.55, 7.0);
+    group.add(sMug);
+    const sCaddy = makeTableCaddy();
+    sCaddy.position.set(11.8, 0.55, 7.2);
+    sCaddy.rotation.y = Math.PI / 2;
+    group.add(sCaddy);
+    const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.04, 12), COZY.brass);
+    lampBase.position.set(11.7, 0.56, 7.1);
+    const lampStem = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.22, 8), COZY.brass);
+    lampStem.position.set(11.7, 0.69, 7.1);
+    const lampShade = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.16, 16, 1, true), COZY.shade);
+    lampShade.position.set(11.7, 0.84, 7.1);
+    group.add(lampBase, lampStem, lampShade);
+  }
+
+  // --- Floor lamp beside the couch (front-left corner) ----------------------
+  {
+    const floorLamp = new THREE.Group();
+    const flFoot = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.05, 16), COZY.pole);
+    flFoot.position.y = 0.025;
+    const flPole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.55, 10), COZY.pole);
+    flPole.position.y = 0.8;
+    const flShade = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.3, 18, 1, true), COZY.shade);
+    flShade.position.y = 1.65;
+    floorLamp.add(flFoot, flPole, flShade);
+    floorLamp.position.set(-12.4, 0, 9.0);
+    group.add(floorLamp);
+    addBox(colliders, -12.4, 9.0, 0.4, 0.4);
+  }
+
+  // --- Coat rack just inside the entrance (front-right wall segment) ---------
+  {
+    const coatRack = new THREE.Group();
+    const crFoot = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 0.05, 14), COZY.pole);
+    crFoot.position.y = 0.025;
+    const crPole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.85, 10), COZY.wood);
+    crPole.position.y = 0.95;
+    coatRack.add(crFoot, crPole);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.16, 8), COZY.wood);
+      peg.rotation.z = Math.PI / 2;
+      peg.rotation.y = a;
+      peg.position.set(Math.sin(a) * 0.09, 1.78, Math.cos(a) * 0.09);
+      coatRack.add(peg);
+    }
+    const coat = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.6, 0.16), DECOR.artB);
+    coat.position.set(0.16, 1.4, 0.0);
+    coat.castShadow = true;
+    const scarf = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.08), DECOR.artC);
+    scarf.position.set(-0.14, 1.45, 0.06);
+    coatRack.add(coat, scarf);
+    coatRack.position.set(4.2, 0, 10.3);
+    group.add(coatRack);
+    addBox(colliders, 4.2, 10.3, 0.45, 0.45);
+  }
+
+  // --- Round wall clock above the counter -----------------------------------
+  {
+    const wallClock = makeWallClock(0.42);
+    wallClock.position.set(0.5, 3.9, -halfD + 0.16);
+    group.add(wallClock);
+  }
+
+  // --- Floating wall shelf (plant + books + mug), back-right wall ------------
+  {
+    const rShelf = makeWallShelf(1.8);
+    rShelf.position.set(halfW - 0.16, 1.8, -7.5);
+    rShelf.rotation.y = -Math.PI / 2; // faces -X into the room
+    group.add(rShelf);
+    const shPlant = makePlant(0.5);
+    shPlant.position.set(halfW - 0.28, 1.83, -8.0);
+    group.add(shPlant);
+    for (let i = 0; i < 3; i++) {
+      const bk = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.2), DECOR.book[i]);
+      bk.position.set(halfW - 0.26, 1.98, -7.25 - i * 0.08);
+      bk.castShadow = true;
+      group.add(bk);
+    }
+    const shMug = makeMug(DECOR.mugColors[4]);
+    shMug.position.set(halfW - 0.28, 1.83, -6.85);
+    group.add(shMug);
+  }
+
+  // --- Hanging menu board over the order area (overhead, no collider) --------
+  {
+    const hangMenu = new THREE.Group();
+    const hmFrame = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.15, 0.04), DECOR.frame);
+    hmFrame.position.z = -0.02;
+    const hmBoard = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 1.05, 0.06),
+      new THREE.MeshStandardMaterial({ map: chalkboardMenuTexture(), roughness: 0.9 })
+    );
+    hmBoard.castShadow = true;
+    hangMenu.add(hmFrame, hmBoard);
+    for (const cx of [-0.6, 0.6]) {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 1.0, 6), DECOR.string);
+      cord.position.set(cx, 0.95, 0);
+      hangMenu.add(cord);
+    }
+    hangMenu.position.set(0.5, 3.45, -halfD + 2.0);
+    group.add(hangMenu);
+  }
+
+  // --- Standing A-frame "specials" chalkboard near the entrance --------------
+  {
+    const aFrame = new THREE.Group();
+    const aBoardMat = new THREE.MeshStandardMaterial({ map: chalkboardMenuTexture(), roughness: 0.9 });
+    for (const side of [-1, 1]) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.64, 1.0, 0.04), aBoardMat);
+      panel.position.set(0, 0.66, side * 0.14);
+      panel.rotation.x = side * 0.2;
+      panel.castShadow = true;
+      aFrame.add(panel);
+    }
+    const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.66, 8), COZY.wood);
+    hinge.rotation.z = Math.PI / 2;
+    hinge.position.y = 1.16;
+    aFrame.add(hinge);
+    aFrame.position.set(-4.2, 0, 9.6);
+    aFrame.rotation.y = 0.4;
+    group.add(aFrame);
+    addBox(colliders, -4.2, 9.6, 0.7, 0.5);
+  }
+
+  // --- A bar-front runner rug, a greeter plant + a couple scatter cushions ---
+  {
+    const barRunner = makeRug(7, 1.3, "#7a4a3a");
+    barRunner.position.set(-2.6, 0, -7.6); // flat + walkable, no collider
+    group.add(barRunner);
+
+    const greetPlant = makePlant(1.2); // softens the open back-right
+    greetPlant.position.set(10.5, 0, -9.0);
+    group.add(greetPlant);
+    addBox(colliders, 10.5, -9.0, 0.6, 0.6);
+
+    const sc1 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.4), COZY.cushionB);
+    sc1.position.set(-11.3, 0.66, 8.4); // tossed on the couch seat
+    sc1.rotation.set(0.1, 0.3, 0);
+    sc1.castShadow = true;
+    const sc2 = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.15, 0.45), COZY.cushionA);
+    sc2.position.set(-10.5, 0.09, 9.0); // on the nook rug
+    sc2.rotation.y = -0.5;
+    sc2.castShadow = true;
+    group.add(sc1, sc2);
+  }
+
+  // --- More framed art on the remaining bare plaster ------------------------
+  wallArt(-3.4, 2.7, halfD - 0.08, Math.PI, 1.0, 1.2, DECOR.artB);     // front wall, left of door
+  wallArt(FX, 3.35, -halfD + 0.16, 0, 1.2, 0.95, DECOR.artC);          // above the mantel
+  wallArt(-halfW + 0.08, 2.6, -8, Math.PI / 2, 1.0, 1.2, DECOR.artA);  // left wall, back
+  wallArt(halfW - 0.08, 2.6, -8, -Math.PI / 2, 1.0, 1.2, DECOR.artB);  // right wall, back
+
+  // --- A couple more pendant lamps + string-light swags ---------------------
+  for (const [lx, lz] of [[-3, -7], [-9, -7.5]]) {
+    const { group: lamp, light } = makePendantLamp();
+    lamp.position.set(lx, h - 1.4, lz);
+    group.add(lamp);
+    lights.push(light);
+  }
+  fairyLights(-halfW + 1.5, -2.5, halfW - 1.5, -2.5, 12); // across the back lounge
+  fairyLights(-9.5, -halfD + 1.0, -2.5, -halfD + 1.0, 8);  // along the back-left
+
   // --- Outside: the street block in front of the entrance ------------------
   const outside = buildOutside(scene);
   for (const c of outside.colliders) colliders.push(c);
@@ -722,6 +1188,14 @@ export function buildCoffeeshop(scene) {
         m.scale.setScalar(grow);
         m.material.opacity = op;
       }
+    }
+    // Hearth flicker: gently wobble the fire light + ember glow each frame.
+    // Pure number mutation of cached light/material — no allocation.
+    if (fireLight) {
+      fireT += dt;
+      const f = 0.8 + Math.sin(fireT * 11.0) * 0.12 + Math.sin(fireT * 6.3) * 0.08;
+      fireLight.intensity = 6 * f;
+      COZY.ember.emissiveIntensity = 1.4 * f + 0.35;
     }
   };
 

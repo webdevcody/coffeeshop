@@ -62,9 +62,18 @@ export function createAudio() {
 
   // ── tiny helpers ──────────────────────────────────────────────────────────
   const now = () => (ctx ? ctx.currentTime : 0);
-  // Exponential approach toward `value` (tau≈ time-constant in seconds).
-  const ramp = (param, value, tau = 0.4) => {
-    if (ctx) param.setTargetAtTime(value, ctx.currentTime, tau);
+  // Exponential approach toward `value` (tau≈ time-constant in seconds). Tolerant
+  // of being handed EITHER an AudioParam (e.g. master.gain) OR an AudioNode whose
+  // own .gain is the param (e.g. a bed's GainNode) — call sites pass both. Never
+  // throws: a bad/absent target is a silent no-op so audio can NEVER break the
+  // game (this exact mismatch — calling setTargetAtTime on a GainNode — aborted
+  // join before the player was created, so no avatar loaded).
+  const ramp = (target, value, tau = 0.4) => {
+    if (!ctx || !target) return;
+    const param = typeof target.setTargetAtTime === "function" ? target : target.gain;
+    if (param && typeof param.setTargetAtTime === "function") {
+      param.setTargetAtTime(value, ctx.currentTime, tau);
+    }
   };
   const rnd = (a, b) => a + Math.random() * (b - a);
 

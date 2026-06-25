@@ -52,9 +52,9 @@ const BLOOM_RADIUS = 0.5;
 //   GRADE_WARM / GRADE_TEAL : the shadow (warm) and highlight (teal) tint colors.
 const GRADE_VIGNETTE_STRENGTH = 0.28;
 const GRADE_VIGNETTE_SMOOTH = new THREE.Vector2(0.72, 0.18); // (outer, inner)
-const GRADE_CONTRAST = 1.045;
-const GRADE_SATURATION = 1.08;
-const GRADE_SPLIT_STRENGTH = 0.06;
+const GRADE_CONTRAST = 1.06;
+const GRADE_SATURATION = 1.14;
+const GRADE_SPLIT_STRENGTH = 0.07;
 const GRADE_WARM = new THREE.Color(1.0, 0.86, 0.72); // warm tint pushed into shadows
 const GRADE_TEAL = new THREE.Color(0.78, 0.92, 1.0); // teal tint pushed into highlights
 

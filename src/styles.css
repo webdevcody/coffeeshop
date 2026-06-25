@@ -321,6 +321,44 @@ body {
   display: none;
 }
 
+/* ---------- Sprint stamina bar (centered, just under the sit prompt) ---------- */
+.stamina-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  width: min(42vw, 220px);
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(24, 16, 10, 0.7);
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  overflow: hidden;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.stamina-bar.hidden { display: none; }
+.stamina-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  /* Calm green at rest; the width is driven each frame from JS. */
+  background: linear-gradient(90deg, #6fd08a, #a6e063);
+  transition: width 80ms linear, background 160ms ease;
+}
+/* Warm amber while actively running / ultra-sprinting. */
+.stamina-bar.sprinting .stamina-fill {
+  background: linear-gradient(90deg, #ffd166, #ff9f43);
+}
+/* Pulse the border red when you've run completely dry. */
+.stamina-bar.empty {
+  animation: stamina-flash 0.5s ease-in-out infinite;
+}
+@keyframes stamina-flash {
+  0%, 100% { border-color: rgba(239, 71, 111, 0.95); }
+  50% { border-color: rgba(239, 71, 111, 0.2); }
+}
+
 /* ---------- Coffee-bar shop ---------- */
 .shop-panel {
   position: fixed;

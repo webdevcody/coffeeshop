@@ -109,6 +109,7 @@ export class HUD {
       </div>
       <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
+      <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
         <canvas class="minimap-canvas" id="minimap-canvas" width="180" height="180"></canvas>
         <div class="minimap-legend">
@@ -140,6 +141,8 @@ export class HUD {
     this.customizePanel = ui.querySelector("#customize-panel");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
+    this.staminaBar = ui.querySelector("#stamina-bar");
+    this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
     this.shopList = ui.querySelector("#shop-list");
     this.heldEl = ui.querySelector("#held-item");
@@ -382,6 +385,20 @@ export class HUD {
     } else {
       this.sitPrompt.classList.add("hidden");
     }
+  }
+
+  // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're
+  // actively running. Shown only once joined (the whole game-ui is hidden before
+  // that anyway). Flashes when fully drained. Called each frame by main.js on the
+  // on-foot path; allocation-free (just toggles classes + sets a width).
+  setStamina(pct, sprinting) {
+    if (!this.staminaBar) return;
+    if (!this.joined) { this.staminaBar.classList.add("hidden"); return; }
+    this.staminaBar.classList.remove("hidden");
+    const p = Math.max(0, Math.min(1, pct || 0));
+    this.staminaFill.style.width = (p * 100).toFixed(1) + "%";
+    this.staminaBar.classList.toggle("sprinting", !!sprinting);
+    this.staminaBar.classList.toggle("empty", p <= 0.001);
   }
 
   // Populate the coffee-bar menu once with the item catalog. Each item buys via

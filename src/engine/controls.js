@@ -15,6 +15,7 @@ export function createControls(domElement) {
   let dropPressed = false; // edge-triggered G, drained by consumeDrop()
   let usePressed = false; // edge-triggered E, drained by consumeUse() (enter/exit a ride)
   let jetpackPressed = false; // edge-triggered F, drained by consumeJetpack() (toggle jetpack fly mode)
+  let flashlightPressed = false; // edge-triggered V, drained by consumeFlashlight() (toggle the flashlight)
   // Skate trick edges (drained only while skating by rides.js). Ollie is also
   // queued by Space so the natural "jump" key works on the board; when NOT
   // skating that Space ollie-flag is simply never read (sit drains it via
@@ -50,6 +51,8 @@ export function createControls(domElement) {
     if (e.code === "KeyE" && !keys.has("KeyE")) usePressed = true;
     // F toggles the wearable JETPACK fly mode on/off (a FREE key). Edge-triggered.
     if (e.code === "KeyF" && !keys.has("KeyF")) jetpackPressed = true;
+    // V toggles the FLASHLIGHT (a FREE key). Edge-triggered like F.
+    if (e.code === "KeyV" && !keys.has("KeyV")) flashlightPressed = true;
     // Skate trick keys (only consumed in skate mode): J ollie, K kickflip, L shuvit.
     if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
@@ -203,6 +206,27 @@ export function createControls(domElement) {
     return pressed;
   }
 
+  // Returns true once per V press (toggle the flashlight), then resets. Like
+  // consumeUse/consumeJetpack, NOT gated by `locked` so it always toggles.
+  function consumeFlashlight() {
+    const pressed = flashlightPressed;
+    flashlightPressed = false;
+    return pressed;
+  }
+
+  // WALK-MODE sprint tier from the held modifier keys, read each frame by the
+  // local player while on foot: 0 = walk (nothing), 1 = sprint (Shift held),
+  // 2 = ULTRA (Shift + Ctrl held). This only REPORTS the held keys; it does not
+  // disturb flyThrust(), which independently reads Shift/Ctrl as "descend" while
+  // flying (the two modes never run at once — flying isn't on foot).
+  function sprintLevel() {
+    const shift = keys.has("ShiftLeft") || keys.has("ShiftRight");
+    const ctrl = keys.has("ControlLeft") || keys.has("ControlRight");
+    if (shift && ctrl) return 2;
+    if (shift) return 1;
+    return 0;
+  }
+
   // Vertical jetpack thrust while flying: hold Space to ascend (+1), hold X or
   // Shift/Ctrl to descend (-1), nothing held = 0 (gravity wins). Read each frame
   // by rides.js in fly mode. Horizontal flight reuses the normal camera-relative
@@ -301,13 +325,14 @@ export function createControls(domElement) {
       sitPressed = false;
       dropPressed = false;
       jetpackPressed = false;
+      flashlightPressed = false;
       olliePressed = false;
       flipPressed = false;
       shuvPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

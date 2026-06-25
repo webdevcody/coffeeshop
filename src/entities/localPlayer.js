@@ -15,6 +15,18 @@ const FALL = { gravity: 22, respawnY: -12 };
 // next to a seat — apex ≈ v²/(2·gravity) ≈ 1.3 m, airtime ≈ 0.7 s.
 const JUMP_V = 7.6;
 
+// Sprint + stamina, WALK MODE ONLY. Two tiers (Shift = run, Shift+Ctrl = ULTRA)
+// scale the walk step and drain a 0..1 stamina meter while you're actually
+// moving; let go (or run dry) and it regenerates. `recover` is the hysteresis
+// threshold you must regen back past after emptying before you can sprint again,
+// so you can't stutter-sprint on fumes.
+const STAMINA = {
+  runSpeed: 1.7, ultraSpeed: 2.6, // walk-step multipliers
+  runDrain: 0.22, ultraDrain: 0.5, // per-second drain
+  regen: 0.3, // per-second refill while not sprinting
+  recover: 0.15, // must regen past this after emptying to sprint again
+};
+
 export class LocalPlayer {
   // `appearance` is { color, skin, hair } (a bare color string also works).
   constructor(scene, controls, colliders, appearance, name, seats = [], ground = null, spawn = null) {
@@ -40,6 +52,13 @@ export class LocalPlayer {
     this.pos = new THREE.Vector3(this.spawn.x, 0, this.spawn.z);
     this.facing = Math.PI;
     this.moving = false;
+    // Sprint stamina (walk mode only). `stamina`/`staminaPct` are 0..1 (start
+    // full); `sprinting` is true on frames you're actively running. `_staminaEmpty`
+    // latches when fully drained and clears once stamina regens past STAMINA.recover.
+    this.stamina = 1;
+    this.staminaPct = 1;
+    this.sprinting = false;
+    this._staminaEmpty = false;
     // Vertical state for walking off an edge.
     this.vy = 0;
     this.falling = false;
@@ -206,11 +225,34 @@ export class LocalPlayer {
     if (this.sitting && intent > 0.001) this._stand();
     this.moving = !this.sitting && intent > 0.001;
 
+    // --- Sprint + stamina (WALK MODE ONLY) -----------------------------------
+    // On foot (speedMul 1 — skating/driving set it to the ride multiplier, never
+    // 1 — and not seated / not flying) Shift runs and Shift+Ctrl goes ULTRA,
+    // draining stamina only while you're actually moving. Anything else regens it.
+    // `sprintFactor` stacks onto the walk step below; it stays 1 whenever
+    // speedMul !== 1, so a ride is NEVER sped up or slowed by this.
+    let sprintFactor = 1;
+    this.sprinting = false;
+    const onFoot = (this.speedMul == null || this.speedMul === 1) && !this.sitting && !this.flying;
+    const sprintTier = onFoot ? (this.controls.sprintLevel?.() || 0) : 0;
+    // Clear the empty-latch once we've regen'd back past the recover threshold.
+    if (this._staminaEmpty && this.stamina >= STAMINA.recover) this._staminaEmpty = false;
+    if (sprintTier > 0 && this.moving && this.stamina > 0 && !this._staminaEmpty) {
+      this.sprinting = true;
+      if (sprintTier >= 2) { sprintFactor = STAMINA.ultraSpeed; this.stamina -= STAMINA.ultraDrain * dt; }
+      else { sprintFactor = STAMINA.runSpeed; this.stamina -= STAMINA.runDrain * dt; }
+      if (this.stamina <= 0) { this.stamina = 0; this._staminaEmpty = true; } // force walk until it regens
+    } else {
+      this.stamina = Math.min(1, this.stamina + STAMINA.regen * dt);
+    }
+    this.staminaPct = this.stamina;
+
     if (this.moving) {
       const inv = 1 / intent;
       // speedMul lets a ride (skateboard) boost ground speed without touching the
-      // base walk speed. Default 1 (plain walking).
-      const step = PLAYER.speed * dt * (this.speedMul || 1);
+      // base walk speed. Default 1 (plain walking). sprintFactor is the on-foot
+      // run/ultra multiplier (1 when not sprinting, and always 1 on a ride).
+      const step = PLAYER.speed * dt * (this.speedMul || 1) * sprintFactor;
       let nx = this.pos.x + vx * inv * step;
       let nz = this.pos.z + vz * inv * step;
 
