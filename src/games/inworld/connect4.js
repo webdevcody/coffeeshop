@@ -664,7 +664,10 @@ export function createGame(ctx) {
   // ============================================================================
   // HOVER PREVIEW — ghost disc + cyan rim, gated to our turn + a legal column.
   // ============================================================================
-  function setHover(col) {
+  function setHover(cell) {
+    // board.js now forwards the FULL resolved {r,c,which} cell (or a number/-1).
+    // Connect-4 only needs the column: accept either shape.
+    const col = (cell && typeof cell === "object") ? cell.c : cell;
     if (!canPlayLocally() || !isLegalCol(col) || dropRow(board, col) < 0) {
       clearHover();
       return;

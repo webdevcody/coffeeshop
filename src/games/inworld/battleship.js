@@ -56,7 +56,9 @@
 //   No occupancy, no hull, no placement anywhere — by design.
 
 import { GameDesync, orientFor } from "./createGame.js";
-import { buildWarship } from "./warship.js";
+import { buildWarship, shipHullColor } from "./warship.js";
+import { FX } from "./fx.js";
+import { MissileSystem } from "./missile.js";
 
 // ===========================================================================
 // PURE RULES — transport-free, self-contained.
@@ -291,6 +293,22 @@ export function createGame(ctx) {
     return cz - GRID_SPAN / 2 + (y + 0.5) * CELL;
   }
 
+  // FIRING-ORIENTATION CANON (Task 1). Each seat self-orients (orientFor(seatRy))
+  // so its OWN ocean (−Z) meets it and the enemy grid (+Z) sits across. Both grids
+  // address cells with the SAME canonical (x,y) AND the SAME cellZ row direction,
+  // so for EVERY seat pair (verified by tracing all four chairs) a defender's
+  // perception of their ocean (x,y) lines up with an attacker's perception of the
+  // enemy (x,y) at the same (row-from-near, col-from-left): the attacker firing the
+  // cell in FRONT of them on the enemy grid hits the cell in FRONT of the defender
+  // on their ocean, and a player's own ocean + enemy grids share one orientation
+  // (just like a real Battleship board + target grid). The render path therefore
+  // stays the canonical cellZ — a row flip would have INVERTED this correct
+  // mapping (making the attacker's front hit the defender's back, i.e. the very
+  // "front of P1 = back of P2" symptom). cellZView is the single render-row choke
+  // point, today the identity, so any future per-grid remap lives in one place
+  // without touching cellZ / the cell math.
+  function cellZView(y, which) { return cellZ(y, which); }
+
   // ── Live scene bookkeeping ──────────────────────────────────────────────
   const hullMeshes = [];
   const oceanShotMarks = new Map(); // enemy shots landing on MY ocean
@@ -467,13 +485,17 @@ export function createGame(ctx) {
     }
   }
 
-  // Per-cell invisible colliders over BOTH grids, tagged {r,c,which}.
+  // Per-cell invisible colliders over BOTH grids, tagged {r,c,which}. The collider
+  // for logical row y sits at the canonical render position (cellZView, today the
+  // identity) and carries the canonical userData {r:y,c:x,which}, so a click on the
+  // cell the player sees returns the canonical logical (x,y) on EITHER grid (Task 1
+  // — the firing coordinate is identical for both seats; see cellZView's note).
   function buildColliders() {
     for (const which of ["ocean", "enemy"]) {
       for (let y = 0; y < GRID; y++) {
         for (let x = 0; x < GRID; x++) {
           const box = new THREE.Mesh(G.hit, M.invisible);
-          box.position.set(cellX(x), SURF_Y + HULL_H * 0.3, cellZ(y, which));
+          box.position.set(cellX(x), SURF_Y + HULL_H * 0.3, cellZView(y, which));
           box.userData.cell = { r: y, c: x, which };
           group.add(box);
         }
@@ -582,10 +604,18 @@ export function createGame(ctx) {
   }
 
   // ===========================================================================
-  // HUD billboard — a canvas plane hovering over the board centre that always
-  // faces the camera and states the current guidance, using the original's
-  // phrasing mapped into the in-world HUD. Also forwarded to ctx.onHud if present.
-  // ===========================================================================
+  // HUD billboard — a canvas plane that states the current guidance (original
+  // phrasing mapped into the in-world HUD). Also forwarded to ctx.onHud if present.
+  //
+  // PLACEMENT (Task 3): it must NEVER overlap the board (esp. "Incoming fire —
+  // brace!"), must be readable by the LOCAL seated player from their first-person
+  // seated camera, and must not be clipped by a chair across the table. It is
+  // anchored HIGH ABOVE and pulled toward/over the LOCAL player's OWN (near, −Z)
+  // ocean edge — never over the grids. Because the board self-orients per seat
+  // (orientFor(seatRy)), anchoring above the local near ocean automatically puts
+  // the HUD in front of whichever seat owns that board, correct for BOTH players.
+  // depthTest:false keeps it drawn on top; the per-frame billboard counter-rotates
+  // the group's Y so the text stays upright/forward.
   function buildHud() {
     const canCreate = typeof document !== "undefined" && document.createElement;
     const cv = canCreate ? document.createElement("canvas") : null;
@@ -597,7 +627,12 @@ export function createGame(ctx) {
       : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.85, depthWrite: false });
     const w = GRID_SPAN * 0.9;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.36), mat);
-    mesh.position.set(0, SURF_Y + GRID_SPAN * 0.5, 0);
+    // Above + over the LOCAL player's own ocean: pulled to the near (−Z) edge and
+    // lifted well clear of the board so it never covers the two grids, and high
+    // enough to clear chairs/heads across the table.
+    const hudZ = OCEAN_CZ - GRID_SPAN * 0.42; // toward the local seat, past the near ocean edge
+    const hudY = SURF_Y + GRID_SPAN * 1.05;   // raised high above the board surface
+    mesh.position.set(0, hudY, hudZ);
     mesh.renderOrder = 30;
     mesh.userData.cv = cv;
     mesh.userData.tex = tex;
@@ -702,6 +737,43 @@ export function createGame(ctx) {
   let rafId = null;
   let lastT = 0;
   let idleT = 0;
+
+  // ── Ported missile + FX (faithful port of the original missile.ts / fx.ts /
+  // debris.ts / damage.ts). Cosmetic only: launched from public shot results, so
+  // they are owner-and-spectator safe and never touch the firing/turn/sync logic.
+  // Parented to `group` so they inherit the board transform + per-seat orientation.
+  const fx = new FX(group, CELL);
+  const missiles = new MissileSystem(group, fx, CELL);
+  const _v3 = new THREE.Vector3();
+  // Local-space launch points: a firer lobs from above their OWN near ocean edge
+  // toward the enemy grid; an incoming shot arcs from above the enemy's far edge.
+  function fireLaunchOrigin() {
+    return new THREE.Vector3((Math.random() - 0.5) * GRID_SPAN * 0.3, SURF_Y + GRID_SPAN * 0.55, OCEAN_CZ - GRID_SPAN * 0.2);
+  }
+  function incomingLaunchOrigin() {
+    return new THREE.Vector3((Math.random() - 0.5) * GRID_SPAN * 0.5, SURF_Y + GRID_SPAN * 0.55, ENEMY_CZ + GRID_SPAN * 0.2);
+  }
+  // Launch the ported missile arcing to the target cell's render position. onArrive
+  // fires on impact (used for incoming shots to resolve the defender's grid).
+  function launchMissile(x, y, which, origin, onArrive) {
+    const target = new THREE.Vector3(cellX(x), SURF_Y + CELL * 0.4, cellZView(y, which));
+    missiles.launch(origin, target, { duration: 1.0, arc: GRID_SPAN * 0.5, onArrive });
+    startLoop();
+  }
+  // Play the ported impact effect at a target cell — water geyser on a miss, the
+  // big fireball + flying debris + a revealed burning ship section on a hit/sink.
+  function playImpact(x, y, which, outcome, sunkId) {
+    _v3.set(cellX(x), SURF_Y, cellZView(y, which));
+    if (outcome === "miss") {
+      fx.splash(_v3);
+    } else {
+      const color = sunkId ? shipHullColor(sunkId) : 0x556069;
+      fx.bigExplosion(_v3);
+      fx.debris.burst(_v3, 18, color);
+      fx.damage.add(_v3, color, "horizontal", sunkId ? sunkId !== "submarine" : false);
+    }
+    startLoop();
+  }
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   const raf = (fn) => (typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(fn) : setTimeout(() => fn(nowMs()), 16));
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
@@ -761,41 +833,17 @@ export function createGame(ctx) {
         reticle.scale.setScalar(s);
       }
     }
+    // Ported missile flight + particle/debris/damage systems (cosmetic).
+    missiles.update(dt);
+    fx.update(dt);
     // Billboard the HUD toward the camera (counter the group's own Y rotation so
     // the text stays upright + readable from any seat).
     if (hudMesh) hudMesh.rotation.y = -group.rotation.y;
   }
 
-  function launchShell(targetX, targetY, which, fromZEdge, onLand) {
-    const tx = cellX(targetX);
-    const tz = cellZ(targetY, which);
-    const shell = new THREE.Mesh(G.shell, M.shell);
-    shell.castShadow = true;
-    shells.push({
-      mesh: shell,
-      from: { x: tx, z: fromZEdge },
-      to: { x: tx, z: tz },
-      baseY: SURF_Y + CELL * 0.2,
-      arc: CELL * 2.2,
-      t: 0,
-      dur: 0.42,
-      onLand,
-    });
-    group.add(shell);
-    startLoop();
-  }
-
-  function spawnBloom(x, z, outcome) {
-    const isHit = outcome === "hit" || outcome === "sunk";
-    const geo = isHit ? G.emberPeg.clone() : G.ring.clone();
-    const mesh = new THREE.Mesh(geo, (isHit ? M.ember : M.splash).clone());
-    if (!isHit) mesh.rotation.x = Math.PI / 2;
-    mesh.position.set(x, SURF_Y + CELL * 0.18, z);
-    mesh.renderOrder = 4;
-    group.add(mesh);
-    blooms.push({ mesh, t: 0, dur: 0.55, grow: isHit ? 2.4 : 2.0, peak: isHit ? 0.95 : 0.9 });
-    startLoop();
-  }
+  // (The old simple shell-arc + bloom helpers were replaced by the faithful
+  // ported missile + FX, wired through launchMissile()/playImpact() above. The
+  // shells/blooms arrays remain only so applyState/dispose stay no-op-safe.)
 
   // ===========================================================================
   // Markers — persistent pegs encoding the public shot grids.
@@ -804,12 +852,13 @@ export function createGame(ctx) {
     const key = x + "," + y;
     if (mapStore.has(key)) return; // idempotent
     let mesh;
+    const mz = cellZView(y, which);
     if (outcome === "miss") {
       mesh = new THREE.Mesh(G.peg, M.miss);
-      mesh.position.set(cellX(x), PEG_Y, cellZ(y, which));
+      mesh.position.set(cellX(x), PEG_Y, mz);
     } else {
       mesh = new THREE.Mesh(G.emberPeg, outcome === "sunk" ? M.sunkMark : M.hit);
-      mesh.position.set(cellX(x), PEG_Y + CELL * 0.06, cellZ(y, which));
+      mesh.position.set(cellX(x), PEG_Y + CELL * 0.06, mz);
     }
     mesh.castShadow = true;
     group.add(mesh);
@@ -1001,8 +1050,9 @@ export function createGame(ctx) {
     clearReticle();
     refreshEnemyLive();
     refreshHud();
-    const fromZ = ENEMY_CZ - GRID_SPAN / 2 - CELL * 0.8; // launch from the near edge of enemy waters
-    launchShell(x, y, "enemy", fromZ, null);
+    // Ported missile: arc a guided projectile from my side onto the enemy cell.
+    // Purely cosmetic — the shot result still arrives over the wire ("result").
+    launchMissile(x, y, "enemy", fireLaunchOrigin(), null);
     try { ctx.net.sendMove({ type: "fire", x, y }); } catch { /* transport optional */ }
   }
 
@@ -1011,7 +1061,7 @@ export function createGame(ctx) {
     tracking[mySide].set(key, { outcome, sunk: sunkId });
     shots[mySide].push({ x, y, outcome, sunk: sunkId });
     placeMarker(x, y, outcome, "enemy", enemyShotMarks);
-    spawnBloom(cellX(x), cellZ(y, "enemy"), outcome);
+    playImpact(x, y, "enemy", outcome, sunkId);
     if (outcome === "sunk" && sunkId) sunkBy[mySide].add(sunkId);
     pendingFire = null;
     refreshPanels();
@@ -1033,7 +1083,7 @@ export function createGame(ctx) {
     shots[oppSide].push({ x, y, outcome: res.outcome, sunk: res.sunk });
     tracking[oppSide].set(x + "," + y, { outcome: res.outcome, sunk: res.sunk });
     placeMarker(x, y, res.outcome, "ocean", oceanShotMarks);
-    spawnBloom(cellX(x), cellZ(y, "ocean"), res.outcome);
+    playImpact(x, y, "ocean", res.outcome, res.sunk);
     if (res.outcome === "sunk" && res.sunk) sunkBy[oppSide].add(res.sunk);
     refreshPanels();
 
@@ -1090,7 +1140,7 @@ export function createGame(ctx) {
         const ring = new THREE.Mesh(G.ring, M.target.clone());
         ring.rotation.x = Math.PI / 2;
         const baseY = SURF_Y + CELL * 0.13;
-        ring.position.set(cellX(x), baseY, cellZ(y, "enemy"));
+        ring.position.set(cellX(x), baseY, cellZView(y, "enemy"));
         ring.userData.baseY = baseY;
         ring.renderOrder = 3;
         group.add(ring);
@@ -1143,7 +1193,7 @@ export function createGame(ctx) {
     const fired = tracking[mySide].has(aimCol + "," + row);
     const mat = fired ? M.reticleBad : M.reticleOk;
     for (const p of r.userData.parts) p.material = mat;
-    r.position.set(cellX(aimCol), SURF_Y + CELL * 0.16, cellZ(row, "enemy"));
+    r.position.set(cellX(aimCol), SURF_Y + CELL * 0.16, cellZView(row, "enemy"));
     r.visible = true;
     startLoop();
   }
@@ -1202,12 +1252,14 @@ export function createGame(ctx) {
     }
   }
 
-  // ── Hover routing — board.js forwards the hovered COLUMN via setHover(cell.c)
-  // (a number), or a full {r,c,which} cell if a richer host provides it, or -1 on
-  // a miss. We handle BOTH: a number drives the column lane + crosshair (snapped
-  // to that column's nearest un-fired cell); a full cell additionally pins the
-  // exact row + discriminates the enemy grid. During placement a full ocean cell
-  // updates the ghost preview. Always defensive — never assumes the object form.
+  // ── Hover routing — board.js forwards the FULL resolved {r,c,which} cell (or
+  // -1 on a miss; a bare column number is still tolerated for safety). A full cell
+  // pins the EXACT row+col under the cursor: during PLACEMENT a hovered ocean cell
+  // drives the ghost preview at that precise {x,y}; during PLAY a hovered enemy
+  // cell sets aimCol AND aimRow so the firing reticle tracks the exact cell (it no
+  // longer snaps to the column's top). A bare column (no `which`) degrades to a
+  // column lane + nearest-un-fired crosshair. Always defensive — never assumes the
+  // object form.
   function setHover(arg) {
     if (arg == null || arg === -1) {
       aimCol = aimRow = -1;
@@ -1283,8 +1335,9 @@ export function createGame(ctx) {
       case "fire": {
         if (phase !== "playing") throw new GameDesync("battleship: fire before play");
         if (!mySide) return true; // spectators never receive raw fires (server-gated)
-        const fromZ = OCEAN_CZ + GRID_SPAN / 2 + CELL * 0.8; // incoming arc from the far edge of MY ocean
-        launchShell(move.x, move.y, "ocean", fromZ, () => receiveIncomingFire(move.x, move.y));
+        // Ported incoming missile: arc onto MY ocean, then resolve the shot against
+        // my private grid when it lands (logic UNCHANGED — only the visual leads it).
+        launchMissile(move.x, move.y, "ocean", incomingLaunchOrigin(), () => receiveIncomingFire(move.x, move.y));
         return true;
       }
       case "result": {
@@ -1313,6 +1366,8 @@ export function createGame(ctx) {
   function applyState(state) {
     shells.length = 0;
     blooms.length = 0;
+    fx.clear();
+    missiles.clear();
     clearReticle();
     for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
     targetRings.length = 0;
@@ -1507,6 +1562,8 @@ export function createGame(ctx) {
     for (const b of blooms) { b.mesh.material?.dispose?.(); b.mesh.geometry?.dispose?.(); }
     shells.length = 0;
     blooms.length = 0;
+    try { missiles.dispose(); } catch { /* ignore */ }
+    try { fx.dispose(); } catch { /* ignore */ }
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
     for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }

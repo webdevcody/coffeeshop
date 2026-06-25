@@ -802,8 +802,12 @@ export class InWorldBoard {
     }
     const cell = this._raycastCell(a, ev.clientX, ev.clientY);
     try {
-      // connect4 wants a column; cells expose {c}. Fall back to -1 on a miss.
-      a.instance.setHover(cell ? (cell.c ?? cell) : -1);
+      // Forward the FULL resolved {r,c,which} cell (or -1 on a miss). Modules that
+      // only care about a column (connect4) read cell.c; modules that need the exact
+      // row+col under the cursor (battleship's placement ghost / firing reticle)
+      // read both. Passing only the column previously pinned battleship's reticle to
+      // a column's top cell — it could never track the exact hovered row.
+      a.instance.setHover(cell ?? -1);
     } catch {
       /* ignore */
     }
