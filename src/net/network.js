@@ -81,8 +81,8 @@ export class Network {
     this._send({ type: "appearance", ...appearance });
   }
 
-  sendState(x, z, ry, moving, sitting = false, seatY = 0, ride = null, held = null) {
-    this._send({ type: "state", x, z, ry, moving, sitting, seatY, ride, held });
+  sendState(x, z, ry, moving, sitting = false, seatY = 0, ride = null, held = null, y = 0) {
+    this._send({ type: "state", x, z, ry, moving, sitting, seatY, ride, held, y });
   }
 
   sendChat(text) {

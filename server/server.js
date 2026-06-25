@@ -533,6 +533,7 @@ wss.on("connection", (ws) => {
     hair: null,
     x: 0,
     z: 4,
+    y: 0, // height above ground (m) — nonzero while jumping/flying/rocketing
     ry: Math.PI,
     moving: false,
     sitting: false,
@@ -589,16 +590,24 @@ wss.on("connection", (ws) => {
         break;
       }
       case "state": {
-        // Position/orientation update. Numbers only, clamped to a sane range.
-        if (typeof msg.x === "number") player.x = clamp(msg.x, -100, 100);
-        if (typeof msg.z === "number") player.z = clamp(msg.z, -100, 100);
+        // Position/orientation update. Numbers only, clamped to a sane range. The
+        // open world now spans the city + ocean + islands (x to ±190, z to ~330)
+        // and the launchpad at z=255, so the clamp must be WIDE — the old ±100 box
+        // pinned anyone north of the cafe / on an island / at the rocket to the
+        // boundary for everyone else (they appeared stuck mid-map).
+        if (typeof msg.x === "number") player.x = clamp(msg.x, -400, 400);
+        if (typeof msg.z === "number") player.z = clamp(msg.z, -400, 400);
+        // Height above ground: nonzero while jumping/flying (jetpack)/rocketing, so
+        // remotes render flyers AT altitude instead of stuck on the ground.
+        if (typeof msg.y === "number") player.y = clamp(msg.y, -10, 400);
         if (typeof msg.ry === "number") player.ry = msg.ry;
         player.moving = !!msg.moving;
         player.sitting = !!msg.sitting;
         if (typeof msg.seatY === "number") player.seatY = clamp(msg.seatY, 0, 5);
-        // Ride tag — validated to the two known strings (else walking) so a client
-        // can't inject arbitrary data, consistent with the clamps above.
-        player.ride = msg.ride === "car" || msg.ride === "skate" ? msg.ride : null;
+        // Ride tag — validated to the known strings (else walking) so a client can't
+        // inject arbitrary data. Must include EVERY rideable or that ride is invisible
+        // to others: car, skateboard, boat, jetpack, rocket.
+        player.ride = ["car", "skate", "boat", "jetpack", "rocket"].includes(msg.ride) ? msg.ride : null;
         // Held item id — a short string id (else empty-handed). Bounded so a client
         // can't inject arbitrary data; the client maps it back via getItem(id).
         player.held = typeof msg.held === "string" ? msg.held.slice(0, 32) : null;
@@ -608,6 +617,7 @@ wss.on("connection", (ws) => {
             id,
             x: player.x,
             z: player.z,
+            y: player.y,
             ry: player.ry,
             moving: player.moving,
             sitting: player.sitting,

@@ -88,7 +88,8 @@ export class RemotePlayers {
       cantHear,
       bubble: null,
       bubbleTimer: 0,
-      target: { x: p.x, z: p.z, ry: p.ry },
+      target: { x: p.x, z: p.z, ry: p.ry, y: p.y || 0 },
+      curY: p.y || 0, // smoothed render height (drives flyers' altitude)
       moving: false,
       // Body color (kept so a remote car can be painted to match this player).
       color: p.color,
@@ -208,12 +209,13 @@ export class RemotePlayers {
     this.players.delete(id);
   }
 
-  setState(id, x, z, ry, moving, sitting = false, seatY = 0, ride = null, held = null) {
+  setState(id, x, z, ry, moving, sitting = false, seatY = 0, ride = null, held = null, y = 0) {
     const e = this.players.get(id);
     if (!e) return;
     e.target.x = x;
     e.target.z = z;
     e.target.ry = ry;
+    e.target.y = y || 0; // height above ground (flying/rocket/jumping)
     e.moving = moving;
     e.character.setSeated(!!sitting, seatY);
     this._setRide(e, ride || null);
@@ -259,17 +261,22 @@ export class RemotePlayers {
       const g = e.character.group;
       g.position.x += (e.target.x - g.position.x) * k;
       g.position.z += (e.target.z - g.position.z) * k;
+      e.curY += (e.target.y - e.curY) * k; // smooth the synced altitude
       g.rotation.y = lerpAngle(g.rotation.y, e.target.ry, k);
       e.character.update(dt, e.moving);
+      // character.update sets group.position.y for the walk bob / seat drop; stack
+      // the synced altitude on top so a remote jetpack flyer (avatar visible) rises
+      // off the ground for everyone, instead of skating along at y=0.
+      g.position.y += e.curY;
 
-      // The car/boat group lives in scene space (not parented to the avatar), so it
-      // follows the lerped XZ + heading here. The car sits at world y=0; the boat
-      // floats at the sea surface (WATER_Y, set on its group at build time) — we
-      // preserve the group's own base y instead of stomping it to 0. The board needs
-      // no handling — it's parented under the avatar and moves with it.
+      // The car/boat/rocket group lives in scene space (not parented to the avatar),
+      // so it follows the lerped XZ + heading here. The car sits at world y=0; the
+      // boat floats at the sea surface (WATER_Y); the ROCKET rises with the synced
+      // altitude (curY) so others watch it launch. The board needs no handling — it's
+      // parented under the avatar and moves with it.
       if (e.rideGroup) {
-        const ry = e.ride === "boat" ? WATER_Y : e.ride === "rocket" ? ROCKET_BASE_Y : 0;
-        e.rideGroup.position.set(g.position.x, ry, g.position.z);
+        const baseY = e.ride === "boat" ? WATER_Y : e.ride === "rocket" ? ROCKET_BASE_Y : 0;
+        e.rideGroup.position.set(g.position.x, baseY + (e.ride === "rocket" ? e.curY : 0), g.position.z);
         e.rideGroup.rotation.y = g.rotation.y;
       }
 

@@ -139,7 +139,7 @@ const ambient = new AmbientBoards({
 let local = null;
 let joined = false;
 let lastStateSent = 0;
-let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
+let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
 
 // Where everyone is, so voice (and screen share) can scope to the people you're
 // actually with — table-mates when seated, nearby players otherwise.
@@ -203,7 +203,7 @@ network.on("player-left", (m) => {
   updateCount();
 });
 network.on("state", (m) => {
-  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held);
+  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held, m.y);
 });
 // A remote player restyled themselves (skin / hair / clothing).
 network.on("appearance", (m) => {
@@ -506,7 +506,16 @@ function frame() {
       // prompt, and show the bottom-right speedometer (fed by whichever vehicle is
       // active). NOTE: the jetpack "fly" mode is NOT here — you keep your visible
       // avatar and fly through the normal local.update path (the else branch).
-      if (local.character?.group) local.character.group.visible = false;
+      if (local.character?.group) {
+        local.character.group.visible = false;
+        // Keep the hidden avatar — and the name label parented to its head — glued
+        // to the vehicle (rides keeps local.pos on the vehicle). Without this the
+        // group stays where you boarded, so your name TAG froze at the entry point
+        // while the car drove off. Now the tag rides along (and sits at altitude in
+        // the rocket).
+        local.character.group.position.set(local.pos.x, local.pos.y || 0, local.pos.z);
+        local.character.group.rotation.y = local.facing;
+      }
       hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
@@ -593,6 +602,10 @@ function maybeSendState() {
   if (now - lastStateSent < NET.stateInterval) return;
   const x = +local.pos.x.toFixed(3);
   const z = +local.pos.z.toFixed(3);
+  // Height above ground: nonzero while jumping/flying (jetpack)/rocketing, so
+  // others render you AT altitude instead of stuck on the ground. Includes the
+  // skate-trick lift so airborne tricks read remotely too.
+  const y = +((local.pos.y || 0) + (local.rideLift || 0)).toFixed(3);
   const ry = +local.facing.toFixed(3);
   const moving = local.moving;
   const sitting = local.sitting;
@@ -606,6 +619,7 @@ function maybeSendState() {
   if (
     x === lastSent.x &&
     z === lastSent.z &&
+    y === lastSent.y &&
     ry === lastSent.ry &&
     moving === lastSent.moving &&
     sitting === lastSent.sitting &&
@@ -614,8 +628,8 @@ function maybeSendState() {
   ) {
     return;
   }
-  network.sendState(x, z, ry, moving, sitting, local.seatY, ride, held);
-  lastSent = { x, z, ry, moving, sitting, ride, held };
+  network.sendState(x, z, ry, moving, sitting, local.seatY, ride, held, y);
+  lastSent = { x, z, y, ry, moving, sitting, ride, held };
   lastStateSent = now;
 }
 
