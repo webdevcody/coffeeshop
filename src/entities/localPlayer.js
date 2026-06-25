@@ -445,27 +445,34 @@ export class LocalPlayer {
     const cz = this.pos.z + Math.cos(orbit.yaw) * horiz;
     const cy = this.pos.y + vert + CAMERA.baseHeight;
 
-    // Indoors, keep the camera inside the room (below the ceiling, off the
-    // walls). Outdoors there's no ceiling — let it rise into the sky and follow
-    // the player down while they're falling.
-    const outdoors = this.pos.z > WORLD.depth / 2 - 0.5;
-    let limX, limZmin, limZmax, minY, maxY;
-    if (outdoors) {
-      limX = this.bounds.maxX + 2;
-      limZmin = WORLD.depth / 2 - 2;
-      limZmax = this.bounds.maxZ + 2;
-      minY = -8;
-      maxY = 9;
-    } else {
-      limX = WORLD.width / 2 - 0.4;
-      limZmin = -(WORLD.depth / 2 - 0.4);
-      limZmax = WORLD.depth / 2 - 0.4;
+    // Camera bounds. INDOORS (only when actually inside the original café room
+    // footprint near the origin) keep the camera below the ceiling and off the
+    // walls. Everywhere else is the OPEN WORLD — the expanded city, the ocean, and
+    // the islands, which sprawl to roughly x∈[-190,190], z∈[-60,330] including
+    // islands at NEGATIVE z. The old check (`pos.z > WORLD.depth/2`) wrongly
+    // treated anything south of the tiny room as "indoors" and yanked the camera
+    // back toward the café — that was the "camera 10000 miles away from the island"
+    // bug. Use the full walkable bounds (this.bounds already unions every ground
+    // rect, islands included) with margin so the cam roams freely outdoors.
+    const halfW = WORLD.width / 2, halfD = WORLD.depth / 2;
+    const inCafe =
+      this.pos.x > -halfW - 0.5 && this.pos.x < halfW + 0.5 &&
+      this.pos.z > -halfD - 0.5 && this.pos.z < halfD + 0.5;
+    let limXmin, limXmax, limZmin, limZmax, minY, maxY;
+    if (inCafe) {
+      limXmin = -(halfW - 0.4); limXmax = halfW - 0.4;
+      limZmin = -(halfD - 0.4); limZmax = halfD - 0.4;
       minY = 1.3;
       maxY = WORLD.wallHeight - 0.45;
+    } else {
+      limXmin = this.bounds.minX - 8; limXmax = this.bounds.maxX + 8;
+      limZmin = this.bounds.minZ - 8; limZmax = this.bounds.maxZ + 8;
+      minY = -10;
+      maxY = 320; // high ceiling so the cam can rise with jumps / flight / altitude
     }
 
     this._camPos.set(
-      Math.max(-limX, Math.min(limX, cx)),
+      Math.max(limXmin, Math.min(limXmax, cx)),
       Math.max(minY, Math.min(maxY, cy)),
       Math.max(limZmin, Math.min(limZmax, cz))
     );

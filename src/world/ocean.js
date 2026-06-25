@@ -271,9 +271,14 @@ export function buildOcean(opts = {}) {
   // Register the dock platform as walkable ground.
   ground.push({ minX: dockX1, maxX: dockX0, minZ: dockZ - DOCK_W / 2, maxZ: dockZ + DOCK_W / 2 });
   const dockRect = { minX: dockX1, maxX: dockX0, minZ: dockZ - DOCK_W / 2, maxZ: dockZ + DOCK_W / 2 };
-  // Boarding point at the seaward tip + boat spawn floating just past it (in water).
-  docks.push({ x: dockX1 + 1.5, z: dockZ });
-  const boatSpawn = { x: dockX1 - 4, z: dockZ, heading: Math.PI / 2 }; // facing out to sea (-X / west)
+  // Boarding point near the seaward tip + boat spawn floating just past it (in
+  // water). These MUST be close: the boat is boardable only within the ride's
+  // board reach (~4 m), so the gap between this boarding point and the boat has to
+  // stay under that. Boarding at the tip (dockX1+1.0, on the walkable dock) and the
+  // boat 2.5 m past the tip → ~3.5 m apart, comfortably within reach. (Was 5.5 m,
+  // which made the boat impossible to board.)
+  docks.push({ x: dockX1 + 1.0, z: dockZ });
+  const boatSpawn = { x: dockX1 - 2.5, z: dockZ, heading: Math.PI / 2 }; // facing out to sea (-X / west)
 
   // ── 4) FOUR TINY ISLANDS, each with a shop, palms + a short dock ────────────
   // Spread NW / NE / SE / SW of the city centre at a moderate radius so they're
