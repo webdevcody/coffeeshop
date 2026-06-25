@@ -135,8 +135,8 @@ export class HUD {
     const form = ui.querySelector("#chat-bar");
 
     this.peopleBtn.addEventListener("click", () => {
-      const open = this.peoplePanel.classList.toggle("hidden");
-      this.peopleBtn.classList.toggle("active", !open);
+      const visible = !this.peoplePanel.classList.toggle("hidden");
+      this.peopleBtn.classList.toggle("active", visible);
     });
 
     // Customize panel: one swatch row per editable part. Picking a swatch fires
@@ -147,8 +147,8 @@ export class HUD {
       color: this._buildSwatchRow(ui.querySelector("#cloth-swatches"), PALETTE, "color", "Clothing"),
     };
     this.lookBtn.addEventListener("click", () => {
-      const open = this.customizePanel.classList.toggle("hidden");
-      this.lookBtn.classList.toggle("active", !open);
+      const visible = !this.customizePanel.classList.toggle("hidden");
+      this.lookBtn.classList.toggle("active", visible);
     });
 
     form.addEventListener("submit", (e) => {
@@ -233,6 +233,122 @@ export class HUD {
     setTimeout(() => el.classList.add("show"), 10);
     setTimeout(() => el.classList.remove("show"), 3200);
     setTimeout(() => el.remove(), 3700);
+  }
+
+  // Persistent, screen-space game status banner (top-centre). Used by in-world
+  // games (e.g. battleship) so the status is ALWAYS readable for EVERY player and
+  // never clipped/occluded by 3D furniture across the table.
+  setGameBanner(text) {
+    if (!text) return this.clearGameBanner();
+    if (!this._gameBanner) {
+      const el = document.createElement("div");
+      el.className = "game-banner";
+      this.gameUi.appendChild(el);
+      this._gameBanner = el;
+    }
+    this._gameBanner.textContent = text;
+    this._gameBanner.classList.add("show");
+  }
+
+  clearGameBanner() {
+    if (this._gameBanner) this._gameBanner.classList.remove("show");
+  }
+
+  // Screen-space placement control bar (battleship Rotate/Randomize/Clear/Ready)
+  // so the controls float as a HUD and never overlap the 3D board/ships. `defs` is
+  // [{ id, label, enabled?, primary? }]; clicking a button calls onClick(id). An
+  // empty/falsy defs hides the bar.
+  setGameControls(defs, onClick) {
+    if (!this._gameControls) {
+      const el = document.createElement("div");
+      el.className = "game-controls";
+      this.gameUi.appendChild(el);
+      this._gameControls = el;
+    }
+    const bar = this._gameControls;
+    bar.textContent = "";
+    if (!defs || !defs.length) {
+      bar.classList.remove("show");
+      return;
+    }
+    for (const d of defs) {
+      const b = document.createElement("button");
+      b.className = "game-ctl-btn" + (d.primary ? " primary" : "") + (d.enabled === false ? " disabled" : "");
+      b.textContent = d.label;
+      b.addEventListener("click", (e) => { e.preventDefault(); onClick?.(d.id); });
+      bar.appendChild(b);
+    }
+    bar.classList.add("show");
+  }
+
+  clearGameControls() {
+    if (this._gameControls) {
+      this._gameControls.textContent = "";
+      this._gameControls.classList.remove("show");
+    }
+  }
+
+  // Screen-space fleet-status cards (battleship). `panels` is
+  // [{ title, accent, sunk, total, ships:[{name,length,dead}] }] — rendered as DOM
+  // cards pinned to the screen corners so the table pedestal / 3D bodies across the
+  // table can never clip them. Empty/falsy panels hides the cards.
+  setFleetPanels(panels) {
+    if (!this._fleetPanels) {
+      const el = document.createElement("div");
+      el.className = "fleet-panels";
+      this.gameUi.appendChild(el);
+      this._fleetPanels = el;
+    }
+    const wrap = this._fleetPanels;
+    wrap.textContent = "";
+    if (!panels || !panels.length) {
+      wrap.classList.remove("show");
+      return;
+    }
+    for (const p of panels) {
+      const card = document.createElement("div");
+      card.className = "fleet-card" + (p.mine ? " mine" : "");
+      card.style.setProperty("--accent", p.accent || "#7fd1ff");
+
+      const head = document.createElement("div");
+      head.className = "fleet-head";
+      const title = document.createElement("span");
+      title.className = "fleet-title";
+      title.textContent = p.title;
+      const count = document.createElement("span");
+      count.className = "fleet-count";
+      count.textContent = `${p.sunk}/${p.total} sunk`;
+      head.appendChild(title);
+      head.appendChild(count);
+      card.appendChild(head);
+
+      for (const s of p.ships || []) {
+        const row = document.createElement("div");
+        row.className = "fleet-row" + (s.dead ? " dead" : "");
+        const name = document.createElement("span");
+        name.className = "fleet-ship";
+        name.textContent = s.name;
+        const pips = document.createElement("span");
+        pips.className = "fleet-pips";
+        for (let i = 0; i < s.length; i++) {
+          const pip = document.createElement("i");
+          pip.className = "fleet-pip";
+          pips.appendChild(pip);
+        }
+        row.appendChild(name);
+        row.appendChild(pips);
+        card.appendChild(row);
+      }
+      wrap.appendChild(card);
+    }
+    wrap.classList.add("show");
+  }
+
+  clearFleetPanels() {
+    if (this._fleetPanels) {
+      this._fleetPanels.textContent = "";
+      this._fleetPanels.classList.remove("show");
+    }
   }
 
   // Show/hide the contextual "Press Space to sit / stand" prompt. Pass a falsy

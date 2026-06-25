@@ -151,7 +151,13 @@ export class Character {
   // seating surface; the body drops so the hips rest there.
   setSeated(on, seatTopY = 0) {
     this.seated = on;
-    if (on) this.sitDrop = seatTopY - HIP_BOTTOM;
+    // Only recompute the drop when we have a real seat height. A missing/zero
+    // (or otherwise non-finite/non-positive) seatTopY would otherwise yield a
+    // negative sitDrop that sinks the seated body ~0.63 m through the floor, so
+    // keep the previous drop in that case instead of trusting a bad value.
+    if (on && Number.isFinite(seatTopY) && seatTopY > 0) {
+      this.sitDrop = seatTopY - HIP_BOTTOM;
+    }
   }
 
   // dt seconds; moving boolean. Animates a simple walk cycle / idle breathing,

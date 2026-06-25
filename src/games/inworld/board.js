@@ -1,0 +1,995 @@
+// InWorldBoard — the single unified in-world game engine host.
+//
+// Replaces the iframe Arcade stage. It mounts exactly ONE game module at a time
+// onto the real café table mesh, curries a per-room `net` to the module, routes
+// canvas pointer clicks to the module as resolved board cells, applies relayed
+// moves / authoritative snapshots / resets, gates input by role+turn, and pumps a
+// per-frame update(dt) into modules that drive a real-time sim (pong/tron/ludo).
+//
+// The module contract (createGame(ctx) → GameInstance) is documented in
+// ./createGame.js. The server relay protocol is host-authoritative trust-the-
+// client: the host pushes net.sendState(full,pub) after every committed move; the
+// server caches it and replays to late guests/spectators (catch-up). Hidden-info
+// games (battleship/memory) never let `full` reach spectators — the server gates
+// via PUBLIC_RELAY and the module's publicState() excludes private data.
+
+import * as THREE from "three";
+import { TABLE_SURFACE_Y, orientFor, hitToCell, GameDesync } from "./createGame.js";
+
+// Move-vs-orbit disambiguation: a pointerdown→up that moves less than this many
+// pixels is a board "click"; more is a camera-orbit drag (controls.js keeps it).
+// 6px was too tight — ordinary clicks carry a few px of jitter (more on a
+// trackpad/touch), so legitimate board taps were being swallowed as "drags",
+// making cells feel hard to hit. 12px still comfortably distinguishes a real
+// orbit drag (which travels much further) while letting honest clicks register.
+const CLICK_SLOP = 12;
+
+// Per-game seated-camera zoom-out factor. Most boards fit the default first-person
+// framing (1). Battleship's two ocean grids are much larger, so we pull the camera
+// FURTHER BACK (and up) for that game ONLY, so the whole board is visible. Connect4
+// is an UPRIGHT cabinet whose playable mass stands VERTICAL and level with the eye
+// (a flat board lies on the surface below the eye and frames fine at 1) — so it gets
+// its own pull-back so the seated eye dollies back+up enough to fit the whole tall
+// rack for BOTH seats (the seated path has no host/guest branch). Other games are
+// unaffected. localPlayer._updateSeatedCamera reads this via getSeatedView.
+const SEATED_CAM_ZOOM = { battleship: 1.7, connect4: 1.5 };
+
+// Per-game vertical lift of the seated framing CENTRE (world metres), added to the
+// tabletop surface Y. A FLAT board's pieces sit on the surface, so the default 0 is
+// right. An UPRIGHT cabinet (connect4) centres its playable grid well ABOVE the
+// surface, so aiming at the bare surface points the gaze at the cabinet's feet and
+// looms the grid into the top of the frame. Lift the centre to the grid's mid-height
+// so the eye aims at the grid, not the tabletop. Symmetric across seats.
+const SEATED_CENTER_LIFT = { connect4: 0.33 };
+
+// Derive the tabletop's local Y for parenting a board to a table group, the same
+// way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
+// face, fall back to the authored constant. Standalone so the ambient passersby
+// manager can mount read-only mirrors without an InWorldBoard instance.
+export function tabletopLocalY(table) {
+  let best = null;
+  try {
+    for (const child of table.children || []) {
+      const g = child.geometry;
+      const p = g && g.parameters;
+      if (p && p.radiusTop != null && p.height != null && p.radiusTop >= 0.4) {
+        const topY = child.position.y + p.height / 2;
+        if (best == null || topY > best) best = topY;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  if (Number.isFinite(best)) return best;
+  return TABLE_SURFACE_Y;
+}
+
+// Reusable READ-ONLY board mount for passersby / ambient mirroring.
+//
+// Creates a game instance in the canonical "spectator" role (seatRy null → fixed
+// canonical orientation), parents its group onto `table` at the tabletop surface,
+// and returns a tiny handle the caller drives with the PUBLIC snapshots it gets
+// from the relay. There is NO pointer routing, NO turn gating, NO outbound net —
+// a passerby only ever watches. The module's own publicState()/applyState already
+// strips private data, and the server only ever sends `pub` to non-members, so a
+// hidden-info layout can never reach this mount.
+//
+// opts: { createGame, table, gameId, seatCount }
+// returns: { group, applyState(state), update(dt), dispose() } or null on failure.
+export function mountAmbientBoard(opts) {
+  const { createGame, table } = opts || {};
+  if (typeof createGame !== "function" || !table) return null;
+  const anchorY = tabletopLocalY(table);
+
+  // A no-op relay surface: passersby are pure observers, so nothing they could
+  // emit is ever wired through. Keeping the shape lets unmodified game modules
+  // build their ctx without special-casing the ambient path.
+  const noopNet = {
+    sendMove() {},
+    sendState() {},
+    sendPublic() {},
+    sendInput() {},
+    // A passerby never owns private layout to publish; the reveal flows the OTHER
+    // way (server → applyReveal below). No-op so unmodified modules build their ctx.
+    sendReveal() {},
+  };
+
+  const ctx = {
+    THREE,
+    table,
+    anchorY,
+    role: "spectator",
+    seatRy: null,
+    seatIndex: null,
+    seatCount: opts.seatCount ?? 2,
+    net: noopNet,
+    isLocalTurnAllowed: () => false,
+    onGameOver: () => {},
+  };
+
+  let instance;
+  try {
+    instance = createGame(ctx);
+  } catch {
+    return null;
+  }
+  if (!instance || !instance.group) return null;
+
+  instance.group.position.y = anchorY;
+  // Spectator orientation is the fixed canonical frame (orientFor(null) === 0).
+  // A module that orients itself per-seat (orientPolicy "self") is left alone.
+  if (instance.orientPolicy !== "self") instance.group.rotation.y = orientFor(null);
+  table.add(instance.group);
+
+  return {
+    group: instance.group,
+    applyState(state) {
+      try {
+        instance.applyState?.(state);
+      } catch {
+        /* a bad snapshot must not crash the render loop */
+      }
+    },
+    // SPECTATOR-ONLY REVEAL forwarded to the ambient passerby instance so a passerby
+    // renders the FULL board (both battleship fleets / the real memory faces). The
+    // ambient mount is always a "spectator" role instance, so applyReveal is safe.
+    applyReveal(reveals) {
+      try {
+        instance.applyReveal?.(reveals);
+      } catch {
+        /* a bad reveal must not crash the render loop */
+      }
+    },
+    update(dt) {
+      if (typeof instance.update === "function") {
+        try {
+          instance.update(dt);
+        } catch {
+          /* a module sim error must not kill the loop */
+        }
+      }
+    },
+    dispose() {
+      try {
+        instance.dispose?.();
+      } catch {
+        /* ignore */
+      }
+      if (instance.group && instance.group.parent) {
+        instance.group.parent.remove(instance.group);
+      }
+    },
+  };
+}
+
+export class InWorldBoard {
+  // How long after a spectator applies a relayed move the framework will swallow a
+  // single redundant authoritative snapshot (the host's post-move `pub` echo) so an
+  // in-flight move animation isn't snapped away. Comfortably covers the relay round
+  // of sendMove→sendState landing back-to-back, while staying short enough that a
+  // genuine later snapshot (recovery / next move) is never suppressed.
+  static _SPEC_SNAP_WINDOW_MS = 1500;
+
+  // deps: { scene, camera, getCanvas, controls, network, tables, getLocal, getGameMeta }
+  //   tables   : Map(tableId -> THREE.Group) from buildCoffeeshop
+  //   getLocal : () => the LocalPlayer (for seated/seat checks)
+  //   getGameMeta(gameId) : registry entry { capacity, hiddenInfo, load, ... }
+  constructor(deps) {
+    this.scene = deps.scene;
+    this.camera = deps.camera;
+    this.getCanvas = deps.getCanvas;
+    this.controls = deps.controls;
+    this.network = deps.network;
+    this.tables = deps.tables;
+    this.getLocal = deps.getLocal || (() => null);
+    this.getGameMeta = deps.getGameMeta || (() => null);
+    this.onStatus = deps.onStatus || (() => {});
+
+    // The single active mount, or null.
+    this.active = null; // { instance, group, table, tableId, gameId, roomId, role, seatRy, over, lastFull, lastPub, hidden }
+
+    this._ray = new THREE.Raycaster();
+    this._ndc = new THREE.Vector2();
+    this._downX = 0;
+    this._downY = 0;
+    this._downBtn = -1;
+    this._listening = false;
+
+    this._onDown = this._onPointerDown.bind(this);
+    this._onUp = this._onPointerUp.bind(this);
+    this._onMoveHover = this._onPointerMove.bind(this);
+    this._onLeave = this._onPointerLeave.bind(this);
+    this._hoverAt = 0; // last hover raycast time (throttle)
+
+    // The most-recent inbound game-state buffered while no mount is active yet.
+    // mount() is async (it `await`s a dynamic import); the server's catch-up
+    // snapshot is a separate macrotask that can land BEFORE the import resolves,
+    // when this.active is still null. We stash it here and replay it at the end
+    // of mount() so the late joiner converges instead of painting an empty board.
+    this._pending = null;
+
+    // SPECTATOR-ONLY REVEAL buffered while no mount is active yet (same async-mount
+    // race as _pending): a hidden-info reveal can land before the module import
+    // resolves. We stash the newest one and replay it at the end of mount().
+    this._pendingReveal = null;
+
+    this._wireNetwork();
+  }
+
+  get open() {
+    return this.active != null;
+  }
+
+  // The table this client currently owns a mount on (seated play / spectating /
+  // flip-book menu), or null. The ambient passersby manager reads this to AVOID
+  // double-mounting a read-only mirror on the table this client already renders.
+  get activeTableId() {
+    return this.active ? this.active.tableId : null;
+  }
+
+  // Seated board-view camera hook.
+  //
+  // Returns a small descriptor the frame loop (main.js) uses to ease the camera
+  // into a comfortable over-the-table framing whenever the LOCAL player is
+  // actively seated at THIS mount (host or guest physically on a chair at the
+  // table). Spectators — and any state where the local player isn't on the
+  // table's seat — return { active:false } so the normal follow-cam stays.
+  //
+  // Shape: {
+  //   active : boolean,            // local player seated here AND a board/menu mounted
+  //   center : { x, y, z },        // board centre in WORLD space (table XZ, surface Y)
+  //   seatRy : number|null,        // local seat ry; orients near edge to screen bottom
+  //   tableId: string,
+  // }
+  //
+  // The flip-book menu (built next) reuses the exact same hook: while the menu
+  // is the active mount for a seated host/guest, getSeatedView() already reports
+  // active:true with the table centre, so the camera frames the menu too — no
+  // extra wiring needed. A menu-only mount can call this by parenting its group
+  // to the table like a board, or main.js can synthesize the same descriptor
+  // from the seat + table directly (see notesForFixers).
+  getSeatedView() {
+    const a = this.active;
+    if (!a || !a.table) return { active: false };
+    if (!this._isLocalSeatedHere(a)) return { active: false };
+    // Derive the framing centre from the table's WORLD transform, not its local
+    // position + a hardcoded surface Y. Using a.table.position assumes the table
+    // sits directly in world space at a fixed height — the same leak _tabletopLocalY
+    // was rewritten to avoid. table.getWorldPosition() resolves XZ (and base Y)
+    // through any ancestor transform; add the tabletop's local surface offset so the
+    // centre tracks the real surface even under a tilted/raised room group.
+    const world = a.table.getWorldPosition(new THREE.Vector3());
+    // Lift the framing centre for an UPRIGHT cabinet so the eye aims at the grid's
+    // mid-height, not the tabletop surface. A module may also override per-instance
+    // via instance.seatedCenterLift; default to the per-game table for flat boards
+    // (0 = the bare surface). Symmetric across host/guest (no seat branch).
+    const lift = (a.instance && Number.isFinite(a.instance.seatedCenterLift))
+      ? a.instance.seatedCenterLift
+      : (SEATED_CENTER_LIFT[a.gameId] || 0);
+    return {
+      active: true,
+      center: {
+        x: world.x,
+        y: world.y + this._tabletopLocalY(a.table) + lift,
+        z: world.z,
+      },
+      seatRy: a.seatRy,
+      tableId: a.tableId,
+      // Per-game pull-back (battleship + connect4); 1 = default first-person framing.
+      zoom: SEATED_CAM_ZOOM[a.gameId] || 1,
+    };
+  }
+
+  // True only when the local player is physically seated on a chair belonging to
+  // this mount's table AND holds a playing role (host/guest). Spectators never
+  // qualify — they orbit from wherever they stand.
+  _isLocalSeatedHere(a) {
+    if (!a || a.role === "spectator") return false;
+    const local = this.getLocal();
+    return !!(local && local.sitting && local.seat && local.seat.table === a.tableId);
+  }
+
+  // Orientation policy. A FLAT board (default) is rotated by orientFor(seatRy) so
+  // its canonical near edge meets the local viewer. An UPRIGHT cabinet (connect4)
+  // is ALSO rotated by orientFor(seatRy) — that turns the whole standing cabinet
+  // so its readable faceplate faces the LOCAL seat from whichever chair (each
+  // client renders with its own seatRy, so the opposite-seated player sees the
+  // faceplate, not the back). A module that orients ITSELF (does its own per-seat
+  // facing internally via setSeatRy) declares `orientPolicy: "self"` so the host
+  // does NOT also rotate the group and the two don't fight (which is exactly the
+  // bug that showed the cabinet's back to the opposite seat). hitToCell still
+  // resolves through group.worldToLocal, so the column mapping follows whatever
+  // rotation is applied here.
+  _orient(a) {
+    if (!a || !a.group) return;
+    const policy = a.instance && a.instance.orientPolicy;
+    if (policy === "self") return; // module owns its own facing; don't double-rotate
+    a.group.rotation.y = orientFor(a.seatRy);
+  }
+
+  // Tabletop local-Y for parenting a board to the table group. The board is added
+  // as a CHILD of `table`, so the right anchor is the tabletop's height *within
+  // the table's own local frame* — which makeTable() authors at TABLE_SURFACE_Y
+  // (the top cylinder sits at local y=0.77). The board's local frame IS the
+  // table's frame, so the parent's world position/scale is irrelevant.
+  //
+  // The previous `TABLE_SURFACE_Y - table.position.y` formula leaked the parent's
+  // world position into a CHILD offset; it only happened to work because every
+  // café table is placed at y=0. The instant a table sits under any ancestor
+  // transform (a tilted/raised room group) that subtraction is wrong. Deriving
+  // the surface directly from the tabletop mesh's local Y is transform-robust.
+  _tabletopLocalY(table) {
+    // Prefer the actual tabletop mesh's local Y (top face = mesh.position.y +
+    // half its height), so the anchor tracks the geometry even if it's re-authored.
+    let best = null;
+    try {
+      for (const child of table.children || []) {
+        const g = child.geometry;
+        const p = g && g.parameters;
+        // The round tabletop is the wide, thin cylinder near the top of the post.
+        if (p && p.radiusTop != null && p.height != null && p.radiusTop >= 0.4) {
+          const topY = child.position.y + p.height / 2;
+          if (best == null || topY > best) best = topY;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    if (Number.isFinite(best)) return best;
+    // Fallback: the authored constant (board is a child of the table group, so the
+    // surface's local Y is just TABLE_SURFACE_Y — no parent term).
+    return TABLE_SURFACE_Y;
+  }
+
+  // ---- network inbound -----------------------------------------------------
+  _wireNetwork() {
+    const n = this.network;
+    if (!n) return;
+    n.on("game-move", (m) => this._onMove(m));
+    n.on("game-state", (m) => this._onState(m));
+    n.on("game-reset", (m) => this._onReset(m));
+    n.on("reveal", (m) => this._onReveal(m));
+  }
+
+  _sameTable(m) {
+    return this.active && m && m.table === this.active.tableId;
+  }
+
+  _onMove(m) {
+    const a = this.active;
+    if (!this._sameTable(m) || !a) return;
+    // BUG 2 (mid-join spectator stale base): a freshly-mounted spectator is on the
+    // live game-move relay (PUBLIC_RELAY) the instant it watches, but its catch-up
+    // pub snapshot is async and may land AFTER the next relayed move. Applying that
+    // move against the module's constructor-initial board (not the true mid-game
+    // position) paints a transient wrong render — and modules that derive the mover
+    // from local `turn` (reversi/checkers/gomoku) can do so without throwing, so the
+    // self-healing resync path never fires. Gate: a spectator only starts consuming
+    // relayed deltas once it has applied its first authoritative snapshot (_hydrated,
+    // set in _onState). Until then, drop the move — the pending snapshot already
+    // carries the full position, and the host pushes a fresh snapshot after every
+    // move, so nothing is lost. Seated host/guest are unaffected (their catch-up
+    // `full` arrives on the seat assign before relayed moves and they start hydrated).
+    if (a.role === "spectator" && !a._hydrated) return;
+    // Per-seat identity of the mover. 2-player modules can keep reading the 2nd
+    // arg as `byRole`; multi-seat modules (ludo) read the 3rd arg `by` to learn
+    // WHICH seat moved (by.seatIndex) and enforce whose turn it is. by.seatIndex
+    // is the server-stamped m.bySeat. The host is the ONLY role whose seat is
+    // unambiguous without a stamp (host is always seat 0), so we may infer that.
+    //
+    // We must NOT guess a seat for a guest: guests sit at order 1,2,3 and stamping
+    // every guest as seat 1 collapses 3-4 player turn identity (e.g. ludo's yellow
+    // at seat 2 / blue at seat 3 would report seat 1, fail the turn gate, and spin
+    // a resync loop with no way to advance). When m.bySeat is absent for a guest,
+    // leave seatIndex null — multi-seat modules treat null as "cannot verify" and
+    // the server is expected to stamp m.bySeat for relayed guest moves.
+    if (!Number.isInteger(m.bySeat) && m.byRole === "guest") {
+      // A relayed guest move without a server seat stamp cannot be verified by
+      // seat. Log so a non-stamping server is caught rather than silently guessed.
+      try {
+        console.warn("[InWorldBoard] relayed guest move missing m.bySeat; seat identity unverifiable");
+      } catch {
+        /* ignore */
+      }
+    }
+    const by = {
+      role: m.byRole ?? null,
+      seatIndex: Number.isInteger(m.bySeat)
+        ? m.bySeat
+        : (m.byRole === "host" ? 0 : null),
+      id: m.byId ?? null,
+    };
+    try {
+      const ok = a.instance.applyMove?.(m.move, m.byRole, by);
+      if (ok === false) this._requestResync();
+      else if ((a.role === "spectator" || a.role === "guest") && a.instance.spectatorAnimates !== false) {
+        // BUG 1 (spectator/guest animations snapped away): the host commits a move
+        // with net.sendMove THEN net.sendState, so for a full-info game a spectator
+        // — OR a seated GUEST animating the host's relayed move — reliably receives
+        // the host's post-move `pub` snapshot a few ms after the relayed move.
+        // applyState tears down in-flight animation (clears hops/flips/falling discs)
+        // and hard-snaps to the authoritative layout, so the glide/flip/fall the move
+        // just started is aborted and the watcher sees a teleport. Since applyMove
+        // already converged the viewer to the same logical position the snapshot
+        // describes (connect4 defers turn-flip/win into resolveAfter on BOTH sides,
+        // so the echo is a redundant restatement of the position the guest already
+        // holds), suppress exactly ONE following snapshot (the redundant post-move
+        // push) so the animation can complete.
+        // We only swallow the immediate echo: a stale/recovery snapshot arriving
+        // later than _SPEC_SNAP_WINDOW_MS, or a second snapshot, still applies and
+        // re-converges. Tracked with a deadline so a dropped echo can't suppress an
+        // unrelated later snapshot indefinitely.
+        //
+        // The skip is OPT-OUT: it is correct ONLY for full-info turn-based modules
+        // whose spectator applyMove actually applies + animates the relayed move
+        // (uttt, mancala, connect4, …). Snapshot-driven modules (ludo, pong, tron)
+        // render spectators PURELY from authoritative snapshots — their spectator
+        // applyMove is a no-op — so for them the post-move snapshot is NOT a
+        // redundant echo of an animation in flight; it carries the only state the
+        // spectator will ever see. Swallowing it strands the spectator one move
+        // behind (e.g. a guest's ludo roll/token advance vanishes for ~1.5s).
+        // Those modules export `spectatorAnimates: false` to skip arming the window.
+        a._specSkipSnapUntil = this._now() + InWorldBoard._SPEC_SNAP_WINDOW_MS;
+      }
+    } catch (err) {
+      // ANY applyMove failure is recoverable: a malformed/garbage relayed move
+      // (TypeError, out-of-range index, etc.) must NOT escape this handler — it is
+      // dispatched synchronously from the raw WebSocket 'message' pump (Network._emit)
+      // with no surrounding try/catch, so rethrowing would abort the whole message
+      // dispatch. Log non-desync errors and request an authoritative re-push instead.
+      if (!(err instanceof GameDesync)) {
+        try {
+          console.warn("[InWorldBoard] applyMove threw; requesting resync", err);
+        } catch {
+          /* ignore */
+        }
+      }
+      this._requestResync();
+    }
+  }
+
+  _now() {
+    return typeof performance !== "undefined" && performance.now
+      ? performance.now()
+      : Date.now();
+  }
+
+  _onState(m) {
+    const a = this.active;
+    // Mount is async; a catch-up snapshot can arrive before the module finishes
+    // loading (this.active still null). Buffer the newest one so mount() can
+    // replay it; otherwise the snapshot is silently dropped and the joiner never
+    // converges (the classic async-mount race).
+    if (!a) {
+      if (m && (m.full != null || m.pub != null)) this._pending = m;
+      return;
+    }
+    if (!this._sameTable(m)) return;
+    // Guests get `full`; spectators get `pub`. A host echo is ignored (host is
+    // already authoritative locally).
+    if (a.role === "host") return;
+    const state = m.full != null ? m.full : m.pub;
+    if (state == null) return;
+    // BUG 1: a spectator OR seated guest that just consumed the relayed move for
+    // this snapshot suppresses exactly the redundant post-move echo so its in-flight
+    // animation is not snapped away (see _onMove). The window is one-shot and
+    // time-bounded: clear it whether or not it was still in force, so only the
+    // immediate echo is ever swallowed and the very next snapshot always applies.
+    if ((a.role === "spectator" || a.role === "guest") && a._specSkipSnapUntil != null) {
+      const skip = this._now() <= a._specSkipSnapUntil;
+      a._specSkipSnapUntil = null;
+      if (skip) return;
+    }
+    try {
+      a.instance.applyState?.(state);
+      // BUG 2: the spectator now has a true authoritative base — relayed deltas may
+      // be applied from here on (gated in _onMove until this first hydration).
+      a._hydrated = true;
+    } catch {
+      /* a bad snapshot must not crash the loop */
+    }
+  }
+
+  _onReset(m) {
+    const a = this.active;
+    if (!this._sameTable(m) || !a) return;
+    a.over = false;
+    a.lastFull = a.lastPub = null;
+    this._pendingReveal = null; // a stale reveal must not survive a reset
+    try {
+      a.instance.applyState?.(null);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // SPECTATOR-ONLY REVEAL inbound. The server forwards a hidden-info reveal (both
+  // battleship fleets / the real memory deck) to SPECTATORS + ambient passersby
+  // ONLY — never to a seated player's opponent. Route the merged reveals to the
+  // module so a spectator instance renders the FULL board. Buffer if the async
+  // mount hasn't resolved yet (same race the snapshot path handles via _pending).
+  _onReveal(m) {
+    const a = this.active;
+    if (!a) {
+      if (m && m.reveals != null) this._pendingReveal = m;
+      return;
+    }
+    if (!this._sameTable(m)) return;
+    // Only a spectator instance ever renders a reveal. A seated host/guest is never
+    // sent one by the server, but guard here too so a stray payload can't reveal an
+    // opponent's layout in a player's own view.
+    if (a.role !== "spectator") return;
+    try {
+      a.instance.applyReveal?.(m.reveals);
+    } catch {
+      /* a bad reveal must not crash the loop */
+    }
+  }
+
+  // A guest/spectator whose applyMove failed asks the server for an authoritative
+  // re-push; the host (which is authoritative locally) re-broadcasts its cached
+  // full. Without the explicit request a desynced guest had no recovery channel —
+  // it would fail to apply every subsequent relayed move and the match would stall
+  // when play reached its turn.
+  _requestResync() {
+    const a = this.active;
+    if (!a) return;
+    if (a.role === "host") {
+      if (a.lastFull) {
+        try {
+          this.network?.sendGameState?.(a.lastFull, a.lastPub ?? a.lastFull);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    // Guest/spectator: ask the server to re-send the cached authoritative state.
+    try {
+      this.network?.requestState?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ---- mount / unmount -----------------------------------------------------
+  // opts: { gameId, tableId, roomId, role, seatRy, seatIndex, seatCount,
+  //         createGame, ctxExtra }
+  //   createGame : optional factory override (skips registry load) — used by the
+  //                in-world flip-book menu, which has no registry entry.
+  //   ctxExtra   : optional plain object merged into the module's ctx. The menu
+  //                receives its picker callbacks here (onPick, games) without
+  //                widening the standard game ctx for every module.
+  async mount(opts) {
+    this.unmount();
+    const table = this.tables?.get(opts.tableId);
+    if (!table) return false;
+
+    let createGame = opts.createGame;
+    if (!createGame) {
+      const meta = this.getGameMeta(opts.gameId);
+      if (!meta || !meta.load) return false;
+      try {
+        const mod = await meta.load();
+        createGame = mod.createGame || mod.default;
+      } catch {
+        return false;
+      }
+    }
+    if (typeof createGame !== "function") return false;
+
+    const meta = this.getGameMeta(opts.gameId) || {};
+    const hidden = !!meta.hiddenInfo;
+    const anchorY = this._tabletopLocalY(table);
+    const role = opts.role || "spectator";
+    const seatRy = role === "spectator" ? null : opts.seatRy ?? null;
+
+    const a = {
+      instance: null,
+      group: null,
+      table,
+      tableId: opts.tableId,
+      gameId: opts.gameId,
+      roomId: opts.roomId,
+      role,
+      seatRy,
+      seatIndex: opts.seatIndex ?? (role === "host" ? 0 : null),
+      seatCount: opts.seatCount ?? (meta.capacity ?? 2),
+      over: false,
+      lastFull: null,
+      lastPub: null,
+      hidden,
+      anchorY,
+      ctxExtra: opts.ctxExtra || null,
+      // Spectator sync bookkeeping (board.js only — see _onMove/_onState).
+      //   _hydrated          : true once the first authoritative applyState has run,
+      //                         so relayed deltas have a true base to apply against.
+      //                         A host/guest start hydrated (host is authoritative;
+      //                         a guest's catch-up `full` precedes relayed moves).
+      //   _specSkipSnapUntil  : deadline (ms) during which one redundant post-move
+      //                         pub snapshot is swallowed so a spectator animation
+      //                         isn't snapped away. null = none pending.
+      _hydrated: role !== "spectator",
+      _specSkipSnapUntil: null,
+    };
+
+    const ctx = this._makeCtx(a);
+    let instance;
+    try {
+      instance = createGame(ctx);
+    } catch {
+      return false;
+    }
+    if (!instance || !instance.group) return false;
+
+    a.instance = instance;
+    a.group = instance.group;
+    instance.group.position.y = anchorY;
+    table.add(instance.group);
+    this._orient(a);
+
+    this.active = a;
+    this._enablePointer(role !== "spectator");
+
+    // Spectators subscribe to the proximity/seat watch stream; the server replays
+    // the cached pub (and re-replays on this mount-time watch even if we're already
+    // in its spectator set). Seated guests get their catch-up `full` from the
+    // assignSeat replay.
+    if (role === "spectator") {
+      try {
+        this.network?.watchTable?.(opts.tableId);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // Converge a late/mid-join: first replay any snapshot that arrived during the
+    // async load (buffered in _onState), then request a fresh authoritative state
+    // in case the catch-up snapshot was already consumed or never sent. Both are
+    // idempotent — applyState rebuilds from scratch.
+    if (role !== "host") {
+      if (this._pending && this._pending.table === opts.tableId) {
+        const buffered = this._pending;
+        this._pending = null;
+        this._onState(buffered);
+      } else {
+        this._pending = null;
+      }
+      // SPECTATOR-ONLY REVEAL: replay any reveal that landed during the async load
+      // so a late spectator paints the full board immediately. requestState() also
+      // re-asks the server, which re-sends the cached reveal to a spectator.
+      if (role === "spectator" && this._pendingReveal && this._pendingReveal.table === opts.tableId) {
+        const bufferedReveal = this._pendingReveal;
+        this._pendingReveal = null;
+        this._onReveal(bufferedReveal);
+      } else {
+        this._pendingReveal = null;
+      }
+      try {
+        this.network?.requestState?.();
+      } catch {
+        /* ignore */
+      }
+    } else {
+      this._pending = null;
+      this._pendingReveal = null;
+    }
+    return true;
+  }
+
+  unmount() {
+    const a = this.active;
+    if (!a) return;
+    this._enablePointer(false);
+    if (a.role === "spectator") {
+      try {
+        this.network?.unwatchTable?.(a.tableId);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      a.instance?.dispose?.();
+    } catch {
+      /* ignore */
+    }
+    if (a.group && a.group.parent) a.group.parent.remove(a.group);
+    this.active = null;
+  }
+
+  // Build the curried ctx the module receives. `net` never exposes roomId/socket.
+  _makeCtx(a) {
+    const self = this;
+    const net = {
+      sendMove(move) {
+        try {
+          self.network?.sendMove?.(move);
+        } catch {
+          /* ignore */
+        }
+      },
+      // Host-only authoritative snapshot. Cache for resync replay; the framework
+      // no-ops it for guests/spectators (they never send authoritative state).
+      sendState(full, pub) {
+        if (a.role !== "host") return;
+        a.lastFull = full;
+        a.lastPub = pub == null ? full : pub;
+        try {
+          self.network?.sendGameState?.(full, a.lastPub);
+        } catch {
+          /* ignore */
+        }
+      },
+      // Hidden-info delta: only the public payload changes. Cache pub, re-send the
+      // last full to seated members (unchanged) and the new pub to spectators.
+      sendPublic(pub) {
+        if (a.role !== "host") return;
+        a.lastPub = pub;
+        try {
+          self.network?.sendGameState?.(a.lastFull ?? pub, pub);
+        } catch {
+          /* ignore */
+        }
+      },
+      // Real-time guest steering (pong paddle, tron turn). Goes ONLY to the host;
+      // never cached, never relayed to spectators.
+      sendInput(input) {
+        try {
+          self.network?.sendGameInput?.(input);
+        } catch {
+          /* ignore */
+        }
+      },
+      // SPECTATOR-ONLY REVEAL: a seated player publishes its OWN private layout so
+      // WATCHERS render the full board. The server forwards it to spectators +
+      // ambient passersby ONLY, never to the opposing seat — so a hidden-info game
+      // stays fair while every onlooker sees everything. Any seated role may call
+      // it (host reveals the deck for memory; each player reveals their own fleet
+      // for battleship); a spectator never has private layout to send.
+      sendReveal(reveal) {
+        try {
+          self.network?.sendReveal?.(reveal);
+        } catch {
+          /* ignore */
+        }
+      },
+    };
+
+    return {
+      THREE,
+      table: a.table,
+      anchorY: a.anchorY,
+      role: a.role,
+      seatRy: a.seatRy,
+      seatIndex: a.seatIndex,
+      seatCount: a.seatCount,
+      net,
+      isLocalTurnAllowed: () => this._turnAllowed(a),
+      onGameOver: (result) => {
+        a.over = true;
+        try {
+          this.onStatus(this._overText(a, result));
+        } catch {
+          /* ignore */
+        }
+      },
+      // Extra non-game context (e.g. the flip-book menu's onPick / games). Merged
+      // last so a mount can inject picker callbacks without changing the shared
+      // game ctx shape. Never set for a normal registry game.
+      ...(a.ctxExtra || {}),
+    };
+  }
+
+  _turnAllowed(a) {
+    if (!a || a.role === "spectator" || a.over) return false;
+    return this._isSeatedHere(a);
+  }
+
+  _isSeatedHere(a) {
+    const local = this.getLocal();
+    if (a.role === "host" || a.role === "guest") {
+      return !!(local && local.sitting && local.seat && local.seat.table === a.tableId);
+    }
+    return true; // spectator path (input already gated off elsewhere)
+  }
+
+  // ---- per-frame pump (real-time sims) -------------------------------------
+  update(dt) {
+    const a = this.active;
+    if (!a || !a.instance) return;
+    if (typeof a.instance.update === "function") {
+      try {
+        a.instance.update(dt);
+      } catch {
+        /* a module sim error must not kill the render loop */
+      }
+    }
+  }
+
+  // ---- inbound game-input (host receives guest steering) -------------------
+  onGameInput(m) {
+    const a = this.active;
+    if (!this._sameTable(m) || !a || a.role !== "host") return;
+    try {
+      a.instance.onInput?.(m.input, m.byRole);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ---- role / seat changes (in-place promotion) ----------------------------
+  setRole(role, seatRy, seatIndex) {
+    const a = this.active;
+    if (!a) return;
+    a.role = role;
+    if (seatRy !== undefined) a.seatRy = role === "spectator" ? null : seatRy;
+    if (seatIndex !== undefined) a.seatIndex = seatIndex;
+    try {
+      a.instance.setRole?.(role, a.seatIndex);
+      a.instance.setSeatRy?.(a.seatRy);
+    } catch {
+      /* ignore */
+    }
+    this._orient(a);
+    this._enablePointer(role !== "spectator");
+  }
+
+  // ---- pointer routing -----------------------------------------------------
+  _enablePointer(on) {
+    const canvas = this.getCanvas?.();
+    if (!canvas) return;
+    if (on && !this._listening) {
+      canvas.addEventListener("pointerdown", this._onDown, true);
+      canvas.addEventListener("pointerup", this._onUp, true);
+      // Non-capturing hover routing (for modules that expose setHover, e.g.
+      // connect4's launcher preview). Capture-phase down/up keep orbit-vs-click
+      // disambiguation; hover is best-effort and never consumes the event.
+      canvas.addEventListener("pointermove", this._onMoveHover);
+      canvas.addEventListener("pointerleave", this._onLeave);
+      this._listening = true;
+    } else if (!on && this._listening) {
+      canvas.removeEventListener("pointerdown", this._onDown, true);
+      canvas.removeEventListener("pointerup", this._onUp, true);
+      canvas.removeEventListener("pointermove", this._onMoveHover);
+      canvas.removeEventListener("pointerleave", this._onLeave);
+      this._listening = false;
+      const a = this.active;
+      try { a?.instance?.setHover?.(-1); } catch { /* ignore */ }
+    }
+  }
+
+  _onPointerDown(ev) {
+    if (ev.button === 2) return;
+    this._downX = ev.clientX;
+    this._downY = ev.clientY;
+    this._downBtn = ev.button;
+  }
+
+  _onPointerUp(ev) {
+    const a = this.active;
+    if (!a || this._downBtn !== 0 || ev.button !== 0) return;
+    const moved = Math.hypot(ev.clientX - this._downX, ev.clientY - this._downY);
+    if (moved > CLICK_SLOP) return; // a drag → leave it to orbit
+    if (!this._turnAllowed(a)) return;
+    // NOTE: do NOT stopPropagation here. controls.js clears its orbit-drag state
+    // on a window-level pointerup (bubble phase); swallowing the event in this
+    // capture-phase handler left `dragging` stuck true, so after clicking a piece
+    // or menu button the camera spun with every mouse move. Let the up bubble.
+    this.handlePointer(ev);
+  }
+
+  // Hover routing for modules that expose setHover (e.g. connect4's launcher
+  // preview). Throttled (~30Hz), non-consuming, and gated by _turnAllowed so a
+  // spectator / off-turn player never sees the affordance. We raycast the board
+  // and hand the resolved cell to the module; on a miss (or no turn) we clear.
+  _onPointerMove(ev) {
+    const a = this.active;
+    if (!a || !a.group) return;
+    if (typeof a.instance?.setHover !== "function") return;
+    const now = performance.now ? performance.now() : Date.now();
+    if (now - this._hoverAt < 33) return;
+    this._hoverAt = now;
+    if (!this._turnAllowed(a)) {
+      try { a.instance.setHover(-1); } catch { /* ignore */ }
+      return;
+    }
+    const cell = this._raycastCell(a, ev.clientX, ev.clientY);
+    try {
+      // Forward the FULL resolved {r,c,which} cell (or -1 on a miss). Modules that
+      // only care about a column (connect4) read cell.c; modules that need the exact
+      // row+col under the cursor (battleship's placement ghost / firing reticle)
+      // read both. Passing only the column previously pinned battleship's reticle to
+      // a column's top cell — it could never track the exact hovered row.
+      a.instance.setHover(cell ?? -1);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _onPointerLeave() {
+    const a = this.active;
+    try { a?.instance?.setHover?.(-1); } catch { /* ignore */ }
+  }
+
+  // Raycast a screen coordinate onto the active board and resolve a cell, or null.
+  _raycastCell(a, cx, cy) {
+    const canvas = this.getCanvas?.();
+    if (!canvas || cx == null || cy == null) return null;
+    const rect = canvas.getBoundingClientRect();
+    this._ndc.x = ((cx - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    this._ray.setFromCamera(this._ndc, this.camera);
+    const hits = this._ray.intersectObject(a.group, true);
+    if (!hits.length) return null;
+    return this._resolveCell(a, hits[0]);
+  }
+
+  // Resolve a pointer event to a board cell and dispatch to the module. Returns
+  // true if a hit on the board was consumed.
+  handlePointer(ev) {
+    const a = this.active;
+    if (!a || !a.group) return false;
+    const canvas = this.getCanvas?.();
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const cx = ev.clientX ?? (ev.touches && ev.touches[0]?.clientX);
+    const cy = ev.clientY ?? (ev.touches && ev.touches[0]?.clientY);
+    if (cx == null || cy == null) return false;
+    this._ndc.x = ((cx - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    this._ray.setFromCamera(this._ndc, this.camera);
+    const hits = this._ray.intersectObject(a.group, true);
+    if (!hits.length) return false;
+    const hit = hits[0];
+    const cell = this._resolveCell(a, hit);
+    try {
+      a.instance.onPointer?.({ cell, point: hit.point, object: hit.object });
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }
+
+  // 3-tier resolver: module hitToCell > userData.cell ancestor walk > geometric.
+  _resolveCell(a, hit) {
+    // Tier 1 — the module's OWN hit-test. A module that exposes hitToCell owns the
+    // authoritative mapping for its geometry; if it returns a cell, use it. If it
+    // returns null it has DELIBERATELY rejected this hit (e.g. connect4's base slab /
+    // rail / lamps, battleship's non-grid furniture). We must NOT then fall through
+    // to the flat geometric fallback below: that helper assumes a flat 8×8 XZ board
+    // in UN-rotated group space, but an upright cabinet (connect4) carries its facing
+    // rotation on a child mesh, so it would map a non-grid click to an arbitrary
+    // {r,c} and drop a disc the player never intended. A module's null is final.
+    if (typeof a.instance.hitToCell === "function") {
+      return a.instance.hitToCell(hit) || null;
+    }
+    // Tier 2 — per-cell colliders tagged userData.cell (the precise, orientation-safe
+    // path battleship/pieces use). Walk ancestors so a child mesh of a tagged collider
+    // still resolves.
+    let o = hit.object;
+    while (o) {
+      if (o.userData && o.userData.cell) return o.userData.cell;
+      o = o.parent;
+    }
+    // Tier 3 — geometric fallback (flat N×N XZ board in the group's local frame).
+    // This is only correct for a FLAT board the host rotated via orientFor(seatRy):
+    // group.worldToLocal then undoes that rotation and the layout really is a flat
+    // XZ grid. A module that orients ITSELF (orientPolicy "self") puts its facing on
+    // a child (or self-orients per seat), so the unrotated-group XZ assumption is
+    // wrong — never run the flat fallback for it. Such a module is expected to expose
+    // hitToCell or userData.cell colliders (handled above); if it does neither, this
+    // click simply doesn't resolve to a cell (correct — better than an arbitrary one).
+    if (a.instance.orientPolicy === "self") return null;
+    // Grid size for the geometric fallback: prefer the instance, then the group's
+    // userData (reversi/gomoku publish gridN there), default 8. Using 8 for a 15×15
+    // gomoku board would map a click on bare wood to a wrong intersection.
+    const n = a.instance.gridN || a.group?.userData?.gridN || 8;
+    return hitToCell(a.group, hit.point, n);
+  }
+
+  _overText(a, result) {
+    if (!result) return "Game over.";
+    if (result.winner == null) return "It's a draw.";
+    return `Winner: ${result.winner}.`;
+  }
+}

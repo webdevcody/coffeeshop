@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { Character } from "./character.js";
 import { resolveCollisions } from "../world/collision.js";
 import { makeNameLabel, makeChatBubble, makeSpeakingIndicator } from "../ui/labels.js";
-import { PLAYER, CAMERA, WORLD, SEAT } from "../config.js";
+import { PLAYER, CAMERA, WORLD, SEAT, SEATED_CAM } from "../config.js";
 
 // Falling off the edge of the world: how fast you accelerate down, and how far
 // you fall before respawning back at the coffeeshop.
@@ -21,6 +21,10 @@ export class LocalPlayer {
     this.seats = seats;
     // The silly item you bought from the coffee bar (one at a time).
     this.heldItem = null; // { obj, def }
+    // Items dropped on the floor. Capped so repeated buy/drop can't leak GPU
+    // memory: once we exceed the cap the oldest drop is removed and disposed.
+    this.drops = [];
+    this.maxDrops = 12;
     // Walkable ground rectangles. Stand outside all of them and you fall.
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
@@ -58,6 +62,12 @@ export class LocalPlayer {
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._camPos = new THREE.Vector3();
+    // Seated board-view camera scratch + smoothed aim point (eased separately so
+    // the lookAt target glides instead of snapping when entering/leaving).
+    this._seatCamPos = new THREE.Vector3();
+    this._seatLook = new THREE.Vector3();
+    this._seatLookTarget = new THREE.Vector3();
+    this._seatLookSet = false;
   }
 
   get group() {
@@ -81,7 +91,12 @@ export class LocalPlayer {
   }
 
   showChat(text) {
-    if (this.bubble) this.character.head.remove(this.bubble);
+    if (this.bubble) {
+      this.character.head.remove(this.bubble);
+      this.bubble.element?.remove();
+      this.bubble = null;
+      this.bubbleTimer = 0;
+    }
     this.bubble = makeChatBubble(text);
     this.character.head.add(this.bubble);
     this.bubbleTimer = Math.min(7, 2.5 + text.length * 0.05);
@@ -108,6 +123,14 @@ export class LocalPlayer {
     drop.position.set(fx, 0.1, fz);
     drop.rotation.y = Math.random() * Math.PI * 2;
     this.scene.add(drop);
+    this.drops.push(drop);
+    // Cap accumulated drops: remove + dispose the oldest ones beyond the limit
+    // so the scene doesn't leak geometry/material for the whole session.
+    while (this.drops.length > this.maxDrops) {
+      const old = this.drops.shift();
+      this.scene.remove(old);
+      old.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    }
   }
 
   _removeHeld() {
@@ -122,7 +145,11 @@ export class LocalPlayer {
     return this.heldItem ? this.heldItem.def.name : null;
   }
 
-  update(dt, camera) {
+  // `seatedView` (optional) is the board-view descriptor from
+  // InWorldBoard.getSeatedView(): { active, center:{x,y,z}, seatRy }. When it is
+  // active the camera eases to an over-the-table framing instead of the normal
+  // trailing follow-cam; otherwise the follow-cam runs (and smoothly restores).
+  update(dt, camera, seatedView = null) {
     const { move, orbit, zoom } = this.controls;
 
     // Space toggles sitting: sit on the nearest seat, or stand back up.
@@ -150,7 +177,9 @@ export class LocalPlayer {
 
     if (this.moving) {
       const inv = 1 / intent;
-      const step = PLAYER.speed * dt;
+      // speedMul lets a ride (skateboard) boost ground speed without touching the
+      // base walk speed. Default 1 (plain walking).
+      const step = PLAYER.speed * dt * (this.speedMul || 1);
       let nx = this.pos.x + vx * inv * step;
       let nz = this.pos.z + vz * inv * step;
 
@@ -192,7 +221,12 @@ export class LocalPlayer {
       }
     }
 
-    this._updateCamera(dt, camera, orbit, zoom);
+    if (seatedView && seatedView.active) {
+      this._updateSeatedCamera(dt, camera, orbit, zoom, seatedView);
+    } else {
+      this._seatLookSet = false; // forget the seated aim so re-entry re-seeds it
+      this._updateCamera(dt, camera, orbit, zoom);
+    }
   }
 
   // Vertical physics: snap to the ground if there's any under us, otherwise
@@ -225,7 +259,8 @@ export class LocalPlayer {
     this.facing = Math.PI;
   }
 
-  // Nearest unoccupied-by-us seat within reach, or null.
+  // Nearest seat within reach, or null. Note: occupancy isn't tracked on the
+  // client, so this may return a seat a remote player is already using.
   _nearestSeat() {
     let best = null;
     let bestD = SEAT.range * SEAT.range;
@@ -274,6 +309,71 @@ export class LocalPlayer {
   sitPromptText() {
     if (this.sitting) return "Press Space to stand";
     return this._nearestSeat() ? "Press Space to sit" : null;
+  }
+
+  // Seated board-view: ease the camera to a comfortable over-the-table framing
+  // centred on the board, oriented so the local player's near edge is at the
+  // bottom of the screen. The camera orbits BEHIND the player (offset along
+  // -facing from the board centre), so orbit.yaw's baseline is seatRy+PI (set by
+  // main.js via controls.setSeated). Gentle orbit + zoom apply but stay clamped
+  // (the clamps live in controls.js). Position and aim are lerped so entering /
+  // leaving the seated view glides instead of snapping.
+  _updateSeatedCamera(dt, camera, orbit, zoom, view) {
+    const cl = (v, a, b) => Math.max(a, Math.min(b, v));
+    const c = view.center; // board / table centre
+    const seatY = (this.seat && this.seat.seatY) || this.seatY || 0;
+
+    // Horizontal forward = from the seat toward the board centre. Falls back to
+    // the body facing if the seat sits exactly on centre (shouldn't happen).
+    this._fwd.set(c.x - this.pos.x, 0, c.z - this.pos.z);
+    if (this._fwd.lengthSq() < 1e-6) this._fwd.set(Math.sin(this.facing), 0, Math.cos(this.facing));
+    this._fwd.normalize();
+
+    // Eye at the seated player's head, leaned a touch toward the table so their
+    // own head/body stays behind the camera. Zoom dollies the eye forward + down.
+    const zf = cl(zoom.factor, SEATED_CAM.zoomMin, SEATED_CAM.zoomMax);
+    // Two signed phases hinged on the neutral anchor: zoomIn (>0 only below
+    // neutral) leans the eye over the board exactly as before; zoomOut (>0 only
+    // above neutral) dollies the eye back along -fwd and lifts it so the whole
+    // board fits when scrolled out.
+    const zoomIn = cl((SEATED_CAM.zoomNeutral - zf) / (SEATED_CAM.zoomNeutral - SEATED_CAM.zoomMin), 0, 1);
+    const zoomOut = cl((zf - SEATED_CAM.zoomNeutral) / (SEATED_CAM.zoomMax - SEATED_CAM.zoomNeutral), 0, 1);
+    // Per-game pull-back (battleship ONLY): view.zoom > 1 dollies the eye further
+    // back along -fwd and lifts it so the larger board fits. zoom = 1 (every other
+    // game) leaves the framing exactly as before. The player can still scroll.
+    const camZoom = (view.zoom && view.zoom > 0) ? view.zoom : 1;
+    const lean = SEATED_CAM.eyeForward + zoomIn * SEATED_CAM.zoomLean - zoomOut * SEATED_CAM.zoomBack - (camZoom - 1) * 0.55;
+    const eyeY = seatY + SEATED_CAM.eyeHeight - zoomIn * SEATED_CAM.zoomDrop + zoomOut * SEATED_CAM.zoomRise + (camZoom - 1) * 0.5;
+    this._seatCamPos.set(
+      this.pos.x + this._fwd.x * lean,
+      eyeY,
+      this.pos.z + this._fwd.z * lean
+    );
+
+    // Look-around: yaw glances left/right from the seat-facing baseline; pitch
+    // tilts the aim between the board (down) and the opponent's face (up).
+    const baseYaw = (view.seatRy != null ? view.seatRy : this.facing) + Math.PI;
+    // Negated so dragging matches the walk-cam feel (was inverted at the table).
+    const yawDelta = -cl(orbit.yaw - baseYaw, -SEATED_CAM.yawRange, SEATED_CAM.yawRange);
+    const cy = Math.cos(yawDelta), sy = Math.sin(yawDelta);
+    const fx = this._fwd.x * cy - this._fwd.z * sy;
+    const fz = this._fwd.x * sy + this._fwd.z * cy;
+    const aimDist = Math.max(0.25, Math.hypot(c.x - this._seatCamPos.x, c.z - this._seatCamPos.z));
+    const pitch = cl(orbit.pitch, SEATED_CAM.minPitch, SEATED_CAM.maxPitch);
+    const aimY = c.y + (SEATED_CAM.basePitch - pitch) * SEATED_CAM.lookPitchGain;
+    const lookTarget = this._seatLookTarget.set(
+      this._seatCamPos.x + fx * aimDist,
+      aimY,
+      this._seatCamPos.z + fz * aimDist
+    );
+    if (!this._seatLookSet) {
+      this._seatLook.copy(lookTarget);
+      this._seatLookSet = true;
+    }
+    const k = Math.min(1, dt * SEATED_CAM.ease);
+    camera.position.lerp(this._seatCamPos, k);
+    this._seatLook.lerp(lookTarget, k);
+    camera.lookAt(this._seatLook);
   }
 
   _updateCamera(dt, camera, orbit, zoom) {

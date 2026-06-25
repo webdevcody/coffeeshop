@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { WORLD } from "../config.js";
 import { buildOutside } from "./outside.js";
+import { buildCity } from "./city.js";
 import { woodFloorTexture, plasterTexture, chalkboardMenuTexture } from "./textures.js";
 import {
   makeTable,
@@ -28,6 +29,9 @@ export function buildCoffeeshop(scene) {
   const lights = [];
   // Sittable spots: { x, z, ry, seatY }. ry is the body facing when seated.
   const seats = [];
+  // tableId -> the physical THREE.Group, so an in-world board can parent to the
+  // correct table mesh (resolved from game-assign's `table` string).
+  const tables = new Map();
 
   const halfW = WORLD.width / 2;
   const halfD = WORLD.depth / 2;
@@ -232,7 +236,10 @@ export function buildCoffeeshop(scene) {
 
     const table = makeTable();
     table.position.set(x, 0, z);
+    table.userData.tableId = tableId;
+    table.name = tableId;
     group.add(table);
+    tables.set(tableId, table);
     addBox(colliders, x, z, 1.0, 1.0); // table footprint
     // Four chairs around it — one per side — each facing INWARD toward the
     // table so seated players look at the board. A chair faces +Z at yaw 0
@@ -249,12 +256,8 @@ export function buildCoffeeshop(scene) {
       group.add(chair);
       seats.push({ x: x + ox, z: z + oz, ry, seatY: chair.userData.seatY, table: tableId, gameTable: true });
     }
-    // mug on table sometimes
-    if ((x + z) % 2 === 0) {
-      const mug = makeMug(["#f4efe6", "#e9c46a", "#8ecae6"][(Math.abs(x + z)) % 3]);
-      mug.position.set(x, 0.77, z);
-      group.add(mug);
-    }
+    // (No centre mug on game tables — the in-world board occupies the tabletop
+    // centre at y≈0.77 and a mug there would z-fight / clip through the board.)
   });
 
   // --- Rug under the central lounge ----------------------------------------
@@ -289,15 +292,25 @@ export function buildCoffeeshop(scene) {
   const outside = buildOutside(scene);
   for (const c of outside.colliders) colliders.push(c);
 
-  // Walkable ground = the interior floor + the outside block. Standing outside
-  // every rect makes the player fall and respawn (see LocalPlayer).
+  // --- The expanded city: 16 districts radiating out in front of the cafe ---
+  const city = buildCity(scene);
+  for (const c of city.colliders) colliders.push(c);
+
+  // Walkable ground = the interior floor + the outside block + the whole city.
+  // Standing outside every rect makes the player fall and respawn (see LocalPlayer).
   const ground = [
     { minX: -halfW, maxX: halfW, minZ: -halfD, maxZ: halfD },
     ...outside.ground,
+    ...city.ground,
   ];
   const spawn = { x: 0, z: 4 };
 
-  return { group, colliders, lights, seats, bar, ground, spawn, update: outside.update };
+  const update = (dt) => {
+    outside.update?.(dt);
+    city.update?.(dt);
+  };
+
+  return { group, colliders, lights, seats, bar, ground, spawn, tables, update };
 }
 
 // Register an axis-aligned box collider centered at (cx, cz) with full size (w, d).

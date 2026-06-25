@@ -39,7 +39,11 @@ const MIME = {
 
 function safeJoin(base, target) {
   const resolved = path.normalize(path.join(base, target));
-  if (!resolved.startsWith(base)) return null; // path traversal guard
+  // Prefix check must include the separator, otherwise a sibling directory whose
+  // name merely *begins* with the base name (e.g. `/dist` vs `/distfoo`) would
+  // slip past `startsWith(base)`. Allow the bare base itself (e.g. index path).
+  const root = base + path.sep;
+  if (resolved !== base && !resolved.startsWith(root)) return null; // path traversal guard
   return resolved;
 }
 
@@ -82,6 +86,11 @@ function serveStatic(req, res) {
 //     covers both the app's own dist/assets/* and the prebuilt games' assets.
 //   - Everything else gets a short, revalidated cache.
 function cacheControl(ext, urlPath) {
+  // DEV: serve EVERYTHING no-store so a plain refresh always loads the freshest
+  // build (no stale cached index.html or bundle while iterating). Re-enable the
+  // immutable asset caching below for production.
+  return "no-cache, no-store, must-revalidate";
+  // eslint-disable-next-line no-unreachable
   if (ext === ".html") return "no-cache, no-store, must-revalidate";
   if (urlPath.includes("/assets/")) return "public, max-age=31536000, immutable";
   return "public, max-age=3600";
@@ -122,8 +131,67 @@ let nextId = 1;
 // they stand up. Whether a game can actually be watched is a client/registry
 // concern — the server stays game-agnostic and just hands out the role.
 //
-/** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>}>} */
+/** @type {Map<string, {roomId: string|null, gameId: string|null, capacity: number, seats: string[], spectators: Set<string>, full: object|null, pub: object|null, reveals: {host: object|null, guest: object|null}}>} */
 const tables = new Map();
+
+// PASSERSBY: reserved pseudo-gameId for a host-occupied table that is still in
+// the flip-book MENU (no real game chosen yet). The host publishes the open
+// menu's page index as the table's `pub` (just like a game's public snapshot),
+// so passersby can mirror the open book read-only. The client's ambient manager
+// resolves this id to menu.js via a synthetic meta (it is NOT a registry entry).
+// Must stay in sync with the local mountFlipbookMenu gameId in main.js.
+const MENU_GAME_ID = "__menu__";
+
+// Per-gameId flag: may the host's full snapshot / raw moves reach spectators?
+// Full-info + real-time games can mirror everything; hidden-info games expose
+// ONLY their pub snapshot (no raw moves, no full) — enforced server-side so a
+// leak is structural, not by client convention.
+const PUBLIC_RELAY = {
+  checkers: true, chess: true, connect4: true, reversi: true, gomoku: true,
+  dotsandboxes: true, ultimatettt: true, mancala: true,
+  pong: true, tron: true, ludo: true,
+  battleship: false, memory: false,
+};
+function publicRelay(gameId) {
+  return PUBLIC_RELAY[gameId] !== false; // default permissive for unknown ids
+}
+
+// Resolve the sender's table + role from the connection (trusted, unspoofable).
+// Never trust a client-sent roomId/table for the relay.
+function senderTable(id) {
+  const c = clients.get(id);
+  if (!c) return null;
+  const tid = c.player.gameTable;
+  if (!tid) return null;
+  const t = tables.get(tid);
+  if (!t) return null;
+  return { tid, t, role: c.player.gameRole, c };
+}
+
+// Lightweight per-connection token bucket for real-time game-input. The host is
+// the authority for pong/tron, but the relay should still bound how fast (and how
+// large) a single guest can drive the shared sim so one client can't flood/DoS or
+// desync it. ~60 inputs/sec sustained with a small burst is ample for paddle/turn
+// steering; over-budget packets are dropped silently.
+const INPUT_RATE = 60; // tokens refilled per second
+const INPUT_BURST = 20; // bucket capacity
+function allowInput(c) {
+  const now = Date.now();
+  if (c._ib == null) { c._ib = INPUT_BURST; c._ibAt = now; }
+  const elapsed = (now - c._ibAt) / 1000;
+  c._ibAt = now;
+  c._ib = Math.min(INPUT_BURST, c._ib + elapsed * INPUT_RATE);
+  if (c._ib < 1) return false;
+  c._ib -= 1;
+  return true;
+}
+// A real-time input payload must be a small plain object (paddle dir / turn). Reject
+// anything else so a large blob can't be relayed verbatim each call.
+function saneInput(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  if (Object.keys(input).length > 6) return false;
+  return true;
+}
 
 // How many onlookers a single table will accept once both player seats are
 // taken. Tables have four chairs, so two spectators covers the physical seating;
@@ -144,6 +212,80 @@ function broadcastSeat(id, table) {
   broadcast({ type: "seat-update", id, table: table ?? null });
 }
 
+// ---------------------------------------------------------------------------
+// PASSERSBY — ambient board mirroring
+// ---------------------------------------------------------------------------
+// Beyond seated players and explicit spectators, the café broadcasts a low-rate
+// PUBLIC view of every active match to the WHOLE room, so anyone walking by sees
+// the live board on the table from a distance (read-only). This is strictly
+// public: it carries ONLY the table's `pub` snapshot (never `full`, never raw
+// moves). For hidden-info games (battleship/memory) `pub` already excludes
+// private data by construction, so a passerby can never see ship layouts or face-
+// down cards — the gate is structural, exactly like the spectator relay.
+//
+// We broadcast on every game-state change (host snapshot) and replay the full set
+// of active boards to each newcomer on join, so a late arrival paints all live
+// tables immediately. A board is cleared (gameId:null, pub:null) on reset, match
+// end, or when the table frees, so the client unmounts its ambient mirror.
+
+// Snapshot of one table's public ambient view, or a "cleared" marker.
+function ambientPayload(tableId, t) {
+  const active = !!(t && t.gameId && t.roomId);
+  // A host-occupied table that hasn't chosen a game yet, but has published the
+  // open flip-book MENU's page index as `pub`, is broadcast as the reserved
+  // MENU_GAME_ID so passersby mirror the open book (read-only, following the
+  // host's page). gameId stays null on the table itself; we only report
+  // MENU_GAME_ID over the wire.
+  const inMenu = !!(t && t.seats.length && !t.gameId && t.pub != null);
+  return {
+    type: "ambient",
+    table: tableId,
+    gameId: active ? t.gameId : (inMenu ? MENU_GAME_ID : null),
+    // Always the PUBLIC snapshot — never `full`. null until the host pushes state
+    // (or once cleared). Passersby render read-only from this and nothing else.
+    pub: (active || inMenu) ? (t.pub ?? null) : null,
+    // SPECTATOR-ONLY REVEAL (see the reveal relay below). The merged per-seat
+    // reveal payloads so a passerby that joins mid-game catches up and renders the
+    // FULL board (both battleship fleets / the real memory faces). This is the ONE
+    // place a private layout intentionally leaves the host's device — but ONLY ever
+    // toward non-playing watchers (spectators + ambient passersby), NEVER toward the
+    // opposing seated player (the opponent is on the seat relay, which omits this).
+    reveals: active ? (revealsPayload(t)) : null,
+  };
+}
+
+// Merge a table's per-seat reveal payloads into a single spectator-facing object,
+// or null when no seat has revealed yet. Kept tiny + side-effect-free so it can be
+// folded into the ambient payload and the spectator catch-up replay alike.
+function revealsPayload(t) {
+  if (!t || !t.reveals) return null;
+  const { host, guest } = t.reveals;
+  if (host == null && guest == null) return null;
+  return { host: host ?? null, guest: guest ?? null };
+}
+
+// Fan one table's current public ambient view to the whole room. Cheap: it fires
+// only when the host commits a snapshot (or the match's lifecycle changes), not
+// per real-time frame.
+function broadcastAmbient(tableId, t) {
+  broadcast(ambientPayload(tableId, t));
+}
+
+// Tell `id` cleared the table (unmount any ambient mirror for it).
+function broadcastAmbientClear(tableId) {
+  broadcast({ type: "ambient", table: tableId, gameId: null, pub: null });
+}
+
+// Replay every active board's public ambient view to a single newcomer, so they
+// converge on all live tables the moment they join (not only on the next move).
+function sendAllAmbient(ws) {
+  for (const [tid, t] of tables) {
+    const active = !!(t && t.gameId && t.roomId);
+    const inMenu = !!(t && t.seats.length && !t.gameId && t.pub != null);
+    if (active || inMenu) send(ws, ambientPayload(tid, t));
+  }
+}
+
 // A player sits at a table. The first to sit becomes the `host` and then picks
 // which game to play (see chooseSeatGame); the next becomes the `guest` of
 // whatever the host picked; anyone beyond capacity is told the table is `full`.
@@ -162,19 +304,26 @@ function assignSeat(id, msg) {
     // Capacity defaults to 2 until the host picks a game; this keeps the common
     // (two-player) case seating exactly host + one guest. A game that wants more
     // players raises the capacity at pick time and early spectators get promoted.
-    t = { roomId: null, gameId: null, capacity: 2, seats: [], spectators: new Set() };
+    t = { roomId: null, gameId: null, capacity: 2, seats: [], spectators: new Set(), full: null, pub: null, reveals: { host: null, guest: null } };
     tables.set(tableId, t);
   }
 
+  // Seats are a FIXED-INDEX array: a mid-game guest leave nulls its slot rather
+  // than splicing, so every remaining player's seat index (used for turn gating)
+  // stays stable. Count/fill against real occupants, not array length.
+  const occupied = t.seats.filter(Boolean).length;
   let role;
-  if (t.seats.length === 0) {
+  if (occupied === 0) {
     // First to sit hosts; the game is chosen next via "choose-game".
-    t.seats.push(id);
+    t.seats[0] = id;
     t.gameId = null;
     t.roomId = null;
     role = "host";
-  } else if (t.seats.length < t.capacity && !t.seats.includes(id)) {
-    t.seats.push(id);
+  } else if (occupied < t.capacity && !t.seats.includes(id)) {
+    // Fill the first vacated (null) slot if any, else append, keeping indices stable.
+    const hole = t.seats.indexOf(null);
+    if (hole >= 0) t.seats[hole] = id;
+    else t.seats.push(id);
     role = "guest";
   } else if (!t.seats.includes(id) && t.spectators.size < SPECTATOR_LIMIT) {
     // All player seats are taken — anyone else who sits watches the match. They
@@ -190,13 +339,33 @@ function assignSeat(id, msg) {
   if (c) {
     c.player.gameTable = role === "full" ? null : tableId;
     c.player.gameRole = role === "full" ? null : role;
+    const seatIndex = role === "guest" || role === "host" ? t.seats.indexOf(id) : null;
     send(c.ws, {
       type: "game-assign",
       table: tableId,
       gameId: role === "full" ? null : t.gameId, // null until the host picks
       roomId: role === "full" ? null : t.roomId,
       role,
+      seatIndex,
+      seatCount: t.capacity,
     });
+    // Catch-up: a guest sitting mid-game gets the cached full snapshot so it
+    // paints the live position; a spectator gets the pub snapshot. Fixes the
+    // documented "no snapshot on join" desync.
+    if (role === "guest" && t.full != null) {
+      send(c.ws, { type: "game-state", table: tableId, role: "guest", full: t.full });
+    } else if (role === "spectator" && t.pub != null) {
+      // pub is always spectator-safe; PUBLIC_RELAY gates only full + raw moves.
+      send(c.ws, { type: "game-state", table: tableId, role: "spectator", pub: t.pub });
+    }
+    // SPECTATOR-ONLY REVEAL catch-up: a spectator sees the FULL board, so replay any
+    // cached per-seat reveal (both battleship fleets / the real memory faces). Only a
+    // spectator ever gets this — a mid-game guest (above) is on the seat relay and is
+    // intentionally never sent the opponent's reveal.
+    if (role === "spectator") {
+      const rv = revealsPayload(t);
+      if (rv) send(c.ws, { type: "reveal", table: tableId, reveals: rv });
+    }
     // Announce this player's table so every client can scope voice to it. A
     // "full" sitter has no table (gameTable stays null) — they're not in the
     // table's voice group.
@@ -219,26 +388,42 @@ function chooseSeatGame(id, msg) {
   t.gameId = gameId;
   t.capacity = capacity;
   t.roomId = genRoomId();
+  t.full = null; // fresh match: no stale snapshot
+  t.pub = null;
+  t.reveals = { host: null, guest: null }; // fresh match: no stale fleet/deck reveal
 
   // The chosen game may want more than two players. Promote early spectators —
   // who only became spectators because the capacity wasn't known yet — into the
   // now-open player seats, in the order they sat down.
-  while (t.seats.length < t.capacity && t.spectators.size > 0) {
+  while (t.seats.filter(Boolean).length < t.capacity && t.spectators.size > 0) {
     const pid = t.spectators.values().next().value;
     t.spectators.delete(pid);
-    t.seats.push(pid);
+    const hole = t.seats.indexOf(null);
+    if (hole >= 0) t.seats[hole] = pid;
+    else t.seats.push(pid);
     const pc = clients.get(pid);
     if (pc) pc.player.gameRole = "guest";
   }
 
-  const announce = (pid, role) => {
+  const announce = (pid, role, seatIndex) => {
     const c = clients.get(pid);
     if (c) {
-      send(c.ws, { type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role });
+      send(c.ws, {
+        type: "game-assign", table: tableId, gameId: t.gameId, roomId: t.roomId, role,
+        seatIndex: role === "spectator" ? null : seatIndex, seatCount: t.capacity,
+      });
     }
   };
-  t.seats.forEach((pid, i) => announce(pid, i === 0 ? "host" : "guest"));
-  for (const sid of t.spectators) announce(sid, "spectator"); // onlookers who sat before the pick
+  t.seats.forEach((pid, i) => { if (pid) announce(pid, i === 0 ? "host" : "guest", i); });
+  for (const sid of t.spectators) announce(sid, "spectator", null); // onlookers who sat before the pick
+
+  // PASSERSBY: emit an immediate ambient frame for the newly-chosen game so
+  // passersby paint its board right away, even before the host's first
+  // net.sendState (Gap 2). t.pub is null at this instant, so the mirror mounts
+  // empty and converges on the next public snapshot. This also transitions the
+  // table OUT of menu state: the payload now carries the real gameId, so a
+  // passerby's ambient mirror sees gameId change (menu → game) and rebuilds.
+  broadcastAmbient(tableId, t);
 }
 
 // A player stands up / disconnects. Ends the match for both players and frees
@@ -270,13 +455,15 @@ function releaseSeat(id) {
   // tells it that player left. Only when the host leaves (or it's a two-player
   // game) does the whole match end.
   if (seatIdx > 0 && t.capacity > 2) {
-    t.seats.splice(seatIdx, 1);
+    // Null the slot instead of splicing so the remaining players' seat indices
+    // (which modules use to gate turns via the relay's bySeat) stay stable.
+    t.seats[seatIdx] = null;
     return;
   }
 
   // The host (or either player in a 1v1) left → end the match for everyone else
   // and free the table so the next group starts on a clean room.
-  const notify = [...t.seats.filter((pid) => pid !== id), ...t.spectators];
+  const notify = [...t.seats.filter((pid) => pid && pid !== id), ...t.spectators];
   for (const pid of notify) {
     const pc = clients.get(pid);
     if (pc) {
@@ -287,6 +474,9 @@ function releaseSeat(id) {
     }
   }
   tables.delete(tableId);
+  // PASSERSBY: the match is over and the table is free — tell the whole room to
+  // unmount any ambient mirror they were showing for it.
+  broadcastAmbientClear(tableId);
 }
 
 const COLORS = [
@@ -380,6 +570,9 @@ wss.on("connection", (ws) => {
         send(ws, { type: "welcome", id, you: player, players: others });
         // Tell everyone else about the newcomer.
         broadcast({ type: "player-joined", player }, id);
+        // PASSERSBY: paint every active match's PUBLIC board for the newcomer so
+        // a late arrival sees all live tables at once (not only on the next move).
+        sendAllAmbient(ws);
         break;
       }
       case "appearance": {
@@ -461,6 +654,218 @@ wss.on("connection", (ws) => {
         releaseSeat(id);
         break;
       }
+
+      // --- In-world game relay (additive; server stays a pure relay) --------
+      case "game-move": {
+        // A player committed a move. Relay verbatim to every OTHER seated member
+        // (covers 4-player ludo, not just one opponent); for full-info games also
+        // fan to spectators. Hidden-info games never relay raw moves to onlookers.
+        const st = senderTable(id);
+        if (!st || (st.role !== "host" && st.role !== "guest")) break;
+        // bySeat: the MOVER'S seat index (0 = host, 1.. = guests in sit order).
+        // host/guest alone can't disambiguate 3–4 player ludo, where any non-host
+        // seat may legitimately be the current player — modules gate turns by seat.
+        const bySeat = st.t.seats.indexOf(id);
+        const out = { type: "game-move", table: st.tid, byRole: st.role, byId: id, bySeat, move: msg.move };
+        for (const pid of st.t.seats) {
+          if (!pid || pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, out);
+        }
+        if (publicRelay(st.t.gameId)) {
+          for (const sid of st.t.spectators) {
+            const sc = clients.get(sid);
+            if (sc) send(sc.ws, out);
+          }
+        }
+        break;
+      }
+      case "game-state": {
+        // HOST-ONLY authoritative snapshot. Cache it, fan `full` to seated
+        // members and `pub` to spectators (never `full` to spectators).
+        const st = senderTable(id);
+        if (!st || st.t.seats[0] !== id) break; // only the host (seat 0)
+        st.t.full = msg.full ?? null;
+        st.t.pub = msg.pub ?? msg.full ?? null;
+        for (const pid of st.t.seats) {
+          if (!pid || pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
+        }
+        // Spectators ALWAYS get pub — it is opponent/spectator-safe by
+        // construction (hidden-info modules exclude private data from pub). The
+        // PUBLIC_RELAY flag only blocks `full` and raw moves, never pub.
+        if (st.t.pub != null) {
+          for (const sid of st.t.spectators) {
+            const sc = clients.get(sid);
+            if (sc) send(sc.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+          }
+        }
+        // PASSERSBY: mirror the new PUBLIC view to the whole room (read-only).
+        // Only `pub` leaves this scope — hidden-info layouts never do.
+        broadcastAmbient(st.tid, st.t);
+        break;
+      }
+      case "reveal": {
+        // SPECTATOR-ONLY REVEAL CHANNEL. A seated player (host OR guest) sends
+        // their OWN private layout (battleship: their fleet; memory: the host's
+        // deck) so that WATCHERS — and only watchers — can render the complete
+        // board. The server stores it per-seat on the table and forwards it ONLY to
+        // this table's SPECTATORS and the AMBIENT (passersby) broadcast.
+        //
+        // CRITICAL HIDDEN-INFO GUARANTEE: the reveal is NEVER relayed to the OTHER
+        // seated player. The fan-out below iterates `t.spectators` exclusively; the
+        // seats array is deliberately untouched, so the opponent's socket can never
+        // receive a `reveal`. (A seated guest's catch-up path in assignSeat is
+        // likewise gated on role === "spectator".) This keeps the two-player game
+        // fair while letting every onlooker see the full game.
+        const st = senderTable(id);
+        if (!st || (st.role !== "host" && st.role !== "guest")) break;
+        const reveal = msg.reveal;
+        if (reveal == null || typeof reveal !== "object" || Array.isArray(reveal)) break;
+        // The sender's seat decides which slot this reveal occupies. Seat 0 is the
+        // host; any other seat is recorded under "guest" (these games are 1v1, so
+        // host/guest fully covers both seats).
+        const seat = st.t.seats[0] === id ? "host" : "guest";
+        if (!st.t.reveals) st.t.reveals = { host: null, guest: null };
+        st.t.reveals[seat] = reveal;
+        const rv = revealsPayload(st.t);
+        const out = { type: "reveal", table: st.tid, reveals: rv, bySeat: seat };
+        // SPECTATORS ONLY — never the seats. This is the hidden-info firewall.
+        for (const sid of st.t.spectators) {
+          const sc = clients.get(sid);
+          if (sc) send(sc.ws, out);
+        }
+        // PASSERSBY: fold the merged reveals into the ambient broadcast so a passing
+        // mirror (and any late passerby via sendAllAmbient) renders the full board.
+        broadcastAmbient(st.tid, st.t);
+        break;
+      }
+      case "game-input": {
+        // Real-time guest steering → host ONLY. Never cached, never to spectators.
+        // Rate-limited + shape-checked so one guest can't flood/teleport/DoS the
+        // host-side sim.
+        const st = senderTable(id);
+        if (!st || st.role !== "guest") break;
+        if (!saneInput(msg.input)) break;
+        if (!allowInput(st.c)) break; // over budget: drop silently
+        const hostId = st.t.seats[0];
+        const hc = clients.get(hostId);
+        if (hc) send(hc.ws, { type: "game-input", table: st.tid, byRole: "guest", byId: id, input: msg.input });
+        break;
+      }
+      case "game-reset": {
+        const st = senderTable(id);
+        if (!st || (st.role !== "host" && st.role !== "guest")) break;
+        st.t.full = null;
+        st.t.pub = null;
+        // A reset (play-again or to-menu) starts a fresh deployment: ships are
+        // re-placed and the deck reshuffled, so the cached reveals are now stale.
+        // Drop them so a spectator/passerby doesn't paint last match's fleet/deck
+        // until the new reveals arrive.
+        st.t.reveals = { host: null, guest: null };
+        // A host-sent `toMenu` reset means the match truly ended and the host is
+        // returning to the flip-book menu (not a "play again" on the same game).
+        // Unlock the table's game choice so chooseSeatGame's `if (t.gameId) return;`
+        // guard no longer permanently pins the table to its first game, and the
+        // ambient mirror transitions back to the menu state.
+        const toMenu = !!msg.toMenu && st.t.seats[0] === id;
+        if (toMenu) {
+          st.t.gameId = null;
+          st.t.roomId = null;
+        }
+        const out = { type: "game-reset", table: st.tid, toMenu };
+        for (const pid of st.t.seats) {
+          if (!pid || pid === id) continue;
+          const pc = clients.get(pid);
+          if (pc) send(pc.ws, out);
+        }
+        for (const sid of st.t.spectators) {
+          const sc = clients.get(sid);
+          if (sc) send(sc.ws, out);
+        }
+        // PASSERSBY: the board is now empty for everyone — re-broadcast the
+        // (now-null) public view so passersby clear their mirror. The match is
+        // still active (gameId/roomId intact), so this is a pub:null update, not
+        // an unmount; the next snapshot repaints it.
+        broadcastAmbient(st.tid, st.t);
+        break;
+      }
+      case "watch": {
+        // A non-seated client starts spectating a table (proximity). Add to the
+        // spectator set (deduped) and ALWAYS replay the cached pub so the board
+        // paints — this is the mount-time convergence path, so it must answer with
+        // the current pub even when the id is already a spectator (e.g. it became
+        // one by sitting, then watchTable() runs from board.mount()). Without the
+        // replay-on-dedupe, every spectator relies on the racy assignSeat pub and
+        // never converges.
+        const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
+        if (!tableId) break;
+        const t = tables.get(tableId);
+        const c = clients.get(id);
+        if (!t || !c) break;
+        // A seated player is already on the seat relay; nothing to do.
+        if (t.seats.includes(id)) break;
+        // Add to the spectator set if there's room; a duplicate add is a no-op but
+        // we still fall through to replay the current pub below.
+        if (!t.spectators.has(id) && t.spectators.size < SPECTATOR_LIMIT) {
+          t.spectators.add(id);
+        }
+        if (t.spectators.has(id) && t.pub != null) {
+          // pub is always safe to mirror; full/raw-moves are what PUBLIC_RELAY gates.
+          send(c.ws, { type: "game-state", table: tableId, role: "spectator", pub: t.pub });
+        }
+        // SPECTATOR-ONLY REVEAL: replay any cached fleet/deck reveal so a proximity
+        // spectator mounting mid-game paints the full board immediately.
+        if (t.spectators.has(id)) {
+          const rv = revealsPayload(t);
+          if (rv) send(c.ws, { type: "reveal", table: tableId, reveals: rv });
+        }
+        break;
+      }
+      case "request-state": {
+        // Catch-up / desync recovery for the sender's own table. Answer from the
+        // cache: a seated guest gets `full`, a spectator gets `pub`. The host is
+        // authoritative locally and never needs this. Trusted table/role lookup —
+        // a client can't request another table's state.
+        const c = clients.get(id);
+        if (!c) break;
+        const st = senderTable(id);
+        if (st) {
+          if (st.role === "guest" && st.t.full != null) {
+            send(c.ws, { type: "game-state", table: st.tid, role: "guest", full: st.t.full });
+          } else if (st.role === "spectator" && st.t.pub != null) {
+            send(c.ws, { type: "game-state", table: st.tid, role: "spectator", pub: st.t.pub });
+          }
+          // A SEATED SPECTATOR (sat at a full table) also catches up on the reveal so
+          // it renders the full board. A seated GUEST never does — the opponent's
+          // layout must not reach them.
+          if (st.role === "spectator") {
+            const rv = revealsPayload(st.t);
+            if (rv) send(c.ws, { type: "reveal", table: st.tid, reveals: rv });
+          }
+          break;
+        }
+        // No seated table (a proximity-only spectator never sets gameTable). Find
+        // the table this client is actually watching and replay its pub so the
+        // board.js mount-time requestState() converges proximity spectators too.
+        for (const [tid, t] of tables) {
+          if (t.spectators.has(id) && t.pub != null) {
+            send(c.ws, { type: "game-state", table: tid, role: "spectator", pub: t.pub });
+            const rv = revealsPayload(t);
+            if (rv) send(c.ws, { type: "reveal", table: tid, reveals: rv });
+            break;
+          }
+        }
+        break;
+      }
+      case "unwatch": {
+        const tableId = typeof msg.table === "string" ? msg.table.slice(0, 64) : null;
+        if (!tableId) break;
+        const t = tables.get(tableId);
+        if (t) t.spectators.delete(id);
+        break;
+      }
       default:
         break;
     }
@@ -468,6 +873,9 @@ wss.on("connection", (ws) => {
 
   const cleanup = () => {
     releaseSeat(id); // end any in-progress match before dropping the client
+    // Drop any proximity-watch subscriptions this client held (they don't set
+    // gameTable, so releaseSeat doesn't cover them).
+    for (const t of tables.values()) t.spectators.delete(id);
     if (clients.delete(id)) {
       broadcast({ type: "player-left", id });
     }

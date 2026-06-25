@@ -52,6 +52,11 @@ export class Voice {
         this.knownIds.add(p.id);
         if (p.gameTable) this.tableOf.set(p.id, p.gameTable);
       }
+      // A welcome also arrives after a reconnect, where the server resets our
+      // server-side voice status (player.deafened = false) and other clients
+      // lose our "can't hear you" badge. Re-advertise the current listening
+      // state so the server and peers stay in sync with what we actually hear.
+      this._notifyMute();
     });
     network.on("player-joined", (m) => {
       this.knownIds.add(m.player.id);
@@ -104,6 +109,21 @@ export class Voice {
     }
     for (const id of [...this.peers.keys()]) this._closePeer(id);
     for (const id of [...this.detectors.keys()]) this._unwatch(id);
+    // Tear down the audio graph so it doesn't leak across enable/disable cycles
+    // (browsers cap the number of live AudioContexts). _ensureCtx rebuilds a
+    // fresh context and sink on the next enable().
+    if (this.sink) {
+      try {
+        this.sink.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.sink = null;
+    }
+    if (this.audioCtx) {
+      this.audioCtx.close().catch(() => {});
+      this.audioCtx = null;
+    }
     this._status("off");
   }
 

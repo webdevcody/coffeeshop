@@ -122,6 +122,57 @@ export class Network {
     this._send({ type: "leave-game" });
   }
 
+  // --- In-world game relay (additive) --------------------------------------
+  // The server derives the sender's table + role from the connection (trusted),
+  // so these never carry a roomId — a client can't spoof another table.
+
+  // A player committed a move. Relayed to the other seated member(s); also to
+  // spectators for full-info games (server gates hidden-info via PUBLIC_RELAY).
+  sendMove(move) {
+    this._send({ type: "game-move", move });
+  }
+
+  // HOST-ONLY authoritative snapshot. `full` reaches seated members; `pub`
+  // reaches spectators (never `full` for hidden-info games).
+  sendGameState(full, pub) {
+    this._send({ type: "game-state", full, pub });
+  }
+
+  // Real-time guest steering (pong paddle / tron turn). Relayed ONLY to the host.
+  sendGameInput(input) {
+    this._send({ type: "game-input", input });
+  }
+
+  // SPECTATOR-ONLY REVEAL. A seated player publishes their OWN private layout
+  // (battleship: their fleet; memory: the host's deck) so watchers can render the
+  // FULL board. The server routes it to this table's spectators + ambient passersby
+  // ONLY — never to the opposing seated player. Any role may call it; the server
+  // decides routing (a spectator/ambient instance's net.sendReveal is a no-op).
+  sendReveal(reveal) {
+    this._send({ type: "reveal", reveal });
+  }
+
+  // Either player hit "new game".
+  sendGameReset() {
+    this._send({ type: "game-reset" });
+  }
+
+  // A non-seated client starts/stops watching a table (proximity spectating).
+  watchTable(table) {
+    this._send({ type: "watch", table });
+  }
+  unwatchTable(table) {
+    this._send({ type: "unwatch", table });
+  }
+
+  // Catch-up / desync recovery: ask the server to (re)send the cached
+  // authoritative state for the sender's table. The server answers from its
+  // cache — `full` to a seated guest, `pub` to a spectator — so a late or
+  // desynced joiner can converge without waiting for the host's next move.
+  requestState() {
+    this._send({ type: "request-state" });
+  }
+
   _send(obj) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(obj));

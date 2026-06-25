@@ -25,6 +25,40 @@ export const CAMERA = {
   orbitSpeed: 0.005,
 };
 
+// Seated "board-view" camera. When the local player is seated at a game table
+// and a board/menu is mounted, the camera eases from the walk-around follow-cam
+// to a comfortable over-the-table view framed on the board centre, oriented so
+// the player's own near edge is at the bottom of the screen. Gentle orbit + zoom
+// still apply but are clamped around the board so you can't fly away.
+export const SEATED_CAM = {
+  // TRUE first-person seated view: the camera sits at the player's eyes and
+  // looks across the table at the board (and the opponent beyond it). You should
+  // NOT see your own head — the eye is leaned a touch forward over the table.
+  eyeHeight: 0.95, // metres above the seat surface → eye ~0.65 m above the tabletop
+  eyeForward: 0.12, // lean out over the table (your own body is hidden while seated)
+  ease: 6.0, // lerp speed easing into/out of the seated view
+  // Look-around while seated: yaw glances left/right, pitch tilts the gaze
+  // between the board (down) and your opponent's face (up).
+  yawRange: 0.6, // ± radians of horizontal glance
+  minPitch: 0.15,
+  maxPitch: 1.0,
+  basePitch: 0.62, // resting gaze pitch (set on sit-down; looks down at the board)
+  lookPitchGain: 1.2, // how far pitch raises/lowers the aim point (metres per rad)
+  // Zoom dollies the eye relative to the board, hinged on a NEUTRAL anchor.
+  // zoomNeutral (=default factor 1.0) is the framing with NO forced lean and NO
+  // pull-back. Below it (toward zoomMin) the eye leans IN over the board, as
+  // before. Above it (toward zoomMax) the eye dollies BACK along -fwd and rises
+  // UP for a whole-board view, so large boards (battleship's two ocean grids)
+  // fit fully on screen.
+  zoomMin: 0.55, // scrolled all the way in (leans over the board)
+  zoomNeutral: 1.0, // neutral / default (no lean, no pull-back)
+  zoomMax: 1.8, // scrolled all the way out (eye dollied back + up); matches wheel max
+  zoomLean: 0.4, // extra forward lean at full zoom-in (metres)
+  zoomDrop: 0.16, // extra downward dip at full zoom-in (metres)
+  zoomBack: 4.0, // eye retreat opposite the board at full zoom-out (metres)
+  zoomRise: 1.2, // eye lift at full zoom-out (metres)
+};
+
 export const SEAT = {
   // How close (metres) you must stand to a chair/stool before you can sit on it.
   range: 1.2,

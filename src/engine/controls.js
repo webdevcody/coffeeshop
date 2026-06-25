@@ -5,7 +5,7 @@
 //   controls.orbit   -> { yaw, pitch } accumulated camera angles (radians)
 //   controls.consumeJump() etc. are intentionally omitted — this is a chill space.
 
-import { CAMERA } from "../config.js";
+import { CAMERA, SEATED_CAM } from "../config.js";
 
 export function createControls(domElement) {
   const keys = new Set();
@@ -13,7 +13,12 @@ export function createControls(domElement) {
   const orbit = { yaw: 0, pitch: 0.42 };
   let sitPressed = false; // edge-triggered Space, drained by consumeSit()
   let dropPressed = false; // edge-triggered G, drained by consumeDrop()
+  let usePressed = false; // edge-triggered E, drained by consumeUse() (enter/exit a ride)
   let locked = false; // suppress movement/sit while a game overlay is open
+  // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
+  // around the seat-facing baseline and pitch to a comfy top-down-ish range so
+  // the player can nudge the view but never fly away from the board.
+  const seated = { on: false, baseYaw: 0 };
 
   // --- Keyboard ----------------------------------------------------------
   function typing() {
@@ -30,6 +35,8 @@ export function createControls(domElement) {
     // G drops the item you're holding. `typing()` above already ignores keys
     // while the chat box is focused, so this never fires mid-message.
     if (e.code === "KeyG" && !keys.has("KeyG")) dropPressed = true;
+    // E enters/exits a ride (car / skateboard). Edge-triggered like sit/drop.
+    if (e.code === "KeyE" && !keys.has("KeyE")) usePressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -80,7 +87,13 @@ export function createControls(domElement) {
     lastX = e.clientX;
     lastY = e.clientY;
     orbit.yaw -= dx * CAMERA.orbitSpeed;
-    orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, CAMERA.minPitch, CAMERA.maxPitch);
+    if (seated.on) {
+      // Clamp the orbit to a gentle arc around the board so you can't spin away.
+      orbit.yaw = clamp(orbit.yaw, seated.baseYaw - SEATED_CAM.yawRange, seated.baseYaw + SEATED_CAM.yawRange);
+      orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, SEATED_CAM.minPitch, SEATED_CAM.maxPitch);
+    } else {
+      orbit.pitch = clamp(orbit.pitch + dy * CAMERA.orbitSpeed, CAMERA.minPitch, CAMERA.maxPitch);
+    }
   });
 
   function endPointer(e) {
@@ -141,7 +154,10 @@ export function createControls(domElement) {
   function consumeSit() {
     const pressed = sitPressed;
     sitPressed = false;
-    return locked ? false : pressed;
+    // NOTE: not gated by `locked`. Movement stays locked during a game, but Space
+    // must ALWAYS toggle sit/stand so you can STAND UP to quit mid-game (standing
+    // fires onStand → the app unlocks). Gating this left you trapped in the game.
+    return pressed;
   }
 
   // Returns true once per G press (drop the held item), then resets.
@@ -149,6 +165,58 @@ export function createControls(domElement) {
     const pressed = dropPressed;
     dropPressed = false;
     return locked ? false : pressed;
+  }
+
+  // Returns true once per E press (enter/exit a ride), then resets. Intentionally
+  // NOT gated by `locked` — driving uses its own lock but E must still let you exit.
+  function consumeUse() {
+    const pressed = usePressed;
+    usePressed = false;
+    return pressed;
+  }
+
+  // Raw car-relative drive axis straight from the keys (NOT camera-relative like
+  // `move`, and not zeroed by `locked`): throttle +1 forward / -1 reverse,
+  // steer +1 right / -1 left. Used while driving a vehicle. The touch joystick
+  // (dy up = forward, dx) also feeds it so mobile can drive.
+  function driveAxis() {
+    let throttle = 0;
+    let steer = 0;
+    if (keys.has("KeyW") || keys.has("ArrowUp")) throttle += 1;
+    if (keys.has("KeyS") || keys.has("ArrowDown")) throttle -= 1;
+    if (keys.has("KeyD") || keys.has("ArrowRight")) steer += 1;
+    if (keys.has("KeyA") || keys.has("ArrowLeft")) steer -= 1;
+    if (joystick.active) {
+      throttle += -joystick.dy;
+      steer += joystick.dx;
+    }
+    return { throttle: clamp(throttle, -1, 1), steer: clamp(steer, -1, 1) };
+  }
+
+  // Enter/leave seated board-view orbit mode. `baseYaw` is the seat-facing yaw
+  // the gentle orbit arc centres on (the camera sits behind the player looking
+  // at the board). Entering snaps yaw/pitch into the seated clamp so the ease-in
+  // starts from a sane framing; leaving restores a comfortable walk-cam pitch.
+  function setSeated(on, baseYaw = 0) {
+    if (on && !seated.on) {
+      seated.on = true;
+      seated.baseYaw = baseYaw;
+      // Start centred on the board with a comfortable downward gaze and the
+      // neutral zoom, so sitting down doesn't snap in too close OR pull fully
+      // back. The player can then scroll in (lean over the board) or out
+      // (dolly back + up to fit a large board).
+      orbit.yaw = baseYaw;
+      orbit.pitch = SEATED_CAM.basePitch;
+      zoom.factor = SEATED_CAM.zoomNeutral;
+    } else if (on) {
+      // Already seated (e.g. seat/role refresh): just re-centre the yaw baseline.
+      seated.baseYaw = baseYaw;
+    } else if (seated.on) {
+      seated.on = false;
+      // Restore a normal walk-cam pitch + default zoom.
+      orbit.pitch = clamp(orbit.pitch, CAMERA.minPitch, CAMERA.maxPitch);
+      zoom.factor = 1;
+    }
   }
 
   // Lock/unlock café input (used while a game overlay is open).
@@ -163,7 +231,7 @@ export function createControls(domElement) {
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, setLocked };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {
