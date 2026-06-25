@@ -67,6 +67,8 @@ export class LocalPlayer {
     this._seatCamPos = new THREE.Vector3();
     this._seatLook = new THREE.Vector3();
     this._seatLookTarget = new THREE.Vector3();
+    this._topEye = new THREE.Vector3();
+    this._topLook = new THREE.Vector3();
     this._seatLookSet = false;
   }
 
@@ -364,6 +366,15 @@ export class LocalPlayer {
       aimY,
       this._seatCamPos.z + fz * aimDist
     );
+    // Top-down blend for grid games (battleship): lift the eye high over the board
+    // and look down so each cell is a clean square — no foreshortening / overshoot.
+    const td = cl(view.topDown || 0, 0, 1);
+    if (td > 0) {
+      this._topEye.set(c.x - this._fwd.x * 0.35, c.y + 1.0 * camZoom, c.z - this._fwd.z * 0.35);
+      this._seatCamPos.lerp(this._topEye, td);
+      this._topLook.set(c.x, c.y, c.z);
+      lookTarget.lerp(this._topLook, td);
+    }
     if (!this._seatLookSet) {
       this._seatLook.copy(lookTarget);
       this._seatLookSet = true;

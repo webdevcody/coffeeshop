@@ -235,6 +235,25 @@ export class HUD {
     setTimeout(() => el.remove(), 3700);
   }
 
+  // Persistent, screen-space game status banner (top-centre). Used by in-world
+  // games (e.g. battleship) so the status is ALWAYS readable for every player and
+  // never clipped by 3D furniture / occluded across the table.
+  setGameBanner(text) {
+    if (!text) return this.clearGameBanner();
+    if (!this._gameBanner) {
+      const el = document.createElement("div");
+      el.className = "game-banner";
+      this.gameUi.appendChild(el);
+      this._gameBanner = el;
+    }
+    this._gameBanner.textContent = text;
+    this._gameBanner.classList.add("show");
+  }
+
+  clearGameBanner() {
+    if (this._gameBanner) this._gameBanner.classList.remove("show");
+  }
+
   // Show/hide the contextual "Press Space to sit / stand" prompt. Pass a falsy
   // value to hide it.
   setSitPrompt(text) {

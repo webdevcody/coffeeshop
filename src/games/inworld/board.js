@@ -26,6 +26,12 @@ const CLICK_SLOP = 6;
 // games are unaffected. localPlayer._updateSeatedCamera reads this via getSeatedView.
 const SEATED_CAM_ZOOM = { battleship: 1.7 };
 
+// Per-game top-down amount (0..1). Grid games like battleship are far easier to
+// aim from ABOVE — a low first-person angle foreshortens the far rows so the mouse
+// skips cells. This tilts the seated camera toward a near-straight-down view for
+// that game ONLY. 0 = normal first-person (every other game).
+const SEATED_CAM_TOPDOWN = { battleship: 0.85 };
+
 // Derive the tabletop's local Y for parenting a board to a table group, the same
 // way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
 // face, fall back to the authored constant. Standalone so the ambient passersby
@@ -236,6 +242,7 @@ export class InWorldBoard {
       tableId: a.tableId,
       // Per-game pull-back (battleship only); 1 = default first-person framing.
       zoom: SEATED_CAM_ZOOM[a.gameId] || 1,
+      topDown: SEATED_CAM_TOPDOWN[a.gameId] || 0,
     };
   }
 
