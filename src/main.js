@@ -20,6 +20,7 @@ import { Network } from "./net/network.js";
 import { Voice } from "./net/voice.js";
 import { ScreenShare } from "./net/screenShare.js";
 import { HUD } from "./ui/hud.js";
+import { createMap } from "./ui/map.js";
 import { Arcade } from "./games/arcade.js";
 import { InWorldBoard } from "./games/inworld/board.js";
 import { AmbientBoards } from "./games/inworld/ambient.js";
@@ -175,8 +176,71 @@ const _shotDir = new THREE.Vector3();
 
 let local = null;
 let joined = false;
+// SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
+// on the walk/fall → swim transition (entering the sea), not every frame afloat.
+let _wasSwimming = false;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
+
+// CITY MAP (M): a full-screen top-down overlay built from the fixed city layout.
+// ui/map.js draws it + owns its own Esc / ✕ / M-to-close; we own M-to-OPEN
+// (controls.consumeMap), freeze movement under it (setLocked), and feed it the live
+// player arrow while open. Clicking the map fast-travels the local player there.
+let _mapLocked = false; // true while WE locked controls for the open map
+const gameMap = createMap({
+  onTravel: ({ x, z }) => {
+    // Fast travel: drop the local player onto the clicked world point. Vertical
+    // settle / off-edge respawn is left to localPlayer._updateVertical.
+    if (local) {
+      local.pos.x = x;
+      local.pos.z = z;
+      local.pos.y = 0;
+    }
+    gameMap.close();
+  },
+});
+// STATIC render payload, built ONCE from the city-layout constants (all WORLD
+// coords). Only `player` changes per frame (mutated in place below), so opening the
+// map and tracking the arrow allocate nothing.
+const MAP_DISTRICTS = [
+  // 4×4 grid, NW→SE row-major (north row first): [name, block colour].
+  ["Plaza", "#8a9a6a"], ["Market", "#b08a4f"], ["Downtown", "#7f8a99"], ["Arts", "#9a6ba0"],
+  ["Park", "#5f9e5a"], ["Shopping", "#c9a24a"], ["Offices", "#6f8aa8"], ["Nightlife", "#a05a86"],
+  ["Harbor", "#5b8fa8"], ["Pier", "#7aa6b8"], ["Skatepark", "#8a8f9a"], ["Transit", "#9a8f5f"],
+  ["Autoplaza", "#9a7f5a"], ["Arcade", "#7a6aa0"], ["Industrial", "#7d7d7d"], ["Stadium", "#5f8a6a"],
+];
+const MAP_COLS = [-90, -30, 30, 90];   // district centre X, west → east
+const MAP_ROWS = [245, 185, 125, 65];  // district centre Z, north (top) → south
+const _mapDistricts = [];
+for (let r = 0; r < MAP_ROWS.length; r++) {
+  for (let c = 0; c < MAP_COLS.length; c++) {
+    const [name, color] = MAP_DISTRICTS[r * MAP_COLS.length + c];
+    _mapDistricts.push({ name, x: MAP_COLS[c], z: MAP_ROWS[r], w: 46, d: 46, color });
+  }
+}
+const _mapRoads = [];
+for (const x of [-60, 0, 60]) _mapRoads.push({ x1: x, z1: 13, x2: x, z2: 277 });        // 3 avenues
+for (const z of [35, 95, 155, 215]) _mapRoads.push({ x1: -122, z1: z, x2: 122, z2: z }); // 4 cross streets
+const mapPayload = {
+  districts: _mapDistricts,
+  roads: _mapRoads,
+  water: { minX: -220, maxX: 220, minZ: -90, maxZ: 360 }, // big bbox around the city
+  islands: [
+    { x: -184, z: 319, r: 13, name: "NW Shops" },
+    { x: 177, z: 312, r: 13, name: "NE Shops" },
+    { x: 177, z: -42, r: 13, name: "SE Shops" },
+    { x: -177, z: -42, r: 13, name: "SW Shops" },
+  ],
+  markers: [
+    { x: 0, z: 4, label: "Café / Spawn", kind: "cafe" },
+    { x: 33, z: 19, label: "Rocket Pad", kind: "poi" },
+    ...(ocean.docks || []).map((d) => ({ x: d.x, z: d.z, label: "Dock", kind: "dock" })),
+  ],
+  player: { x: 0, z: 4, heading: 0 },
+};
+// Seed the overlay so the very first open() paints the static map immediately
+// (render() only stores the payload while closed; it draws once the map is open).
+gameMap.render(mapPayload);
 
 // Where everyone is, so voice (and screen share) can scope to the people you're
 // actually with — table-mates when seated, nearby players otherwise.
@@ -451,6 +515,12 @@ hud.onJoin = ({ name, color }) => {
   // join before the avatar was created — "no character loads").
   try { audio.resume(); audio.setAmbient(true); } catch (e) { console.warn("[audio] init failed", e); }
   local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
+  // SWIM: give the player the ocean's open-water predicate + surface height so
+  // jumping/falling into the sea floats instead of respawning (handled inside
+  // localPlayer._updateVertical). The void respawn still runs anywhere there's no
+  // water below.
+  local.setIsWater(ocean.isWater, ocean.waterY);
+  _wasSwimming = false;
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -578,6 +648,9 @@ function frame() {
       audio.setEngine(false); // on foot — no engine
       const seatedView = syncSeatedCamera();
       local.update(dt, camera, seatedView);
+      // SWIM: splash one-shot on the moment we hit the water (not while afloat).
+      if (local.swimming && !_wasSwimming) audio.splash();
+      _wasSwimming = local.swimming;
       // True first-person while seated at a board: hide your OWN avatar so your body
       // doesn't fill the screen (only affects your local view; others still see you).
       if (local.character?.group) {
@@ -599,6 +672,7 @@ function frame() {
     updateMinimap();
     maybeSendState();
     updateWeapons();
+    updateMap();
   } else {
     // Gentle interior orbit of the room while the join card is up.
     previewAngle += dt * 0.12;
@@ -742,8 +816,36 @@ function updateWeapons() {
   }
 }
 
+// CITY MAP input (called each frame while joined): M toggles the overlay (open
+// only when NOT mid-game), we keep movement frozen + the player arrow live while
+// it's up, and we unlock the moment it closes by any means. consumeMap is gated by
+// `locked`, so the same M press that ui/map.js handles as a close can't bounce back
+// through here and reopen it.
+function updateMap() {
+  if (controls.consumeMap() && !inWorld.open) gameMap.toggle();
+  // Sync the movement lock to the map's REAL open state — it can self-close (Esc /
+  // ✕ / M / a fast-travel click) without telling us. Never fight a game's own lock.
+  if (!inWorld.open && currentRole == null) {
+    if (gameMap.isOpen && !_mapLocked) {
+      controls.setLocked(true);
+      _mapLocked = true;
+    } else if (!gameMap.isOpen && _mapLocked) {
+      controls.setLocked(false);
+      _mapLocked = false;
+    }
+  }
+  // Track the live player arrow — only while open, mutating the cached payload in
+  // place so the per-frame redraw allocates nothing.
+  if (gameMap.isOpen && local) {
+    mapPayload.player.x = local.pos.x;
+    mapPayload.player.z = local.pos.z;
+    mapPayload.player.heading = local.facing;
+    gameMap.render(mapPayload);
+  }
+}
+
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, audio, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, audio, gameMap, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

@@ -15,6 +15,19 @@ const FALL = { gravity: 22, respawnY: -12 };
 // next to a seat — apex ≈ v²/(2·gravity) ≈ 1.3 m, airtime ≈ 0.7 s.
 const JUMP_V = 7.6;
 
+// SWIM / FLOAT on the ocean. When the app injects an isWater(x,z) predicate (see
+// setIsWater), DESCENDING over open water drops you into a float instead of the
+// void fall+respawn: pos.y is pinned just above the sea surface (waterY +
+// surfaceOffset) with a gentle bob, movement slows by `stroke`, and Space pops a
+// small hop. Climb back onto any ground rect to stand up and walk again.
+const SWIM = {
+  surfaceOffset: 0.4, // pos.y sits this far above waterY while afloat (≈ -0.4) so the head/torso clear the water
+  bobAmp: 0.05,       // gentle vertical bob amplitude (m)
+  bobFreq: 1.8,       // bob angular speed (rad/s)
+  stroke: 0.6,        // walk-step multiplier while swimming (slower than walking)
+  hopV: 4.2,          // Space pop-up out of the water (smaller than JUMP_V)
+};
+
 // Sprint + stamina, WALK MODE ONLY. Two tiers (Shift = run, Shift+Ctrl = ULTRA)
 // scale the walk step and drain a 0..1 stamina meter while you're actually
 // moving; let go (or run dry) and it regenerates. `recover` is the hysteresis
@@ -77,6 +90,15 @@ export class LocalPlayer {
     // respawn and the Space=jump/sit handling is suppressed (Space is thrust).
     // Cleared back to false on landing, which resumes normal gravity/ground.
     this.flying = false;
+    // SWIM / FLOAT. `isWater(x,z)` is injected by the app (main.js → setIsWater)
+    // so _updateVertical can tell OPEN WATER apart from the void; the default
+    // returns false so legacy/single-arg constructor callers keep the old
+    // fall+respawn behaviour. `waterY` is the sea surface height (overridable via
+    // setIsWater). `swimming` is true while floating; `_swimT` drives the bob.
+    this.isWater = () => false;
+    this.waterY = -0.8;
+    this.swimming = false;
+    this._swimT = 0;
     // When seated, the seat object we're on; otherwise null. `sitting`/`seatY`
     // are the network-visible bits so remote players can pose us correctly.
     this.seat = null;
@@ -113,6 +135,15 @@ export class LocalPlayer {
 
   setColor(hex) {
     this.character.setColor(hex);
+  }
+
+  // Inject the ocean's open-water predicate (and, optionally, its surface height).
+  // Once set, descending over open water enters a SWIM/FLOAT state instead of the
+  // void fall+respawn. `fn` is guarded so a missing/bad predicate never NaNs the
+  // player — it just falls back to "no water anywhere" (the legacy behaviour).
+  setIsWater(fn, waterY) {
+    this.isWater = typeof fn === "function" ? fn : () => false;
+    if (Number.isFinite(waterY)) this.waterY = waterY;
   }
 
   setAppearance(app) {
@@ -233,7 +264,7 @@ export class LocalPlayer {
     // speedMul !== 1, so a ride is NEVER sped up or slowed by this.
     let sprintFactor = 1;
     this.sprinting = false;
-    const onFoot = (this.speedMul == null || this.speedMul === 1) && !this.sitting && !this.flying;
+    const onFoot = (this.speedMul == null || this.speedMul === 1) && !this.sitting && !this.flying && !this.swimming;
     const sprintTier = onFoot ? (this.controls.sprintLevel?.() || 0) : 0;
     // Clear the empty-latch once we've regen'd back past the recover threshold.
     if (this._staminaEmpty && this.stamina >= STAMINA.recover) this._staminaEmpty = false;
@@ -252,7 +283,8 @@ export class LocalPlayer {
       // speedMul lets a ride (skateboard) boost ground speed without touching the
       // base walk speed. Default 1 (plain walking). sprintFactor is the on-foot
       // run/ultra multiplier (1 when not sprinting, and always 1 on a ride).
-      const step = PLAYER.speed * dt * (this.speedMul || 1) * sprintFactor;
+      // While swimming, strokes are slower (SWIM.stroke); on land it stays 1.
+      const step = PLAYER.speed * dt * (this.speedMul || 1) * sprintFactor * (this.swimming ? SWIM.stroke : 1);
       let nx = this.pos.x + vx * inv * step;
       let nz = this.pos.z + vz * inv * step;
 
@@ -320,7 +352,7 @@ export class LocalPlayer {
   // on solid ground, pin to y=0.
   _updateVertical(dt) {
     if (this.sitting) {
-      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
+      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
       return;
     }
     // FLY (jetpack): rides.js owns pos.y (altitude) this frame, so skip the
@@ -328,10 +360,46 @@ export class LocalPlayer {
     // void. Keep the gravity integrator disengaged so landing (flying=false)
     // resumes the normal walk/fall logic cleanly next frame.
     if (this.flying) {
-      this.vy = 0; this.airborne = false; this.falling = false;
+      this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
       return;
     }
     const onGround = this._isGround(this.pos.x, this.pos.z);
+    // OPEN WATER under us (only meaningful when NOT on a walkable rect). The
+    // predicate is injected by the app; the default () => false keeps this false
+    // everywhere so the classic fall+respawn runs when no ocean is wired.
+    const overWater = !onGround && this.isWater(this.pos.x, this.pos.z) === true;
+    // Float line: the body rides a touch above the sea surface so the head/torso
+    // stay clear of the water (waterY = -0.8 + surfaceOffset 0.4 → pos.y ≈ -0.4).
+    const swimY = this.waterY + SWIM.surfaceOffset;
+
+    // --- SWIM / FLOAT --------------------------------------------------------
+    // Already in the water: stay afloat (NEVER respawn) until we reach solid
+    // ground or drift off the navigable sea.
+    if (this.swimming) {
+      if (onGround) { this._exitWater(); return; } // climbed out → walk again
+      if (overWater) {
+        if (this.airborne) {
+          // A Space pop-up gave upward vy: arc it under gravity and re-settle onto
+          // the surface when it falls back to the float line.
+          this.vy -= FALL.gravity * dt;
+          this.pos.y += this.vy * dt;
+          this.falling = this.vy < 0;
+          if (this.vy <= 0 && this.pos.y <= swimY) {
+            this.pos.y = swimY; this.vy = 0; this.airborne = false; this.falling = false; this._swimT = 0;
+          }
+        } else {
+          // Float: a gentle vertical bob around the surface line.
+          this._swimT += dt;
+          this.pos.y = swimY + Math.sin(this._swimT * SWIM.bobFreq) * SWIM.bobAmp;
+          this.vy = 0; this.falling = false;
+        }
+        return;
+      }
+      // Drifted past the edge of the sea (rare): drop swim and fall through to the
+      // normal walk/fall integrator below so the void respawn still protects us.
+      this.swimming = false;
+    }
+
     if (!this.airborne) {
       if (onGround) { this.pos.y = 0; this.vy = 0; this.falling = false; return; }
       // Stepped off the edge with no jump: begin a fall from rest.
@@ -346,16 +414,52 @@ export class LocalPlayer {
       this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
       return;
     }
-    // Fell into the void — respawn at the café.
+    // Descending into OPEN WATER — splash in and start swimming instead of
+    // falling into the void / respawning. Clamp to the float line so a fast fall
+    // can't dunk us deep.
+    if (this.vy <= 0 && overWater && this.pos.y <= swimY) {
+      this._enterWater(swimY);
+      return;
+    }
+    // Fell into the void (no water below) — respawn at the café.
     if (this.pos.y < FALL.respawnY) this._respawn();
+  }
+
+  // Enter the float: pin to the surface line, clear the fall, start the bob clock.
+  _enterWater(swimY) {
+    this.swimming = true;
+    this.pos.y = swimY;
+    this.vy = 0;
+    this.airborne = false;
+    this.falling = false;
+    this._swimT = 0;
+  }
+
+  // Climb out onto solid ground: back to a normal standing pose.
+  _exitWater() {
+    this.swimming = false;
+    this.pos.y = 0;
+    this.vy = 0;
+    this.airborne = false;
+    this.falling = false;
   }
 
   // A standing hop. Only from the ground, on foot (not seated, not skating — a
   // mounted board sets speedMul to the skate multiplier, never 1), and not
   // already airborne. So Space-to-hop can't double-fire with the skate ollie.
   _jump() {
-    if (this.sitting || this.airborne) return;
+    if (this.sitting) return;
     if (this.speedMul != null && this.speedMul !== 1) return; // on a board → no hop
+    // Swimming: Space pops you partly out of the water (a smaller push than a
+    // ground jump). _updateVertical arcs it and re-settles onto the surface.
+    if (this.swimming) {
+      if (this.airborne) return; // already mid pop-up
+      this.vy = SWIM.hopV;
+      this.airborne = true;
+      this.falling = false;
+      return;
+    }
+    if (this.airborne) return;
     if (!this._isGround(this.pos.x, this.pos.z)) return; // over a void → already falling
     this.vy = JUMP_V;
     this.airborne = true;
@@ -375,6 +479,7 @@ export class LocalPlayer {
     this.vy = 0;
     this.falling = false;
     this.airborne = false;
+    this.swimming = false;
     this.facing = Math.PI;
   }
 

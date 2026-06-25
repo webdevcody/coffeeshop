@@ -29,6 +29,7 @@ export function createControls(domElement) {
   // consumeFire(). Both are cleared in setLocked so a game overlay swallows them.
   let weaponSlot = null;
   let firePressed = false;
+  let mapPressed = false; // edge-triggered M, drained by consumeMap() (open the city map)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -70,6 +71,9 @@ export function createControls(domElement) {
     if (e.code === "Digit3" && !keys.has("Digit3")) weaponSlot = 3;
     if (e.code === "Digit0" && !keys.has("Digit0")) weaponSlot = 0;
     if (e.code === "KeyB" && !keys.has("KeyB")) firePressed = true;
+    // M opens the full-screen CITY MAP (a FREE key). Edge-triggered like the
+    // others; drained by consumeMap() in main.js. ui/map.js owns Esc/M-to-CLOSE.
+    if (e.code === "KeyM" && !keys.has("KeyM")) mapPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -291,6 +295,16 @@ export function createControls(domElement) {
     return locked ? false : pressed;
   }
 
+  // True once per M press (open the city map), then resets. Gated by `locked`
+  // like consumeFire: while a game overlay — or the open map itself — holds the
+  // lock the M edge is swallowed, so the same press that CLOSES the map (handled
+  // by ui/map.js's own Esc/M listener) can never bounce back and reopen it.
+  function consumeMap() {
+    const pressed = mapPressed;
+    mapPressed = false;
+    return locked ? false : pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -361,10 +375,11 @@ export function createControls(domElement) {
       shuvPressed = false;
       weaponSlot = null;
       firePressed = false;
+      mapPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {
