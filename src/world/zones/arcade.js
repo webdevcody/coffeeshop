@@ -70,6 +70,26 @@ const matButton = new THREE.MeshStandardMaterial({
 });
 const matPole = new THREE.MeshStandardMaterial({ color: "#1c1a28", roughness: 0.5, metalness: 0.7 });
 
+// --- Enterable shop (retro arcade lounge) materials ------------------------
+const matShopWall = new THREE.MeshStandardMaterial({ color: "#241a3e", roughness: 0.85, flatShading: true });
+const matShopFloor = new THREE.MeshStandardMaterial({ color: "#161024", roughness: 0.9 });
+const matShopRoof = new THREE.MeshStandardMaterial({ color: "#0f0a1c", roughness: 0.9 });
+const matCounter = new THREE.MeshStandardMaterial({ color: "#2a1640", roughness: 0.6, metalness: 0.15 });
+const matCounterTop = new THREE.MeshStandardMaterial({
+  color: "#1a2a3a", emissive: "#1f6f8c", emissiveIntensity: 0.4, roughness: 0.3, metalness: 0.3,
+});
+const matShelf = new THREE.MeshStandardMaterial({ color: "#1d1530", roughness: 0.75 });
+const matRug = new THREE.MeshStandardMaterial({ color: "#3a124a", roughness: 0.95 });
+const matStool = new THREE.MeshStandardMaterial({ color: "#c2103f", roughness: 0.5, metalness: 0.2 });
+const matStoolLeg = new THREE.MeshStandardMaterial({ color: "#22202c", roughness: 0.5, metalness: 0.7 });
+const matLampShade = new THREE.MeshStandardMaterial({
+  color: "#ffd277", emissive: "#ffb733", emissiveIntensity: 0.85, roughness: 0.4,
+});
+// Small colourful goods sit on the shelves as InstancedMesh (one shared mat).
+const matGoods = new THREE.MeshStandardMaterial({
+  color: "#46d6ff", emissive: "#2f9fc4", emissiveIntensity: 0.35, roughness: 0.5,
+});
+
 // Helper: a box prop. Scales the shared unit box; sets shadows.
 function box(w, h, d, mat, x, y, z, cast = true) {
   const m = new THREE.Mesh(BOX, mat);
@@ -529,6 +549,165 @@ export function buildArcade() {
     cap.castShadow = false;
     group.add(cap);
     colliders.push({ minX: x - 0.4, maxX: x + 0.4, minZ: z - 0.4, maxZ: z + 0.4 });
+  }
+
+  // --- ENTERABLE SHOP: "GAME ON" retro arcade lounge -----------------------
+  // A real, walk-in room tucked into the open right-front pocket (clear of the
+  // avenue X∈[-6,6], the cabinets at X=±8.5/±11.5, and the right-front building
+  // mass at X≥7,Z≤-9). Outer footprint X∈[13,21], Z∈[-8.5,-1.5] (8 m wide x 7 m
+  // deep). The STREET-FACING wall is the -X wall (faces the avenue); it has a
+  // 2.2 m doorway GAP centered at Z=-5 with NO collider, so the player walks in.
+  {
+    const sCx = 17, sCz = -5;          // shop center
+    const sW = 8, sD = 7;              // outer extents (X width, Z depth)
+    const T = 0.25;                    // wall thickness
+    const wallH = 3.2;                 // wall/ceiling height
+    const doorW = 2.2;                 // doorway gap width
+    const minX = sCx - sW / 2, maxX = sCx + sW / 2; // 13..21
+    const minZ = sCz - sD / 2, maxZ = sCz + sD / 2; // -8.5..-1.5
+    const frontX = minX + T / 2;       // -X (street-facing) wall centerline
+    const backX = maxX - T / 2;        // +X (back) wall centerline
+    const sideZn = minZ + T / 2;       // -Z side wall centerline
+    const sideZp = maxZ - T / 2;       // +Z side wall centerline
+    const gapMinZ = sCz - doorW / 2;   // doorway gap Z span
+    const gapMaxZ = sCz + doorW / 2;
+
+    const shop = new THREE.Group();
+
+    // Floor slab + a cozy rug on top.
+    shop.add(box(sW, 0.08, sD, matShopFloor, sCx, 0.04, sCz, false));
+    const rug = box(4.6, 0.04, 3.4, matRug, sCx + 0.4, 0.1, sCz, false);
+    rug.castShadow = false;
+    shop.add(rug);
+
+    // Flat roof / ceiling.
+    shop.add(box(sW, 0.2, sD, matShopRoof, sCx, wallH + 0.1, sCz, false));
+
+    // --- Walls (individual boxes; colliders added to the array below) -------
+    // Back wall (+X), full Z span.
+    shop.add(box(T, wallH, sD, matShopWall, backX, wallH / 2, sCz));
+    // Side walls (±Z), full X span.
+    shop.add(box(sW, wallH, T, matShopWall, sCx, wallH / 2, sideZn));
+    shop.add(box(sW, wallH, T, matShopWall, sCx, wallH / 2, sideZp));
+    // Front wall (-X, street-facing) split into two segments flanking the door.
+    const segAlen = gapMinZ - minZ;    // segment toward -Z
+    const segBlen = maxZ - gapMaxZ;    // segment toward +Z
+    shop.add(box(T, wallH, segAlen, matShopWall, frontX, wallH / 2, (minZ + gapMinZ) / 2));
+    shop.add(box(T, wallH, segBlen, matShopWall, frontX, wallH / 2, (gapMaxZ + maxZ) / 2));
+    // A lintel beam above the doorway (visual only — spans the gap up high so it
+    // never blocks walking; no collider). Sits at the top of the opening.
+    shop.add(box(T, 0.5, doorW + 0.1, matShopWall, frontX, wallH - 0.25, sCz, false));
+    // Glowing threshold strip on the floor at the doorway (inviting).
+    const thr = box(0.5, 0.04, doorW, matTrimCyan, frontX + 0.3, 0.06, sCz, false);
+    thr.castShadow = false;
+    shop.add(thr);
+
+    // WALL COLLIDERS — back + two sides + two front segments. NONE across the
+    // doorway gap (Z∈[gapMinZ,gapMaxZ] at the front wall stays open).
+    colliders.push({ minX: backX - T / 2, maxX: backX + T / 2, minZ, maxZ });            // back
+    colliders.push({ minX, maxX, minZ: sideZn - T / 2, maxZ: sideZn + T / 2 });          // -Z side
+    colliders.push({ minX, maxX, minZ: sideZp - T / 2, maxZ: sideZp + T / 2 });          // +Z side
+    colliders.push({ minX: frontX - T / 2, maxX: frontX + T / 2, minZ, maxZ: gapMinZ }); // front seg A
+    colliders.push({ minX: frontX - T / 2, maxX: frontX + T / 2, minZ: gapMaxZ, maxZ }); // front seg B
+
+    // --- Service COUNTER along the back wall --------------------------------
+    const ctrZ = sCz;
+    const ctrX = backX - 0.7;
+    shop.add(box(1.0, 1.05, 4.2, matCounter, ctrX, 0.55, ctrZ));          // counter body
+    shop.add(box(1.2, 0.12, 4.4, matCounterTop, ctrX, 1.15, ctrZ, false)); // glowing top
+    // A small register / display box on the counter.
+    shop.add(box(0.5, 0.45, 0.6, matCabinet, ctrX, 1.42, ctrZ - 1.2, false));
+    shop.add(box(0.42, 0.3, 0.08, matScreen, ctrX - 0.3, 1.5, ctrZ - 1.2, false));
+
+    // --- SHELVES on the +Z side wall, stocked with little goods -------------
+    const shelfX = sCx + 0.6;
+    const shelfZ = sideZp - 0.25;
+    const goods = []; // queued for an InstancedMesh
+    const goodTints = [
+      new THREE.Color("#ff4fa3"), new THREE.Color("#46d6ff"),
+      new THREE.Color("#ffd23f"), new THREE.Color("#9fff4f"),
+    ];
+    for (let r = 0; r < 3; r++) {
+      const sy = 0.9 + r * 0.85;
+      shop.add(box(2.6, 0.08, 0.5, matShelf, shelfX, sy, shelfZ, false)); // shelf board
+      for (let k = -2; k <= 2; k++) {
+        goods.push({ x: shelfX + k * 0.5, y: sy + 0.22, z: shelfZ, tint: goodTints[(r + k + 8) % goodTints.length] });
+      }
+    }
+    if (goods.length) {
+      const gGeo = new THREE.BoxGeometry(0.3, 0.36, 0.28);
+      const gMesh = new THREE.InstancedMesh(gGeo, matGoods, goods.length);
+      gMesh.castShadow = false; gMesh.receiveShadow = false;
+      for (let n = 0; n < goods.length; n++) {
+        const g = goods[n];
+        _pos.set(g.x, g.y, g.z);
+        _quat.identity();
+        _scl.set(1, 1, 1);
+        _m4.compose(_pos, _quat, _scl);
+        gMesh.setMatrixAt(n, _m4);
+        gMesh.setColorAt(n, g.tint);
+      }
+      gMesh.instanceMatrix.needsUpdate = true;
+      if (gMesh.instanceColor) gMesh.instanceColor.needsUpdate = true;
+      shop.add(gMesh);
+    }
+
+    // --- DISPLAY RACK / glass case on the -Z side wall ----------------------
+    const caseX = sCx - 0.4;
+    const caseZ = sideZn + 0.35;
+    shop.add(box(2.4, 1.3, 0.5, matCabinet, caseX, 0.65, caseZ));           // case body
+    shop.add(box(2.2, 0.9, 0.45, matGlass, caseX, 0.75, caseZ + 0.04, false)); // lit glass front
+    shop.add(box(2.4, 0.1, 0.55, matCounterTop, caseX, 1.32, caseZ, false));    // glowing cap
+
+    // --- A couple of STOOLS in front of the counter -------------------------
+    const stoolGeoR = 0.32;
+    for (const sz of [ctrZ - 1.0, ctrZ + 1.0]) {
+      const sx = ctrX - 1.6;
+      shop.add(cyl(stoolGeoR, 0.12, matStool, sx, 0.74, sz));      // seat
+      shop.add(cyl(0.06, 0.7, matStoolLeg, sx, 0.37, sz));         // pedestal
+    }
+
+    // --- Interior wall SIGNAGE (artPanel) on the back wall ------------------
+    const wallSign = artPanel(2.6, 1.0, "sign", {
+      text: "HIGH SCORE", bg: "#1a0e2e", fg: "#46d6ff",
+      emissiveIntensity: 0.55, file: "arcade-shop-wall-highscore.png",
+    });
+    wallSign.position.set(backX - 0.13, 2.4, sCz + 1.6);
+    wallSign.rotation.y = -Math.PI / 2; // face -X (into the room)
+    wallSign.castShadow = false;
+    shop.add(wallSign);
+    neonMats.push(wallSign.material);
+
+    // --- Hanging interior LIGHTS (two pendant lamps) ------------------------
+    for (const lz of [sCz - 1.6, sCz + 1.6]) {
+      const lx = sCx - 0.6;
+      shop.add(cyl(0.02, 0.7, matStoolLeg, lx, wallH - 0.45, lz, false)); // cord
+      const shade = new THREE.Mesh(SPHERE, matLampShade);
+      shade.scale.set(0.5, 0.45, 0.5);
+      shade.position.set(lx, wallH - 0.85, lz);
+      shade.castShadow = false;
+      shop.add(shade);
+    }
+    neonMats.push(matLampShade, matCounterTop, matGoods);
+
+    // --- Exterior SHOP SIGN above the door, facing the street (un-mirrored) --
+    // The street is toward -X. artPanel faces +Z by default; rotate so its front
+    // faces -X (toward the avenue). At rotation.y = -PI/2 the panel's +Z front
+    // points to -X and the text reads correctly from the avenue.
+    const shopSign = artPanel(4.4, 1.4, "sign", {
+      text: "GAME ON", bg: "#5f0f40", fg: "#ffd23f",
+      emissiveIntensity: 0.6, file: "arcade-shop-sign-gameon.png",
+    });
+    shopSign.position.set(frontX - 0.16, wallH + 0.55, sCz);
+    shopSign.rotation.y = -Math.PI / 2; // front faces -X (the avenue/street)
+    shopSign.castShadow = false;
+    shop.add(shopSign);
+    neonMats.push(shopSign.material);
+    // A glowing sign bracket/backer behind it.
+    shop.add(box(0.18, 1.7, 4.7, matMarquee, frontX - 0.05, wallH + 0.55, sCz, false));
+    shop.add(box(0.2, 0.16, 4.8, matTrimGold, frontX - 0.06, wallH + 1.45, sCz, false));
+
+    group.add(shop);
   }
 
   // --- Base emissive intensities captured for flicker math ------------------

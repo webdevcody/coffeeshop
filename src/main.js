@@ -5,6 +5,7 @@
 import "./styles.css";
 import * as THREE from "three";
 import { createEngine } from "./engine/scene.js";
+import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
@@ -23,7 +24,17 @@ import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
-const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
+const { renderer, scene, camera, labelRenderer, updateDayNight } = createEngine(canvas);
+// Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
+// makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
+// glow. Built on the existing renderer/scene/camera; scene.js still owns tone
+// mapping + day/night exposure (OutputPass consumes them). frame() renders
+// through postFX.render() instead of renderer.render().
+const postFX = createPostFX(renderer, scene, camera);
+// Keep the composer's buffers in step with the window. scene.js already wires
+// its own onResize (camera aspect + renderer/label sizes) to the resize event;
+// we add a second listener that resizes the composer with the same dimensions.
+window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
 const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -430,6 +441,7 @@ function syncSeatedCamera() {
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   controls.update();
+  updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
 
   if (joined && local) {
@@ -483,7 +495,7 @@ function frame() {
   voice.updateSpeaking(dt);
   screenShare.update(dt);
 
-  renderer.render(scene, camera);
+  postFX.render();
   labelRenderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

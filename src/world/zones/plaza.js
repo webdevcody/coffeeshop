@@ -44,6 +44,11 @@ const G = {
   winFrame: new THREE.BoxGeometry(1.22, 1.62, 0.08),// window frame
   acUnit: new THREE.BoxGeometry(1.4, 0.7, 1.0),     // rooftop AC unit
   ventPipe: new THREE.CylinderGeometry(0.12, 0.12, 1.4, 8),
+  // Flower/gift KIOSK repeats (instanced where many)
+  bloom: new THREE.IcosahedronGeometry(0.13, 0),    // a single flower head
+  stem: new THREE.CylinderGeometry(0.02, 0.02, 0.5, 5),
+  potRim: new THREE.CylinderGeometry(0.16, 0.12, 0.22, 10),
+  giftBox: new THREE.BoxGeometry(0.34, 0.3, 0.34),
 };
 
 // --- Shared materials (created ONCE) ---------------------------------------
@@ -102,6 +107,29 @@ const M = {
     color: "#f3ead2", roughness: 0.6, emissive: "#d8c89a", emissiveIntensity: 0.3,
   }),
   clockHand: new THREE.MeshStandardMaterial({ color: "#23201b", roughness: 0.5 }),
+  // --- Flower/gift KIOSK interior materials --------------------------------
+  shopWall: new THREE.MeshStandardMaterial({ color: "#f3e6d2", roughness: 0.95, side: THREE.DoubleSide }), // creamy plaster (see inside + out)
+  shopFloor: new THREE.MeshStandardMaterial({ color: "#caa97e", roughness: 0.9 }),                          // warm timber floor
+  shopRoof: new THREE.MeshStandardMaterial({ color: "#6f5b46", roughness: 0.85, side: THREE.DoubleSide }),  // dark beam ceiling
+  shopTrim: new THREE.MeshStandardMaterial({ color: "#3f7d54", roughness: 0.7 }),                           // florist green trim
+  counter: new THREE.MeshStandardMaterial({ color: "#9c6a3c", roughness: 0.6 }),                            // counter wood
+  counterTop: new THREE.MeshStandardMaterial({ color: "#d8c7a8", roughness: 0.4 }),                         // pale stone top
+  shelfWood: new THREE.MeshStandardMaterial({ color: "#b5854f", roughness: 0.75 }),
+  rug: new THREE.MeshStandardMaterial({ color: "#b34a52", roughness: 0.95 }),                               // rose-red rug
+  stool: new THREE.MeshStandardMaterial({ color: "#586d4a", roughness: 0.7 }),
+  vase: new THREE.MeshStandardMaterial({ color: "#cfe5ec", roughness: 0.35, metalness: 0.1 }),
+  bloomA: new THREE.MeshStandardMaterial({ color: "#e85d8a", roughness: 0.8, flatShading: true }),          // pink blooms
+  bloomB: new THREE.MeshStandardMaterial({ color: "#f2c14e", roughness: 0.8, flatShading: true }),          // yellow blooms
+  bloomC: new THREE.MeshStandardMaterial({ color: "#b06fd6", roughness: 0.8, flatShading: true }),          // violet blooms
+  stem: new THREE.MeshStandardMaterial({ color: "#3f7d54", roughness: 0.85, flatShading: true }),
+  gift: new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.6 }),                               // wrapped gift box
+  giftLid: new THREE.MeshStandardMaterial({ color: "#f3d9a0", roughness: 0.6 }),                            // ribbon/lid
+  caseGlass: new THREE.MeshStandardMaterial({
+    color: "#bfe0ea", roughness: 0.12, metalness: 0.2, transparent: true, opacity: 0.32, side: THREE.DoubleSide,
+  }),
+  shopLight: new THREE.MeshStandardMaterial({
+    color: "#fff3cf", emissive: "#ffdf9a", emissiveIntensity: 1.0, roughness: 0.4,
+  }),
 };
 
 function mesh(geo, mat, cast = true, receive = true) {
@@ -326,6 +354,255 @@ function makeBuilding(opts, winList) {
   g.add(panel);
 
   return { group: g, signPanels: [panel], footprint: { w, d } };
+}
+
+// ===========================================================================
+// ENTERABLE FLOWER / GIFT KIOSK  (a real, walkable interior)
+// ===========================================================================
+// A small one-room shop the player can walk INTO. Built directly in WORLD-
+// aligned local coordinates (the returned group is added at the tile origin, so
+// local == world here) so every wall AABB is axis-aligned and trivial to push.
+//
+// Layout (centred at cx,cz; FRONT faces -X toward the open plaza):
+//   • depth along X = `depth` m, width along Z = `width` m, walls `wallH` tall.
+//   • FRONT wall on the -X face has a `doorW`-wide DOORWAY GAP (no wall, no
+//     collider) flanked by two short segments.
+//   • back wall (+X), two side walls (±Z): solid, each with its OWN AABB.
+//   • cosy florist interior: counter, shelves of potted blooms, a glass display
+//     case, two stools, wall signage, two hanging lights, a rug.
+//   • outdoor SIGN above the doorway facing -X (the street), un-mirrored.
+// Pushes one AABB per solid wall onto `colliders`; the doorway gap gets NONE.
+// Returns { group, lights:[] } — lights are the emissive pendants for flicker.
+function makeFlowerKiosk(cx, cz, colliders) {
+  const g = new THREE.Group();
+  const lights = [];
+  const width = 8;            // along world Z
+  const depth = 7;            // along world X
+  const wallH = 3.2;
+  const t = 0.25;             // wall thickness
+  const doorW = 2.2;          // doorway gap width (along Z)
+  const xFront = cx - depth / 2;   // -X face (street-facing front)
+  const xBack = cx + depth / 2;    // +X face (back)
+  const zMin = cz - width / 2;     // -Z side wall
+  const zMax = cz + width / 2;     // +Z side wall
+  const wy = wallH / 2;            // wall centre height
+
+  // --- FLOOR -----------------------------------------------------------------
+  const floor = mesh(new THREE.BoxGeometry(depth - t, 0.08, width - t), M.shopFloor, false, true);
+  floor.position.set(cx, 0.04, cz);
+  g.add(floor);
+
+  // --- ROOF / flat ceiling ---------------------------------------------------
+  const roof = mesh(new THREE.BoxGeometry(depth + 0.3, 0.2, width + 0.3), M.shopRoof, true, false);
+  roof.position.set(cx, wallH + 0.1, cz);
+  g.add(roof);
+  // a slim fascia band wrapping the roofline for a finished kiosk look
+  const fascia = mesh(new THREE.BoxGeometry(depth + 0.36, 0.3, width + 0.36), M.shopTrim, false, false);
+  fascia.position.set(cx, wallH - 0.05, cz);
+  g.add(fascia);
+
+  // --- BACK wall (+X face), full width --------------------------------------
+  const back = mesh(new THREE.BoxGeometry(t, wallH, width), M.shopWall);
+  back.position.set(xBack, wy, cz);
+  g.add(back);
+  addCollider(colliders, xBack, cz, t, width);
+
+  // --- SIDE walls (±Z faces), full depth ------------------------------------
+  const sideN = mesh(new THREE.BoxGeometry(depth, wallH, t), M.shopWall);
+  sideN.position.set(cx, wy, zMin);
+  g.add(sideN);
+  addCollider(colliders, cx, zMin, depth, t);
+
+  const sideS = mesh(new THREE.BoxGeometry(depth, wallH, t), M.shopWall);
+  sideS.position.set(cx, wy, zMax);
+  g.add(sideS);
+  addCollider(colliders, cx, zMax, depth, t);
+
+  // --- FRONT wall (-X face) = two short segments flanking the DOORWAY GAP ----
+  // The gap (doorW wide, centred at cz) has NO wall and NO collider so the
+  // player walks straight in.
+  const segLen = (width - doorW) / 2;                 // length of each flank along Z
+  const segNcz = zMin + segLen / 2;                   // centre of -Z flank
+  const segScz = zMax - segLen / 2;                   // centre of +Z flank
+  const frontN = mesh(new THREE.BoxGeometry(t, wallH, segLen), M.shopWall);
+  frontN.position.set(xFront, wy, segNcz);
+  g.add(frontN);
+  addCollider(colliders, xFront, segNcz, t, segLen);
+
+  const frontS = mesh(new THREE.BoxGeometry(t, wallH, segLen), M.shopWall);
+  frontS.position.set(xFront, wy, segScz);
+  g.add(frontS);
+  addCollider(colliders, xFront, segScz, t, segLen);
+
+  // lintel above the doorway (spans the gap, high enough to walk under — no
+  // collider; players never reach 2.6 m up)
+  const lintel = mesh(new THREE.BoxGeometry(t + 0.05, wallH - 2.4, doorW + 0.2), M.shopTrim, true, false);
+  lintel.position.set(xFront, wallH - (wallH - 2.4) / 2, cz);
+  g.add(lintel);
+
+  // --- OUTDOOR SIGN above the door, facing -X (the street) -------------------
+  // artPanel planes face +Z by default; rotate -90° about Y so the readable
+  // (+Z) face points toward world -X (out the front, un-mirrored).
+  const sign = artPanel(3.2, 0.95, "sign", {
+    text: "BLOOM & GIFT", bg: "#3f7d54", fg: "#fff3cf",
+    emissiveIntensity: 0.6, file: "plaza-sign-bloom-gift.png",
+  });
+  sign.position.set(xFront - 0.16, wallH - 0.55, cz);
+  sign.rotation.y = -Math.PI / 2;
+  sign.castShadow = false;
+  g.add(sign);
+
+  // --- INTERIOR: RUG ---------------------------------------------------------
+  const rug = mesh(new THREE.BoxGeometry(depth - 2.2, 0.03, width - 2.6), M.rug, false, true);
+  rug.position.set(cx + 0.2, 0.07, cz);
+  g.add(rug);
+
+  // --- INTERIOR: SERVICE COUNTER (L-ish bar near the back-right) -------------
+  const counterBase = mesh(new THREE.BoxGeometry(2.6, 1.0, 0.8), M.counter);
+  counterBase.position.set(xBack - 1.0, 0.5, zMin + 1.4);
+  g.add(counterBase);
+  const counterTop = mesh(new THREE.BoxGeometry(2.8, 0.1, 1.0), M.counterTop, false);
+  counterTop.position.set(xBack - 1.0, 1.05, zMin + 1.4);
+  g.add(counterTop);
+  // a small register block on the counter
+  const reg = mesh(new THREE.BoxGeometry(0.4, 0.3, 0.34), M.shopTrim);
+  reg.position.set(xBack - 1.6, 1.25, zMin + 1.4);
+  g.add(reg);
+
+  // --- INTERIOR: SHELVES on the back wall with potted blooms -----------------
+  const shelfY = [1.0, 1.7, 2.4];
+  for (const sy of shelfY) {
+    const shelf = mesh(new THREE.BoxGeometry(0.4, 0.06, width - 1.6), M.shelfWood, false);
+    shelf.position.set(xBack - 0.35, sy, cz + 1.6);
+    g.add(shelf);
+  }
+
+  // --- INTERIOR: a DISPLAY CASE / glass cabinet by the +Z wall ---------------
+  const caseBase = mesh(new THREE.BoxGeometry(2.4, 0.7, 0.7), M.shelfWood);
+  caseBase.position.set(cx + 0.4, 0.35, zMax - 0.6);
+  g.add(caseBase);
+  const caseGlass = mesh(new THREE.BoxGeometry(2.4, 0.8, 0.7), M.caseGlass, false, false);
+  caseGlass.position.set(cx + 0.4, 1.1, zMax - 0.6);
+  g.add(caseGlass);
+
+  // --- INTERIOR: two STOOLS in front of the counter --------------------------
+  for (const sz of [zMin + 1.2, zMin + 2.3]) {
+    const seat = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12), M.stool);
+    seat.position.set(xBack - 2.4, 0.6, sz);
+    g.add(seat);
+    const leg = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.6, 8), M.poleMat);
+    leg.position.set(xBack - 2.4, 0.3, sz);
+    g.add(leg);
+  }
+
+  // --- INTERIOR: wall SIGNAGE (small framed sign inside, on the back wall) ----
+  const innerSign = artPanel(1.6, 0.7, "sign", {
+    text: "FRESH FLOWERS", bg: "#b34a52", fg: "#fff3cf",
+    emissiveIntensity: 0.4, file: "plaza-kiosk-inner.png",
+  });
+  // back wall is the +X face; its inner side faces -X, so face -X (rotate -90°)
+  innerSign.position.set(xBack - 0.18, 2.3, cz - 1.2);
+  innerSign.rotation.y = -Math.PI / 2;
+  innerSign.castShadow = false;
+  g.add(innerSign);
+
+  // --- INTERIOR: two HANGING pendant lights ----------------------------------
+  for (const lz of [cz - 1.6, cz + 1.6]) {
+    const cord = mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.7, 6), M.poleMat, false, false);
+    cord.position.set(cx - 1.0, wallH - 0.45, lz);
+    g.add(cord);
+    const bulb = mesh(new THREE.SphereGeometry(0.16, 12, 10), M.shopLight, false, false);
+    bulb.position.set(cx - 1.0, wallH - 0.85, lz);
+    g.add(bulb);
+    lights.push(bulb);
+  }
+
+  // --- INTERIOR: POTTED FLOWERS — instanced pots, stems and blooms -----------
+  // Bunches sit on the three back shelves + the front display case. Each "pot"
+  // is a pot rim + a few stems topped with bloom heads. Repeats are baked into
+  // shared InstancedMeshes (no per-frame allocation).
+  const pots = [];          // {x,y,z}
+  // along each back shelf
+  for (const sy of shelfY) {
+    for (let i = 0; i < 4; i++) {
+      pots.push({ x: xBack - 0.35, y: sy + 0.11, z: cz - 2.4 + i * 1.6, mat: i });
+    }
+  }
+  // a row on top of the display case
+  for (let i = 0; i < 4; i++) {
+    pots.push({ x: cx - 0.6 + i * 0.55, y: 1.6, z: zMax - 0.6, mat: i + 1 });
+  }
+  // a couple on the counter top
+  pots.push({ x: xBack - 0.6, y: 1.2, z: zMin + 1.2, mat: 2 });
+
+  const bloomMats = [M.bloomA, M.bloomB, M.bloomC];
+  const potCount = pots.length;
+  const stemPerPot = 3;
+  const dummyL = new THREE.Object3D();
+
+  // pot rims (instanced)
+  const potMesh = new THREE.InstancedMesh(G.potRim, M.vase, potCount);
+  potMesh.castShadow = true; potMesh.receiveShadow = false;
+  // stems (instanced, stemPerPot each)
+  const stemMesh = new THREE.InstancedMesh(G.stem, M.stem, potCount * stemPerPot);
+  stemMesh.castShadow = false; stemMesh.receiveShadow = false;
+  // blooms grouped per colour into 3 instanced meshes
+  const bloomCounts = [0, 0, 0];
+  for (const p of pots) bloomCounts[p.mat % 3] += stemPerPot;
+  const bloomMeshes = bloomMats.map((m, i) => {
+    const im = new THREE.InstancedMesh(G.bloom, m, bloomCounts[i]);
+    im.castShadow = false; im.receiveShadow = false;
+    return im;
+  });
+  const bloomIdx = [0, 0, 0];
+
+  for (let pi = 0; pi < potCount; pi++) {
+    const p = pots[pi];
+    dummyL.position.set(p.x, p.y, p.z);
+    dummyL.rotation.set(0, 0, 0);
+    dummyL.scale.set(1, 1, 1);
+    dummyL.updateMatrix();
+    potMesh.setMatrixAt(pi, dummyL.matrix);
+    const colour = p.mat % 3;
+    for (let s = 0; s < stemPerPot; s++) {
+      const ox = (s - 1) * 0.09;
+      const oz = ((s % 2) - 0.5) * 0.12;
+      // stem
+      dummyL.position.set(p.x + ox, p.y + 0.32, p.z + oz);
+      dummyL.rotation.set(0, 0, 0);
+      dummyL.scale.set(1, 1, 1);
+      dummyL.updateMatrix();
+      stemMesh.setMatrixAt(pi * stemPerPot + s, dummyL.matrix);
+      // bloom head atop the stem
+      dummyL.position.set(p.x + ox, p.y + 0.58, p.z + oz);
+      dummyL.updateMatrix();
+      const ci = colour;
+      bloomMeshes[ci].setMatrixAt(bloomIdx[ci]++, dummyL.matrix);
+    }
+  }
+  potMesh.instanceMatrix.needsUpdate = true;
+  stemMesh.instanceMatrix.needsUpdate = true;
+  for (const im of bloomMeshes) im.instanceMatrix.needsUpdate = true;
+  g.add(potMesh, stemMesh, ...bloomMeshes);
+
+  // --- INTERIOR: a few WRAPPED GIFTS stacked by the front display ------------
+  const giftPlaces = [
+    [cx - 0.2, 0.85, zMax - 0.6, M.gift],
+    [cx + 0.2, 0.85, zMax - 0.6, M.giftLid],
+    [cx, 1.18, zMax - 0.6, M.gift],
+  ];
+  for (const [x, y, z, gm] of giftPlaces) {
+    const box1 = mesh(G.giftBox, gm);
+    box1.position.set(x, y, z);
+    box1.rotation.y = Math.random() * 0.4;
+    g.add(box1);
+    // ribbon cross on top
+    const rib = mesh(new THREE.BoxGeometry(0.36, 0.04, 0.06), M.giftLid, false);
+    rib.position.set(x, y + 0.16, z);
+    g.add(rib);
+  }
+
+  return { group: g, lights };
 }
 
 // --- Main build -------------------------------------------------------------
@@ -627,7 +904,7 @@ export function buildPlaza() {
 
   // === Lamp posts — spread around the plaza edges ==========================
   const lampPlaces = [
-    [-11, -11], [12, -12], [-12, 12], [12, 12],   // NW lamp nudged off the set-back tower (X,Z maxes at -12)
+    [-11, -11], [12, -12], [-12, 12], [9, 9],     // NW lamp nudged off the set-back tower; SE lamp pulled in to clear the kiosk
   ];
   for (const [x, z] of lampPlaces) {
     const l = makeLamp();
@@ -668,9 +945,20 @@ export function buildPlaza() {
   group.add(billB);
   addCollider(colliders, 22, 16, 0.6, 0.6);
 
+  // === ENTERABLE FLOWER / GIFT KIOSK (SE quadrant, open pocket) =============
+  // A walkable one-room florist tucked into the clear SE pocket. Centre (15,16.5)
+  // ⇒ footprint X[11.5,18.5] Z[12.5,20.5] — clear of the fountain ring, the
+  // benches, the SE lamp (now at 9,9), planters (21,21 / 21,-2) and billboard B
+  // (22,16); all of it within X,Z∈[-23,23]. Its DOORWAY faces -X (the open
+  // plaza), so the player walks straight in from the square. Each solid wall gets
+  // its own collider; the doorway gap gets NONE (walkable threshold).
+  const kiosk = makeFlowerKiosk(15, 16.5, colliders);
+  group.add(kiosk.group);
+
   // --- Animation state (no per-frame allocation) ---------------------------
   let t = 0;
   const baseSign = signPanels.map((p) => p.material.emissiveIntensity ?? 0.55);
+  const kioskLights = kiosk.lights;
   const update = (dt) => {
     t += dt;
     // Rising/falling water jet from the upper bowl.
@@ -697,6 +985,10 @@ export function buildPlaza() {
     for (let i = 0; i < signPanels.length; i++) {
       const flick = 0.85 + 0.18 * Math.sin(t * (2.0 + i * 0.6) + i);
       signPanels[i].material.emissiveIntensity = baseSign[i] * flick;
+    }
+    // Warm pulse of the kiosk pendant lights.
+    for (let i = 0; i < kioskLights.length; i++) {
+      kioskLights[i].material.emissiveIntensity = 0.9 + 0.25 * Math.sin(t * 1.7 + i * 1.6);
     }
   };
 

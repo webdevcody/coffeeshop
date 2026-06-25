@@ -40,6 +40,13 @@ export class LocalPlayer {
     // Vertical state for walking off an edge.
     this.vy = 0;
     this.falling = false;
+    // Trick channels owned by rides.js while skating: a vertical lift (m) applied
+    // on top of the walk/fall offset for ollies/air/grinds, and an extra body yaw
+    // (rad) for in-air 180/360 spins. Default 0 so walking/driving are untouched —
+    // rides.update() (which runs BEFORE this.update each frame) writes them and the
+    // group-transform write below applies them.
+    this.rideLift = 0;
+    this.rideSpin = 0;
     // When seated, the seat object we're on; otherwise null. `sitting`/`seatY`
     // are the network-visible bits so remote players can pose us correctly.
     this.seat = null;
@@ -212,11 +219,13 @@ export class LocalPlayer {
 
     this.character.group.position.x = this.pos.x;
     this.character.group.position.z = this.pos.z;
-    this.character.group.rotation.y = this.facing;
+    // Body yaw = travel facing + any in-air trick spin (0 while not skating).
+    this.character.group.rotation.y = this.facing + (this.rideSpin || 0);
     this.character.update(dt, this.moving);
     // character.update() drives group.position.y (walk bob / seat drop); stack
-    // the fall offset on top of it (0 while grounded).
-    this.character.group.position.y += this.pos.y;
+    // the fall offset AND the skate trick lift (ollie/air/grind) on top of it
+    // (both 0 while grounded / not skating).
+    this.character.group.position.y += this.pos.y + (this.rideLift || 0);
 
     if (this.bubble) {
       this.bubbleTimer -= dt;

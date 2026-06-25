@@ -72,6 +72,33 @@ const benchWood  = new THREE.MeshStandardMaterial({ color: "#6b4326", roughness:
 const binMat     = new THREE.MeshStandardMaterial({ color: "#3c5648", roughness: 0.7, metalness: 0.3 });
 const bollardMat = new THREE.MeshStandardMaterial({ color: "#3a3d42", roughness: 0.5, metalness: 0.6, flatShading: true });
 
+// --- Boutique interior palette (enterable clothing shop) ---------------------
+const boutiqueWall  = new THREE.MeshStandardMaterial({ color: "#e7d8c4", roughness: 0.92 });          // warm plaster
+const boutiqueFloor = new THREE.MeshStandardMaterial({ color: "#9c7b56", roughness: 0.85 });          // wood-look floor
+const boutiqueRoof  = new THREE.MeshStandardMaterial({ color: "#cdbba4", roughness: 0.9 });           // ceiling
+const counterMat    = new THREE.MeshStandardMaterial({ color: "#5e3b25", roughness: 0.55 });          // service counter
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#2e2620", roughness: 0.4, metalness: 0.2 });
+const shelfMat      = new THREE.MeshStandardMaterial({ color: "#7a5638", roughness: 0.7 });           // shelving / rack frame
+const rackBarMat    = new THREE.MeshStandardMaterial({ color: "#b9bcc2", roughness: 0.4, metalness: 0.8 });
+const rugMat        = new THREE.MeshStandardMaterial({ color: "#9d2f3f", roughness: 0.95 });          // cozy rug
+const stoolSeatMat  = new THREE.MeshStandardMaterial({ color: "#324a5e", roughness: 0.6 });           // stool cushion
+const caseGlass     = new THREE.MeshStandardMaterial({
+  color: "#cfe6ef", roughness: 0.12, metalness: 0.3, transparent: true, opacity: 0.4, side: THREE.DoubleSide,
+});
+const lampShadeMat  = new THREE.MeshStandardMaterial({
+  color: "#ffe6b0", roughness: 0.4, emissive: "#ffcf7a", emissiveIntensity: 0.7,
+});
+
+// Neutral base material for instanced garments/folds — white so per-instance
+// setColorAt() colours read true (the base colour multiplies the instance tint).
+const garmentMat = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.85 });
+
+// --- Boutique shared geometry (reused for repeats) ---------------------------
+const garmentGeo = new THREE.BoxGeometry(0.18, 0.85, 0.5);   // a hanging garment slab on the rack
+const foldGeo    = new THREE.BoxGeometry(0.7, 0.16, 0.45);   // a folded stack of clothes on a shelf
+const stoolSeatGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12);
+const stoolLegGeo  = new THREE.CylinderGeometry(0.04, 0.04, 0.55, 8);
+
 // --- Shared geometry (reused) ------------------------------------------------
 const blobGeo   = new THREE.IcosahedronGeometry(0.8, 0);
 const planterGeo = new THREE.BoxGeometry(1.3, 0.5, 1.3);
@@ -583,6 +610,211 @@ export function buildShopping() {
   });
   stopSign.position.set(17.5, 2.7, -9);
   group.add(stopSign);
+
+  // --- ENTERABLE BOUTIQUE -----------------------------------------------------
+  // A small, walk-in clothing boutique tucked along the OPEN south verge of the
+  // tile (the quadrant south of the drive lane is clear: only corner planters at
+  // x=±22 live here). The room is built around a local origin then offset so it
+  // sits fully inside X,Z ∈ [-23,23] and clear of the lane (z>14) and planters.
+  //
+  //   Footprint (LOCAL to SHOP_X/SHOP_Z): 8m wide (X) × 7m deep (Z).
+  //   STREET-FACING wall is the NORTH wall (toward -Z / the avenue) with a 2.2m
+  //   doorway gap. Walls 0.25m thick. Each solid wall gets its OWN AABB collider;
+  //   the doorway gap gets NONE so the player can walk straight in.
+  const SHOP_W = 8.0;     // interior+wall span in X
+  const SHOP_D = 7.0;     // interior+wall span in Z
+  const WT     = 0.25;    // wall thickness
+  const WALL_H = 3.2;     // interior wall height
+  const DOOR_W = 2.2;     // doorway gap in the north (street-facing) wall
+  const SHOP_X = -4.0;    // tile-local centre X  → spans [-8, 0]
+  const SHOP_Z = 18.5;    // tile-local centre Z  → spans [15, 22] (clear of lane @14, planters @±22)
+
+  const shop = new THREE.Group();
+  shop.position.set(SHOP_X, 0, SHOP_Z);
+  // wall extents in shop-local coords
+  const halfW = SHOP_W / 2, halfD = SHOP_D / 2;
+  const zNorth = -halfD;  // street-facing wall (toward the avenue)
+  const zSouth =  halfD;  // back wall
+  const wallTopY = WALL_H;
+
+  // Floor (wood-look) + thin slab so it reads as a real shop floor.
+  const floor = box(SHOP_W, 0.08, SHOP_D, boutiqueFloor, false);
+  floor.position.set(0, 0.05, 0);
+  floor.receiveShadow = true;
+  shop.add(floor);
+
+  // Flat roof / ceiling cap.
+  const ceil = box(SHOP_W + 0.3, 0.2, SHOP_D + 0.3, boutiqueRoof, false);
+  ceil.position.set(0, wallTopY + 0.1, 0);
+  ceil.receiveShadow = true;
+  shop.add(ceil);
+
+  // BACK wall (south, solid full width).
+  const backWall = box(SHOP_W, WALL_H, WT, boutiqueWall);
+  backWall.position.set(0, WALL_H / 2, zSouth);
+  shop.add(backWall);
+  // SIDE walls (east + west, solid full depth).
+  for (const sx of [-halfW + WT / 2, halfW - WT / 2]) {
+    const sideWall = box(WT, WALL_H, SHOP_D, boutiqueWall);
+    sideWall.position.set(sx, WALL_H / 2, 0);
+    shop.add(sideWall);
+  }
+  // FRONT (north / street-facing) wall — TWO short segments flanking the doorway.
+  // Each segment width = (full width - door width) / 2.
+  const segW = (SHOP_W - DOOR_W) / 2;
+  const segOffX = DOOR_W / 2 + segW / 2;   // centre offset of each flanking segment
+  for (const sx of [-segOffX, segOffX]) {
+    const seg = box(segW, WALL_H, WT, boutiqueWall);
+    seg.position.set(sx, WALL_H / 2, zNorth);
+    shop.add(seg);
+  }
+  // A slim lintel over the doorway (spans the gap up high) so the opening reads as
+  // a real door head — it sits ABOVE head height, so no collider needed there.
+  const lintel = box(DOOR_W + 0.1, 0.4, WT, boutiqueWall, false);
+  lintel.position.set(0, WALL_H - 0.2, zNorth);
+  shop.add(lintel);
+
+  // --- Interior content (cozy + themed for a clothing boutique) --------------
+  // Cozy rug centred on the floor.
+  const rug = box(3.4, 0.03, 2.6, rugMat, false);
+  rug.position.set(0, 0.10, 0.4);
+  rug.receiveShadow = true;
+  shop.add(rug);
+
+  // Service COUNTER along the back-right corner (L of body + dark top).
+  const counterBody = box(2.6, 1.0, 0.7, counterMat);
+  counterBody.position.set(halfW - 1.6, 0.5, zSouth - 0.6);
+  shop.add(counterBody);
+  const counterTop = box(2.8, 0.08, 0.85, counterTopMat, false);
+  counterTop.position.set(halfW - 1.6, 1.02, zSouth - 0.6);
+  shop.add(counterTop);
+
+  // SHELVES on the back wall (left side) with little folded-goods products.
+  const shelfX = -halfW + 1.4;
+  for (let s = 0; s < 3; s++) {
+    const shelf = box(2.4, 0.08, 0.5, shelfMat, false);
+    const sy = 0.7 + s * 0.7;
+    shelf.position.set(shelfX, sy, zSouth - 0.35);
+    shop.add(shelf);
+  }
+  // folded clothing stacks on the shelves (instanced for the repeated goods).
+  const foldCount = 3 * 3;   // 3 shelves × 3 stacks
+  const folds = new THREE.InstancedMesh(foldGeo, garmentMat, foldCount);
+  folds.castShadow = true; folds.receiveShadow = true;
+  let fi = 0;
+  for (let s = 0; s < 3; s++) {
+    const sy = 0.7 + s * 0.7;
+    for (let c = 0; c < 3; c++) {
+      dummy.position.set(shelfX - 0.75 + c * 0.75, sy + 0.12, zSouth - 0.35);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      folds.setMatrixAt(fi, dummy.matrix);
+      folds.setColorAt(fi, new THREE.Color(["#c4566b", "#4a7ba6", "#5a8f6b", "#d9a23a", "#7a5aa0"][(s * 3 + c) % 5]));
+      fi++;
+    }
+  }
+  folds.instanceMatrix.needsUpdate = true;
+  if (folds.instanceColor) folds.instanceColor.needsUpdate = true;
+  shop.add(folds);
+
+  // DISPLAY CASE (glass-topped cabinet) by the west wall, near the front.
+  const caseBody = box(1.0, 0.9, 1.6, counterMat);
+  caseBody.position.set(-halfW + 0.7, 0.45, -0.6);
+  shop.add(caseBody);
+  const caseTop = box(1.05, 0.5, 1.65, caseGlass, false);
+  caseTop.position.set(-halfW + 0.7, 1.15, -0.6);
+  shop.add(caseTop);
+
+  // CLOTHING RACK (a metal rail on posts) with hanging garments — the boutique's
+  // centrepiece, parallel to the front wall.
+  const rackZ = -0.2;
+  const rackY = 1.6;
+  const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.6, 8), rackBarMat);
+  rail.rotation.z = Math.PI / 2;
+  rail.position.set(1.0, rackY, rackZ);
+  rail.castShadow = true;
+  shop.add(rail);
+  for (const px of [1.0 - 1.3, 1.0 + 1.3]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.6, 8), rackBarMat);
+    post.position.set(px, 0.8, rackZ);
+    post.castShadow = true;
+    shop.add(post);
+  }
+  // hanging garments on the rail (instanced).
+  const hangCount = 7;
+  const hangers = new THREE.InstancedMesh(garmentGeo, garmentMat, hangCount);
+  hangers.castShadow = true; hangers.receiveShadow = true;
+  for (let h = 0; h < hangCount; h++) {
+    dummy.position.set(1.0 - 1.05 + h * 0.35, rackY - 0.5, rackZ);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    hangers.setMatrixAt(h, dummy.matrix);
+    hangers.setColorAt(h, new THREE.Color(["#c4566b", "#4a7ba6", "#5a8f6b", "#d9a23a", "#7a5aa0", "#cf7a3a", "#3a8f8f"][h % 7]));
+  }
+  hangers.instanceMatrix.needsUpdate = true;
+  if (hangers.instanceColor) hangers.instanceColor.needsUpdate = true;
+  shop.add(hangers);
+
+  // A couple of STOOLS / seats for browsing.
+  for (const [sx, sz] of [[-1.6, 1.4], [-0.4, 1.6]]) {
+    const seat = new THREE.Mesh(stoolSeatGeo, stoolSeatMat);
+    seat.position.set(sx, 0.62, sz);
+    seat.castShadow = true;
+    shop.add(seat);
+    const leg = new THREE.Mesh(stoolLegGeo, rackBarMat);
+    leg.position.set(sx, 0.32, sz);
+    leg.castShadow = true;
+    shop.add(leg);
+  }
+
+  // WALL SIGNAGE inside — a small framed sign on the back wall (faces -Z, into
+  // the room) so a browsing player reads it correctly.
+  const innerSign = artPanel(2.2, 0.8, "sign", {
+    text: "BOUTIQUE", bg: "#5f0f40", fg: "#ffd6e0", emissiveIntensity: 0.4,
+    file: "boutique-inner.png",
+  });
+  innerSign.position.set(-1.0, 2.3, zSouth - 0.06);
+  innerSign.rotation.y = Math.PI;   // face into the room (toward -Z)
+  innerSign.castShadow = false;
+  shop.add(innerSign);
+
+  // Hanging INTERIOR LIGHTS (two glowing pendant shades under the ceiling).
+  for (const [lx, lz] of [[-1.2, -0.2], [1.4, 0.6]]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.6, 6), poleMat);
+    cord.position.set(lx, wallTopY - 0.3, lz);
+    shop.add(cord);
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.3, 12, 1, true), lampShadeMat);
+    shade.position.set(lx, wallTopY - 0.65, lz);
+    shop.add(shade);
+  }
+
+  // --- Wall COLLIDERS (one AABB per solid wall; NONE across the doorway gap) --
+  // Converted to TILE-LOCAL coords by adding the shop origin offset. The two
+  // front segments flank the door; the gap between them carries NO collider.
+  // back wall
+  addCollider(colliders, SHOP_X + 0, SHOP_Z + zSouth, SHOP_W, WT);
+  // side walls
+  addCollider(colliders, SHOP_X + (-halfW + WT / 2), SHOP_Z + 0, WT, SHOP_D);
+  addCollider(colliders, SHOP_X + ( halfW - WT / 2), SHOP_Z + 0, WT, SHOP_D);
+  // front wall — two short segments flanking the 2.2m doorway (no collider in gap)
+  addCollider(colliders, SHOP_X + (-segOffX), SHOP_Z + zNorth, segW, WT);
+  addCollider(colliders, SHOP_X + ( segOffX), SHOP_Z + zNorth, segW, WT);
+
+  group.add(shop);
+
+  // --- Shop SIGN above the door, OUTSIDE, facing the STREET (-Z) -------------
+  // Mounted on the north wall just above the doorway, facing the avenue. Faces
+  // -Z (default plane faces +Z, so rotate 180° to read un-mirrored from the
+  // street to the north). In tile-local coords.
+  const shopSign = artPanel(3.2, 1.0, "sign", {
+    text: "BOUTIQUE", bg: "#5f0f40", fg: "#ffd6e0", emissiveIntensity: 0.55,
+    file: "boutique-sign.png",
+  });
+  shopSign.position.set(SHOP_X, WALL_H + 0.6, SHOP_Z + zNorth - 0.06);
+  shopSign.rotation.y = Math.PI;   // face the street to the north (-Z)
+  shopSign.castShadow = false;
+  group.add(shopSign);
+  signPanels.push(shopSign);
 
   // ------------------------------------------------------------------------
   // update: cheap ambient animation, NO per-frame allocation.

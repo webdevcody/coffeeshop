@@ -116,44 +116,77 @@ export function buildStreets() {
   // and deterministically wins over whatever district slab top sits beneath it at
   // y=0 — that ordering no longer relies on a sub-mm Y lift the depth buffer can't
   // resolve at city distance. Vertical avenues and cross streets share one height
-  // (y=0.02); at intersections the cross street is forced on top by renderOrder.
+  // (y=0.02); inside the 12x12 intersection square the two road planes are exactly
+  // coplanar, so renderOrder alone (which only sequences draws) can't stop them
+  // z-fighting. The H (cross-street) material gets a STRONGER polygonOffset than the
+  // V material, so in the overlap the cross street is pulled a hair closer to the
+  // camera and deterministically wins the depth test — matching the renderOrder
+  // intent (H on top) with an actual depth bias, not luck.
   const roadMatV = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, LEN / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-  const roadMatH = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, WID / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  const roadMatH = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, WID / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1.5, polygonOffsetUnits: -1.5 });
   const kerbMat = new THREE.MeshStandardMaterial({ color: "#b9b6ac", roughness: 0.9 });
+
+  // Kerbs are BROKEN at every crossing so the two perpendicular kerb runs never
+  // interpenetrate at the 4 intersection corners (that overlap was the visible
+  // clipping). KGAP is the half-width of the air gap left around each crossing
+  // road's centreline — wide enough to clear the road (HALFR) AND the perpendicular
+  // kerb's own outer face (HALFR+0.5), so corners read as clean open junctions.
+  const KGAP = HALFR + 1;
+  // Emit straight kerb segments along one axis (`along` = "z" for the Z-running
+  // avenue kerbs, "x" for the X-running cross-street kerbs), spanning [aMin,aMax]
+  // at the fixed cross-coordinate `fixed`, but skipping the band ±KGAP around each
+  // crossing in `crossings`. Only segments with positive length are added.
+  const addKerb = (along, fixed, aMin, aMax, crossings) => {
+    const cuts = crossings.filter((c) => c > aMin && c < aMax).sort((p, q) => p - q);
+    let start = aMin;
+    const emit = (s, e) => {
+      const len = e - s;
+      if (len <= 0.01) return;
+      const mid = (s + e) / 2;
+      const k = along === "z"
+        ? new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, len), kerbMat)
+        : new THREE.Mesh(new THREE.BoxGeometry(len, 0.18, 0.5), kerbMat);
+      if (along === "z") k.position.set(fixed, 0.06, mid);
+      else k.position.set(mid, 0.06, fixed);
+      group.add(k);
+    };
+    for (const c of cuts) { emit(start, c - KGAP); start = c + KGAP; }
+    emit(start, aMax);
+  };
 
   // Vertical avenues (run along Z) + flanking kerbs. PlaneGeometry(ROADW, LEN) with
   // rotation.x=-PI/2 maps width->world X (ROADW) and height->world Z (LEN); the dashed
-  // centre line runs down the height, i.e. along Z. No extra rotation.
+  // centre line runs down the height, i.e. along Z. No extra rotation. Kerbs run the
+  // length of the avenue but are gapped where each cross street (HROADS) passes.
   for (const x of VROADS) {
     const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, LEN), roadMatV);
     r.rotation.x = -Math.PI / 2; r.position.set(x, 0.02, MIDZ); r.receiveShadow = true; r.renderOrder = 0;
     group.add(r);
-    for (const s of [-1, 1]) {
-      const k = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, LEN), kerbMat);
-      k.position.set(x + s * (HALFR + 0.25), 0.06, MIDZ); group.add(k);
-    }
+    for (const s of [-1, 1]) addKerb("z", x + s * (HALFR + 0.25), NEAR, FAR, HROADS);
   }
   // Cross streets (run along X) + flanking kerbs. Use PlaneGeometry(ROADW, WID) then
-  // rotation.z=PI/2 to swing the long axis (and the centre dashes) onto world X.
+  // rotation.z=PI/2 to swing the long axis (and the centre dashes) onto world X. Kerbs
+  // run the width of the street but are gapped where each avenue (VROADS) passes.
   for (const z of HROADS) {
     const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, WID), roadMatH);
     r.rotation.x = -Math.PI / 2; r.rotation.z = Math.PI / 2; r.position.set(MIDX, 0.02, z); r.receiveShadow = true; r.renderOrder = 1;
     group.add(r);
-    for (const s of [-1, 1]) {
-      const k = new THREE.Mesh(new THREE.BoxGeometry(WID, 0.18, 0.5), kerbMat);
-      k.position.set(MIDX, 0.06, z + s * (HALFR + 0.25)); group.add(k);
-    }
+    for (const s of [-1, 1]) addKerb("x", z + s * (HALFR + 0.25), LEFT, RIGHT, VROADS);
   }
 
   // Crosswalks at every intersection (4 approaches each). Top decal of the road
   // tier: a hair (5 mm) above the asphalt, with the strongest polygonOffset and
   // highest renderOrder so the paint always composites over the road and the other
   // decals. depthWrite:false lets the transparent stripes blend over a single
-  // stable surface instead of depth-fighting the road beneath them.
+  // stable surface instead of depth-fighting the road beneath them. The stripes sit
+  // entirely OUTSIDE the 12x12 intersection square on each approach: the bar is 4.2
+  // deep, so a centre offset of HALFR+2.5 puts its inner edge at HALFR+0.4 — clear
+  // of the box edge (HALFR) so it overlaps only ONE road plane, never both.
   const cwMat = new THREE.MeshStandardMaterial({ map: tex(crosswalkTex()), transparent: true, depthWrite: false, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
   const cwGeo = new THREE.PlaneGeometry(ROADW - 1, 4.2);
+  const CWO = HALFR + 2.5;
   for (const x of VROADS) for (const z of HROADS) {
-    for (const [dx, dz, rot] of [[0, HALFR + 2, 0], [0, -HALFR - 2, 0], [HALFR + 2, 0, Math.PI / 2], [-HALFR - 2, 0, Math.PI / 2]]) {
+    for (const [dx, dz, rot] of [[0, CWO, 0], [0, -CWO, 0], [CWO, 0, Math.PI / 2], [-CWO, 0, Math.PI / 2]]) {
       const cw = new THREE.Mesh(cwGeo, cwMat);
       cw.rotation.x = -Math.PI / 2; cw.rotation.z = rot; cw.position.set(x + dx, 0.025, z + dz); cw.renderOrder = 4;
       group.add(cw);
@@ -242,6 +275,15 @@ function addStreetLife(group, m) {
   // the box to the rotated bounding extents so the AABB still fully contains the
   // footprint. Road surface, kerbs, crosswalks and flat decals get NO collider.
   const colliders = [];
+  // True if (x,z) falls inside (or within a small margin of) any intersection
+  // square — the 12x12 patch where an avenue (VROADS) crosses a cross street
+  // (HROADS). Flat road decals (manhole/stain/patch) are dropped here so none
+  // ever lands on the doubly-painted junction and flickers against both road
+  // planes + the crosswalk paint stacked there.
+  const intMargin = HALFR + 2;
+  const inIntersection = (x, z) =>
+    VROADS.some((ax) => Math.abs(x - ax) < intMargin) &&
+    HROADS.some((hz) => Math.abs(z - hz) < intMargin);
   const addAABB = (x, z, hx, hz, ry = 0) => {
     if (ry) {
       const c = Math.abs(Math.cos(ry)), n = Math.abs(Math.sin(ry));
@@ -381,7 +423,10 @@ function addStreetLife(group, m) {
   // stains for a stable ordering on the unified road tier.
   const mhMat = new THREE.MeshStandardMaterial({ color: "#3a3b40", roughness: 0.95, metalness: 0.3, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
   const mhSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 24; z < FAR; z += 38) mhSpots.push([ax + (Math.random() < 0.5 ? -2.5 : 2.5), z]);
+  for (const ax of VROADS) for (let z = NEAR + 24; z < FAR; z += 38) {
+    const x = ax + (Math.random() < 0.5 ? -2.5 : 2.5);
+    if (!inIntersection(x, z)) mhSpots.push([x, z]);
+  }
   const manholes = new THREE.InstancedMesh(new THREE.CircleGeometry(0.55, 14), mhMat, mhSpots.length);
   manholes.renderOrder = 3;
   mhSpots.forEach(([x, z], i) => {
@@ -397,7 +442,10 @@ function addStreetLife(group, m) {
   // overlap reads as a faint stain, never a hard dark patch.
   const stainMat = new THREE.MeshStandardMaterial({ color: "#15151a", roughness: 1, transparent: true, opacity: 0.32, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   const stainSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 14; z < FAR; z += 21) stainSpots.push([ax + (Math.random() - 0.5) * 7, z + (Math.random() - 0.5) * 8, 1.0 + Math.random() * 1.8]);
+  for (const ax of VROADS) for (let z = NEAR + 14; z < FAR; z += 21) {
+    const sx = ax + (Math.random() - 0.5) * 7, sz = z + (Math.random() - 0.5) * 8;
+    if (!inIntersection(sx, sz)) stainSpots.push([sx, sz, 1.0 + Math.random() * 1.8]);
+  }
   const stains = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 10), stainMat, stainSpots.length);
   stains.renderOrder = 2;
   stainSpots.forEach(([x, z, sc], i) => {
@@ -582,7 +630,10 @@ function addStreetLife(group, m) {
   // stains, below the manhole covers, so the ordering stays stable. ---
   const patchMat = new THREE.MeshStandardMaterial({ color: "#42434a", roughness: 1, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2.5, polygonOffsetUnits: -2.5 });
   const patchSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 20; z < FAR; z += 29) patchSpots.push([ax + (Math.random() - 0.5) * 5, z, 1.4 + Math.random() * 2.0, 0.8 + Math.random() * 1.4]);
+  for (const ax of VROADS) for (let z = NEAR + 20; z < FAR; z += 29) {
+    const px = ax + (Math.random() - 0.5) * 5;
+    if (!inIntersection(px, z)) patchSpots.push([px, z, 1.4 + Math.random() * 2.0, 0.8 + Math.random() * 1.4]);
+  }
   const patches = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), patchMat, patchSpots.length);
   patches.renderOrder = 2;
   patchSpots.forEach(([x, z, sw, sl], i) => {

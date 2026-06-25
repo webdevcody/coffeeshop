@@ -70,6 +70,31 @@ const benchMat = new THREE.MeshStandardMaterial({ color: "#5b4632", roughness: 0
 // Lit canopy underside / accent strip — warm emissive, animated by update().
 const accentLitMat = new THREE.MeshStandardMaterial({ color: "#ffdfa0", emissive: "#ffcf6f", emissiveIntensity: 0.8, roughness: 0.5 });
 
+// --- Enterable coffee/tech kiosk shop materials (created ONCE, reused) -------
+// Warm exterior render for the little kiosk's walls (reads cozy vs the glass towers).
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#3a2f28", roughness: 0.92 });
+// Lighter interior plaster so the inside reads bright once you walk in.
+const shopInnerMat = new THREE.MeshStandardMaterial({ color: "#cdbfa8", roughness: 0.88 });
+// Warm timber floor.
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#5b4127", roughness: 0.85 });
+// Flat dark-tech roof/ceiling slab.
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#23252e", roughness: 0.8, metalness: 0.2 });
+// Espresso-bar counter (warm wood front, steel top reuses metalMat).
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6e4a2a", roughness: 0.7 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#9aa0aa", roughness: 0.35, metalness: 0.7 });
+// Shelving + product/goods accents.
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#7a5a38", roughness: 0.75 });
+const productMatA = new THREE.MeshStandardMaterial({ color: "#c0552f", roughness: 0.6 });   // roast bags / mugs
+const productMatB = new THREE.MeshStandardMaterial({ color: "#2f7d6b", roughness: 0.6 });   // tins
+const productMatC = new THREE.MeshStandardMaterial({ color: "#d9b46a", roughness: 0.55 });  // boxed gear / cups
+// Display case glass (reuse the bright lobby glass look) handled via lobbyGlassMat.
+// Stools.
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#1f2329", roughness: 0.6, metalness: 0.3 });
+// Cozy rug.
+const rugMat = new THREE.MeshStandardMaterial({ color: "#7a2f3a", roughness: 0.95 });
+// Warm hanging interior light bulbs — emissive, gently pulsed by update().
+const shopLightMat = new THREE.MeshStandardMaterial({ color: "#fff2c8", emissive: "#ffd27a", emissiveIntensity: 0.9, roughness: 0.4 });
+
 // Window-grid facade: an emissive CanvasTexture of lit windows, reused for all
 // tower faces (we tile it per-face via texture.repeat clones below).
 function makeWindowTexture() {
@@ -394,6 +419,173 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
   return g;
 }
 
+// --- Enterable coffee/tech kiosk -------------------------------------------
+// Builds a small walk-in shop centered on the LOCAL origin: a room W (X) wide ×
+// D (Z) deep with 4 walls (~0.25 m thick), a timber FLOOR and a flat tech ROOF,
+// and a 2.2 m DOORWAY GAP in the +Z (street-facing) wall. The street wall is
+// therefore split into TWO short segments flanking the door, and the doorway
+// itself gets NO wall and NO collider so the interior is walkable through it.
+//
+// Returns { group, colliders, lights } where:
+//   group    — THREE.Group of all shop meshes, shop-local coords (caller offsets).
+//   colliders— 5 wall AABBs in SHOP-LOCAL space (back + 2 sides + 2 front
+//              segments); the caller translates them by the shop's world center.
+//   lights   — emissive bulb materials for update() to pulse (warm flicker).
+function makeCoffeeShop(W, D, signText, signFile) {
+  const g = new THREE.Group();
+  const wallT = 0.25;          // wall thickness
+  const wallH = 3.2;           // interior wall height
+  const door = 2.2;            // doorway gap width (in the +Z street wall)
+  const localColliders = [];   // wall AABBs in shop-local space
+
+  // FLOOR — timber slab filling the footprint, top flush at y=0.
+  const floor = box(W, 0.2, D, shopFloorMat, false);
+  floor.position.y = -0.1;
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  // ROOF / flat ceiling slab capping the room.
+  const roof = box(W + wallT, 0.3, D + wallT, shopRoofMat);
+  roof.position.y = wallH + 0.15;
+  g.add(roof);
+
+  // Helper: a wall segment box + its matching AABB collider (shop-local).
+  // Outer face uses the warm exterior mat; a thin inner liner reads bright.
+  const addWall = (cx, cz, w, d) => {
+    const wm = box(w, wallH, d, shopWallMat);
+    wm.position.set(cx, wallH / 2, cz);
+    g.add(wm);
+    localColliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
+  };
+
+  // BACK wall (-Z), full width.
+  addWall(0, -D / 2 + wallT / 2, W, wallT);
+  // SIDE walls (±X), spanning the inner depth between the front/back faces.
+  const sideD = D - wallT;
+  addWall(-W / 2 + wallT / 2, 0, wallT, sideD);
+  addWall(W / 2 - wallT / 2, 0, wallT, sideD);
+  // FRONT wall (+Z, street-facing) split into TWO segments flanking the doorway.
+  // Doorway is centered at x=0; each segment runs from the side wall to the gap.
+  const frontZ = D / 2 - wallT / 2;
+  const segW = (W - door) / 2;                 // width of each front segment
+  const segCx = door / 2 + segW / 2;           // |x| center of each segment
+  addWall(-segCx, frontZ, segW, wallT);
+  addWall(segCx, frontZ, segW, wallT);
+  // NOTE: NO wall and NO collider span the doorway gap (x ∈ [-1.1, 1.1]) — the
+  // player walks straight in through the +Z opening.
+
+  // Bright inner liners on the back + side walls (reads as a finished interior,
+  // not the dark exterior, once inside). Thin planes, no collider, no shadow.
+  const linerBack = box(W - 2 * wallT, wallH - 0.2, 0.04, shopInnerMat, false);
+  linerBack.position.set(0, wallH / 2, -D / 2 + wallT + 0.03);
+  g.add(linerBack);
+  for (const sx of [-1, 1]) {
+    const liner = box(0.04, wallH - 0.2, sideD - 0.1, shopInnerMat, false);
+    liner.position.set(sx * (W / 2 - wallT - 0.03), wallH / 2, 0);
+    g.add(liner);
+  }
+
+  // COZY RUG on the floor (just inside the door).
+  const rug = new THREE.Mesh(planeGeo, rugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.scale.set(W * 0.42, D * 0.34, 1);
+  rug.position.set(0, 0.012, D * 0.06);
+  rug.receiveShadow = true;
+  g.add(rug);
+
+  // SERVICE COUNTER — an L of espresso bar along the back-left, steel top.
+  const cBody = box(W * 0.5, 1.1, 0.85, counterMat);
+  cBody.position.set(-W * 0.16, 0.55, -D / 2 + wallT + 0.6);
+  g.add(cBody);
+  const cTop = box(W * 0.5 + 0.12, 0.1, 0.97, counterTopMat);
+  cTop.position.set(-W * 0.16, 1.12, -D / 2 + wallT + 0.6);
+  g.add(cTop);
+  // Espresso machine + a couple of canisters on the bar (steel + warm caps).
+  const espresso = box(0.7, 0.55, 0.5, counterTopMat);
+  espresso.position.set(-W * 0.28, 1.45, -D / 2 + wallT + 0.6);
+  g.add(espresso);
+  for (const dx of [-0.05, 0.18]) {
+    const can = cyl(0.1, 0.32, productMatA);
+    can.position.set(-W * 0.16 + dx, 1.33, -D / 2 + wallT + 0.55);
+    g.add(can);
+  }
+
+  // SHELVES along the back-right with little instanced products/goods.
+  const shelfX = W * 0.22;
+  const shelfZ = -D / 2 + wallT + 0.18;
+  for (const sy of [0.9, 1.55, 2.2]) {
+    const shelf = box(W * 0.4, 0.06, 0.32, shelfMat, false);
+    shelf.position.set(shelfX, sy, shelfZ);
+    g.add(shelf);
+  }
+  // Instanced little boxes/bags/tins on the shelves (one InstancedMesh, reused
+  // boxGeo) — coffee roast bags, tins and boxed tech/cups for the kiosk vibe.
+  const prodMats = [productMatA, productMatB, productMatC];
+  for (let pm = 0; pm < 3; pm++) {
+    const im = new THREE.InstancedMesh(boxGeo, prodMats[pm], 6);
+    im.castShadow = false; im.receiveShadow = false;
+    let i = 0;
+    for (const sy of [0.9, 1.55, 2.2]) {
+      for (let k = 0; k < 2; k++) {
+        const px = shelfX - W * 0.16 + (pm * 2 + k) * (W * 0.4 / 6);
+        _q.identity();
+        _v.set(px, sy + 0.18, shelfZ);
+        _s.set(0.18, 0.3, 0.18);
+        _mtx.compose(_v, _q, _s);
+        im.setMatrixAt(i++, _mtx);
+      }
+    }
+    im.instanceMatrix.needsUpdate = true;
+    g.add(im);
+  }
+
+  // DISPLAY CASE (glass pastry/gear cabinet) at the front-right, by the window.
+  const caseBody = box(1.8, 0.95, 0.7, counterMat);
+  caseBody.position.set(W * 0.28, 0.48, D * 0.18);
+  g.add(caseBody);
+  const caseGlass = box(1.8, 0.6, 0.72, lobbyGlassMat, false);
+  caseGlass.position.set(W * 0.28, 1.25, D * 0.18);
+  g.add(caseGlass);
+  for (const dx of [-0.5, 0, 0.5]) {
+    const goodie = box(0.3, 0.18, 0.3, productMatC, false);
+    goodie.position.set(W * 0.28 + dx, 1.05, D * 0.18);
+    g.add(goodie);
+  }
+
+  // A COUPLE OF STOOLS at the bar (cylinder seat + leg).
+  for (const sx of [-W * 0.04, W * 0.1]) {
+    const seat = cyl(0.24, 0.1, stoolSeatMat);
+    seat.position.set(sx, 0.78, -D / 2 + wallT + 1.5);
+    g.add(seat);
+    const leg = cyl(0.05, 0.74, metalMat, false);
+    leg.position.set(sx, 0.4, -D / 2 + wallT + 1.5);
+    g.add(leg);
+  }
+
+  // WALL SIGNAGE inside — a little menu board on the back wall above the bar.
+  const menu = artPanel(2.2, 1.1, "sign", {
+    text: "MENU", bg: "#1c2430", fg: "#ffd27a",
+    emissive: "#caa64f", emissiveIntensity: 0.7, file: "sign-shop-menu.png",
+  });
+  menu.position.set(-W * 0.16, 2.2, -D / 2 + wallT + 0.06);
+  g.add(menu);
+
+  // HANGING INTERIOR LIGHTS — two warm bulbs on short cords from the ceiling.
+  const bulbMats = [];
+  for (const lx of [-W * 0.18, W * 0.18]) {
+    const cord = box(0.03, 0.5, 0.03, antennaMat, false);
+    cord.position.set(lx, wallH - 0.25, D * 0.02);
+    g.add(cord);
+    const bm = shopLightMat.clone();
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), bm);
+    bulb.position.set(lx, wallH - 0.55, D * 0.02);
+    g.add(bulb);
+    bulbMats.push(bm);
+  }
+
+  return { group: g, colliders: localColliders, lights: bulbMats };
+}
+
 export function buildDowntown() {
   const group = new THREE.Group();
   const colliders = [];
@@ -597,6 +789,38 @@ export function buildDowntown() {
     group.add(curb);
   }
 
+  // --- ENTERABLE COFFEE / TECH KIOSK ----------------------------------------
+  // A small walk-in shop tucked into the open pocket of the NE quadrant, between
+  // the flagship tower (collider Zmin -15.2) and the outer block (collider Xmin
+  // 15.5), along the north inner edge. Footprint X[7,15] Z[-22.25,-15.75] — all
+  // inside the ±23 setback, no overlap with buildings/lanes/props. The DOORWAY
+  // faces +Z (south), toward the plaza/avenue cross — the street side.
+  const SHOP_W = 8, SHOP_D = 6.5;
+  const shopX = 11, shopZ = -19; // world center of the shop within this tile
+  const shop = makeCoffeeShop(SHOP_W, SHOP_D, "BYTE BREW", "sign-bytebrew.png");
+  shop.group.position.set(shopX, 0, shopZ);
+  group.add(shop.group);
+  // Translate the shop's LOCAL wall AABBs into tile-local space and add them as
+  // real colliders. The doorway gap carries NO collider, so the player can walk
+  // in through the +Z opening.
+  for (const c of shop.colliders) {
+    colliders.push({
+      minX: c.minX + shopX, maxX: c.maxX + shopX,
+      minZ: c.minZ + shopZ, maxZ: c.maxZ + shopZ,
+    });
+  }
+  // OUTSIDE shop SIGN above the door, facing the street (+Z). artPanel faces +Z
+  // by default and signCanvas draws text left-to-right, so it reads un-mirrored
+  // on the street-facing normal — no rotation that would flip it.
+  const shopSign = artPanel(3.0, 1.0, "sign", {
+    text: "BYTE BREW", bg: "#241a12", fg: "#ffd27a",
+    emissive: "#caa64f", emissiveIntensity: 0.85, file: "sign-bytebrew.png",
+  });
+  shopSign.position.set(shopX, 3.55, shopZ + SHOP_D / 2 + 0.08);
+  group.add(shopSign);
+  // Hook the shop's hanging bulbs into the ambient animation (warm flicker).
+  const shopLights = shop.lights;
+
   // --- Ambient animation ----------------------------------------------------
   let t = 0;
   function update(dt) {
@@ -612,6 +836,10 @@ export function buildDowntown() {
     for (let i = 0; i < litList.length; i++) litList[i].emissiveIntensity = lit;
     // Slowly rotate the rooftop neon beacon sign.
     for (const s of spinners) s.rotation.y += dt * 0.6;
+    // Warm flicker on the kiosk's hanging interior bulbs (each on its own phase).
+    for (let i = 0; i < shopLights.length; i++) {
+      shopLights[i].emissiveIntensity = 0.85 + 0.15 * Math.sin(t * 3.1 + i * 2.4);
+    }
   }
 
   // Whole tile is walkable; towers block via colliders.

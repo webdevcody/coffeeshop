@@ -1,5 +1,15 @@
 // Sets up the Three.js renderer, scene, camera, lights, and the CSS2D overlay
 // renderer used for floating name labels and chat bubbles.
+//
+// DAY/NIGHT CYCLE: a single time-of-day value t (0..1) auto-advances slowly
+// (a full sunrise→day→sunset→night loop in ~7 real minutes). Everything that
+// reads the sky — the directional sun's position/colour/intensity, the gradient
+// sky-dome, the hemisphere ambient, and the fog colour — is driven from t every
+// frame via updateDayNight(dt). At night the whole scene sinks to a moody, deep
+// blue so the emissive street lamps, neon signs and lit windows pop. Materials
+// and geometry are reused; per-frame work mutates pre-allocated scratch colours
+// and never allocates. The fog DISTANCES (220/480) and camera near/far
+// (1.0/600) are deliberately left untouched — they fix z-fighting.
 
 import * as THREE from "three";
 import { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
@@ -19,34 +29,36 @@ export function createEngine(canvas) {
   // Gentle exposure lift for a warm, golden-hour read. ACES rolls off the bright
   // sun-lit faces softly while keeping the gradient sky + warm key punchy; a hair
   // higher than neutral so shaded sides still hold detail without washing out.
+  // The day/night driver nudges this down at night so the emissive lamps/neon
+  // read against a genuinely dark scene rather than a grey one.
   renderer.toneMappingExposure = 1.22;
 
   const scene = new THREE.Scene();
 
-  // Shared golden-hour sun direction (points FROM the city TOWARD the sun in the
-  // sky). The key light, the visible sun disc, and its glow all read off this so
-  // the cast shadows, the highlight side of the buildings, and the bright spot in
-  // the sky all agree — that consistency is what sells a real sun. Low on the
-  // horizon (small +y) for long, raking golden-hour shadows.
+  // Shared sun direction. This is now a LIVE vector: the day/night driver swings
+  // it through an arc across the sky each frame (see updateDayNight). The key
+  // light, the visible sun disc and the sky's bright spot all read off it, so the
+  // cast shadows, the highlight side of the buildings and the bright spot in the
+  // sky stay in agreement as the sun moves. Seeded at a golden-hour pose.
   const SUN_DIR = new THREE.Vector3(-0.62, 0.42, -0.66).normalize();
 
   // --- Gradient sky -------------------------------------------------------
-  // A big back-side sphere with a vertical blue->pale CanvasTexture gives the
-  // city real atmospheric depth instead of the old flat fill colour. The dome
-  // ignores fog/lighting (basic material) so it always reads as open sky.
-  // HORIZON_COLOR matches the fog so the city dissolves seamlessly into the
-  // haze where the dome meets the ground plane.
-  const ZENITH_COLOR = "#3a7bd5"; // deep sky blue overhead
-  const HORIZON_COLOR = "#cfe3f2"; // pale, hazy blue at the horizon
-  scene.add(makeSkyDome(ZENITH_COLOR, HORIZON_COLOR));
-  // A soft sun disc + halo billboarded onto the dome in the key-light direction.
-  scene.add(makeSunDisc(SUN_DIR));
+  // A big back-side sphere with a vertical CanvasTexture gradient gives the city
+  // real atmospheric depth. The gradient stops are re-painted each frame from the
+  // time-of-day colours (day blue → sunset orange/pink → deep night blue), so the
+  // dome is the single biggest tell of the hour. The dome ignores fog/lighting
+  // (basic material) so it always reads as open sky.
+  const sky = makeSkyDome();
+  scene.add(sky.dome);
+  // A soft sun/moon disc + halo billboarded onto the dome in the key-light
+  // direction; its colour + opacity are driven by the day/night cycle too.
+  const sunDisc = makeSunDisc(SUN_DIR);
+  scene.add(sunDisc.sprite);
 
-  // Fog pushed WAY out for the expanded city (districts run 60–250m from the cafe).
-  // Matches the sky-dome horizon so distant buildings fade into the haze line.
-  // Only a faint distance haze past 220 m so the city reads crisp up close. Far
-  // edge tucked just inside the (shrunk) sky-dome radius so the haze hides the cut.
-  scene.fog = new THREE.Fog(HORIZON_COLOR, 220, 480);
+  // Fog colour starts at the daytime horizon; the day/night driver re-tints it to
+  // match the sky horizon each frame. DISTANCES are fixed at 220/480 and MUST NOT
+  // change — only the colour is animated.
+  scene.fog = new THREE.Fog(0xcfe3f2, 220, 480);
 
   // near=1.0 (not 0.1) buys ~10x depth-buffer precision everywhere, which is what
   // stops the near-coplanar ground layers (base/slab/road/markings, all within a
@@ -73,7 +85,19 @@ export function createEngine(canvas) {
   el.style.zIndex = "5";
   document.body.appendChild(el);
 
-  addLights(scene, SUN_DIR);
+  const lights = addLights(scene, SUN_DIR);
+
+  // --- Day/night cycle ----------------------------------------------------
+  // The whole atmosphere is a function of one scalar, time-of-day t in [0,1):
+  //   t=0.00 → deep night      t=0.25 → dawn/sunrise
+  //   t=0.50 → bright midday    t=0.75 → dusk/sunset
+  // The sun's elevation follows sin(2π·(t−0.25)) so it's highest at midday and
+  // dips fully below the horizon around t≈0..0.1 / 0.9..1. Seeded at golden hour
+  // so the scene opens warm, then advances on its own.
+  const dayNight = makeDayNight({ sky, sunDisc, lights, fog: scene.fog, renderer, sunDir: SUN_DIR });
+  // Seed a pleasant late-afternoon golden hour, then apply once so the very first
+  // rendered frame already matches (no one-frame flash of the default daytime).
+  dayNight.setTimeOfDay(0.7);
 
   function onResize() {
     const w = window.innerWidth;
@@ -85,24 +109,35 @@ export function createEngine(canvas) {
   }
   window.addEventListener("resize", onResize);
 
-  return { renderer, scene, camera, labelRenderer, onResize };
+  return {
+    renderer,
+    scene,
+    camera,
+    labelRenderer,
+    onResize,
+    // --- additive day/night surface (existing keys above are untouched) ---
+    // Advance the cycle by real seconds and re-drive the whole atmosphere.
+    updateDayNight: (dt) => dayNight.update(dt),
+    // Jump the cycle to an absolute time-of-day (0..1); wraps. Useful for tests.
+    setTimeOfDay: (t) => dayNight.setTimeOfDay(t),
+    // Read the current time-of-day (0..1).
+    getTimeOfDay: () => dayNight.t,
+  };
 }
 
 // Builds the gradient sky dome: a large sphere rendered from the inside with a
 // vertical CanvasTexture gradient. Unlit + fog-immune so it stays a clean
 // backdrop. Radius 500 sits inside the 600 far plane and well outside the
 // ~365 m city; the fog far (480) hazes the city out just before the dome.
-function makeSkyDome(zenith, horizon) {
+//
+// The day/night driver repaints the three gradient stops each frame and flags
+// the texture for re-upload (texture.needsUpdate). The canvas/ctx are reused, so
+// repainting is just three fillStyle + fillRect calls — no allocation.
+function makeSkyDome() {
   const canvas = document.createElement("canvas");
   canvas.width = 4;
   canvas.height = 256;
   const ctx = canvas.getContext("2d");
-  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  grad.addColorStop(0.0, zenith); // top of the dome
-  grad.addColorStop(0.55, "#7fb0e6"); // mid-sky transition
-  grad.addColorStop(1.0, horizon); // hazy horizon (matches fog)
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -119,14 +154,58 @@ function makeSkyDome(zenith, horizon) {
   const dome = new THREE.Mesh(geo, mat);
   dome.renderOrder = -1; // draw first, behind everything
   dome.frustumCulled = false;
-  return dome;
+
+  // Repaint the vertical gradient from CSS colour strings (zenith → mid → horizon)
+  // and a star amount (0..1, faint speckle that fades in at night). Reuses the
+  // canvas + 2d context; the only per-call cost is the gradient fill + the GPU
+  // re-upload three.js triggers off needsUpdate.
+  function paint(zenithCss, midCss, horizonCss, stars) {
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0.0, zenithCss); // top of the dome
+    grad.addColorStop(0.55, midCss); // mid-sky transition
+    grad.addColorStop(1.0, horizonCss); // hazy horizon (matches fog)
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Subtle stars near the top of the dome at night: a sparse deterministic
+    // speckle so it doesn't shimmer frame-to-frame. Cheap — a handful of dots
+    // over a 4×256 canvas, only when stars > 0.
+    if (stars > 0.01) {
+      ctx.fillStyle = `rgba(255,255,255,${(stars * 0.85).toFixed(3)})`;
+      // Deterministic pseudo-random positions (no Math.random churn per frame).
+      for (let i = 0; i < STAR_SEEDS.length; i++) {
+        const s = STAR_SEEDS[i];
+        // Only the upper ~60% of the dome (away from the bright horizon haze).
+        ctx.fillRect(s.x, s.y, 1, 1);
+      }
+    }
+    texture.needsUpdate = true;
+  }
+
+  return { dome, mat, texture, paint };
 }
 
-// Visible sun: a bright warm core wrapped in a soft falloff halo, painted into a
-// radial-gradient CanvasTexture so it's a single cheap billboarded plane (no
-// per-frame work, drawn once). It sits just inside the sky dome along SUN_DIR so
-// it lines up with the key light's highlights and shadow direction, then is
-// scaled up so the glow bleeds into the sky like real atmospheric scatter.
+// A fixed sparse set of star positions on the 4×256 sky canvas, biased to the
+// upper (zenith) half. Computed once at module load so the night sky is stable.
+const STAR_SEEDS = (() => {
+  const out = [];
+  let seed = 1337;
+  const rnd = () => {
+    // tiny LCG → deterministic, allocation-free at use sites
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let i = 0; i < 26; i++) {
+    out.push({ x: Math.floor(rnd() * 4), y: Math.floor(rnd() * 150) });
+  }
+  return out;
+})();
+
+// Visible sun/moon: a bright warm core wrapped in a soft falloff halo, painted
+// into a radial-gradient CanvasTexture so it's a single cheap billboarded plane.
+// It rides the live SUN_DIR (the day/night driver repositions it on the dome each
+// frame) so it lines up with the key light's highlights and shadow direction. Its
+// colour tint (warm sun → pale moon) and opacity are driven by the cycle so it
+// fades out below the horizon and turns silvery at night.
 function makeSunDisc(sunDir) {
   const canvas = document.createElement("canvas");
   canvas.width = 128;
@@ -154,30 +233,33 @@ function makeSunDisc(sunDir) {
     depthTest: false, // always behind geometry via renderOrder, never z-fights
     fog: false,
     opacity: 0.95,
+    color: 0xffffff, // tinted by the day/night driver (warm sun ↔ pale moon)
   });
-  const sun = new THREE.Sprite(mat);
+  const sprite = new THREE.Sprite(mat);
   // Park it on the dome's inner shell (radius 500) so it reads as infinitely far.
-  sun.position.copy(sunDir).multiplyScalar(470);
-  sun.scale.set(95, 95, 1); // big soft glow; the bright core is only the centre
-  sun.renderOrder = -1; // with the dome, behind all city geometry
-  sun.frustumCulled = false;
-  return sun;
+  sprite.position.copy(sunDir).multiplyScalar(470);
+  sprite.scale.set(95, 95, 1); // big soft glow; the bright core is only the centre
+  sprite.renderOrder = -1; // with the dome, behind all city geometry
+  sprite.frustumCulled = false;
+  return { sprite, mat };
 }
 
 function addLights(scene, sunDir) {
   // Richer hemisphere bounce: a slightly deeper sky-blue from above grades into a
   // warmer, golden ground bounce, so shaded faces aren't flat grey — they pick up
   // cool sky on top and warm bounce underneath, the way a real golden-hour street
-  // does. Pulled back a touch from before so the directional sun can do the
-  // modelling instead of ambient washing everything flat.
+  // does. The day/night driver re-tints both colours and the intensity each frame
+  // (dim cool moonlight at night, bright neutral by day).
   const ambient = new THREE.HemisphereLight("#bcdcff", "#9c7a4e", 0.95);
   ambient.position.set(0, 50, 0);
   scene.add(ambient);
 
-  // Main warm golden-hour key light. Direction comes from the shared SUN_DIR so
-  // it agrees with the visible sun disc and the sky's bright spot. Warmer + a
-  // hair brighter for a sunset glow; placed far out along SUN_DIR so its rays are
-  // effectively parallel across the whole city, throwing long raking shadows.
+  // Main key light (the sun by day, the moon by night). Direction comes from the
+  // shared live SUN_DIR so it always agrees with the visible disc and the sky's
+  // bright spot; the day/night driver re-tints its colour (warm dawn → bright
+  // midday → orange dusk → faint cool moonlight) and its intensity (near zero at
+  // night). Placed far out along SUN_DIR so its rays are effectively parallel
+  // across the whole city, throwing long raking shadows.
   const sun = new THREE.DirectionalLight("#ffdca0", 3.0); // warm golden sunlight
   // The city of interest is centred ~90 m in front of the cafe; anchor the light
   // rig there and offset along SUN_DIR so the frustum is centred on the action.
@@ -216,9 +298,262 @@ function addLights(scene, sunDir) {
   // the warm sun can't reach with a faint sky-blue, so buildings keep readable
   // form (a lit edge + a cool shaded edge) instead of going to dead silhouette.
   // No shadows — it's pure fill, cheap, and balances the warm key's white point.
+  // The day/night driver dims it down at night (the moon doesn't fill like the
+  // bright daytime sky bounce does).
   const fill = new THREE.DirectionalLight("#a8c8f0", 0.55);
   fill.position.copy(sunDir).multiplyScalar(-120).add(CITY_CENTER);
   fill.position.y = 45; // lift it off the ground so it grazes upper storeys
   scene.add(fill);
   scene.add(fill.target); // target defaults to origin; fine for a broad fill
+
+  return { ambient, sun, fill, cityCenter: CITY_CENTER, fillBaseIntensity: 0.55 };
+}
+
+// =============================================================================
+// Day/night driver
+// =============================================================================
+// Owns the time-of-day scalar and re-paints/-tints everything each frame from a
+// small set of pre-allocated scratch Colors (no per-frame allocation). The look
+// is built from a handful of keyframed "moods" we lerp between by t.
+function makeDayNight({ sky, sunDisc, lights, fog, renderer, sunDir }) {
+  // A full cycle in ~7 real minutes (420 s). t advances by dt/CYCLE_SECONDS.
+  const CYCLE_SECONDS = 420;
+
+  // --- Mood keyframes ----------------------------------------------------
+  // Each phase defines the sky gradient (zenith/mid/horizon), the fog tint, the
+  // hemisphere sky/ground colours + intensity, the sun colour + max intensity,
+  // and the exposure. We index these by sun ELEVATION-derived phases rather than
+  // raw t so the transitions land where the sun actually is. Colours are 0xRRGGBB.
+  // NIGHT (sun well below horizon) — deep blue, moody, lamps/neon carry the scene.
+  const NIGHT = {
+    zenith: 0x05080f,
+    mid: 0x0a1024,
+    horizon: 0x141d33,
+    fog: 0x141d33,
+    skyAmb: 0x2a3a6a, // cool moon-sky
+    groundAmb: 0x10131c, // near-black ground bounce
+    ambInt: 0.32,
+    sun: 0xaebfe0, // pale cool moonlight
+    sunMax: 0.28,
+    fill: 0x35507f,
+    fillInt: 0.12,
+    exposure: 1.0,
+    stars: 1.0,
+    discColor: 0xcdd8f5, // silvery moon
+  };
+  // DAWN/DUSK (sun near the horizon) — warm orange/pink twilight band.
+  const TWILIGHT = {
+    zenith: 0x2a4a86,
+    mid: 0x9a6f8e,
+    horizon: 0xff9b5c, // orange/pink horizon glow
+    fog: 0xe2a07a,
+    skyAmb: 0x8fa6d6,
+    groundAmb: 0x6e4a38,
+    ambInt: 0.7,
+    sun: 0xffb066, // warm low-sun orange
+    sunMax: 2.1,
+    fill: 0x8c7fb0,
+    fillInt: 0.32,
+    exposure: 1.18,
+    stars: 0.18,
+    discColor: 0xffd2a0, // warm golden disc
+  };
+  // DAY (sun high) — bright open blue, neutral key, strong fill.
+  const DAY = {
+    zenith: 0x3a7bd5,
+    mid: 0x7fb0e6,
+    horizon: 0xcfe3f2,
+    fog: 0xcfe3f2,
+    skyAmb: 0xbcdcff,
+    groundAmb: 0x9c7a4e,
+    ambInt: 0.95,
+    sun: 0xfff1d8, // bright slightly-warm midday
+    sunMax: 3.0,
+    fill: 0xa8c8f0,
+    fillInt: 0.55,
+    exposure: 1.22,
+    stars: 0.0,
+    discColor: 0xfff4e0, // hot near-white sun
+  };
+
+  // --- Scratch state (allocated ONCE; mutated in place every frame) -------
+  const cZen = new THREE.Color();
+  const cMid = new THREE.Color();
+  const cHor = new THREE.Color();
+  const cFog = new THREE.Color();
+  const cSkyAmb = new THREE.Color();
+  const cGndAmb = new THREE.Color();
+  const cSun = new THREE.Color();
+  const cFill = new THREE.Color();
+  const cDisc = new THREE.Color();
+  // Scratch for the lerp endpoints so we never `new` a Color while blending.
+  const tmpA = new THREE.Color();
+  const tmpB = new THREE.Color();
+  // Reused for repainting the sky canvas (CSS hex strings) — built per frame but
+  // as primitive strings via a fixed scratch (getHexString returns a fresh string
+  // regardless; that's unavoidable, but it's three small strings, not objects).
+
+  const state = {
+    t: 0.7,
+    // expose the scratch numerics for the closure helpers below
+  };
+
+  // Lerp helper that writes into `out` (no allocation). Mixes a→b by k in linear
+  // space via three.js Color.lerpColors.
+  function mix(out, aHex, bHex, k) {
+    tmpA.setHex(aHex);
+    tmpB.setHex(bHex);
+    out.lerpColors(tmpA, tmpB, k);
+  }
+  function lerpN(a, b, k) {
+    return a + (b - a) * k;
+  }
+  function clamp01(v) {
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  function smooth(k) {
+    k = clamp01(k);
+    return k * k * (3 - 2 * k); // smoothstep
+  }
+
+  // Drive the entire atmosphere from the current t.
+  function apply() {
+    const t = state.t;
+    // Sun elevation: highest at midday (t=0.5), below horizon around the wrap.
+    // angle goes 0→2π over the day; we offset so t=0.25 is sunrise (elev=0 rising)
+    // and t=0.75 is sunset (elev=0 falling).
+    const ang = (t - 0.25) * Math.PI * 2;
+    const elev = Math.sin(ang); // -1 (deep night) .. +1 (high noon)
+    // Azimuth sweeps the sun east→west across the sky as the day progresses so
+    // the disc and shadows actually travel rather than just bobbing up and down.
+    const azi = (t - 0.25) * Math.PI * 2;
+
+    // --- Update the live sun direction (arc across the sky) ---------------
+    // y = elevation; x/z trace a horizontal circle for the azimuth sweep. We let
+    // the sun dip below y=0 at night (the disc fades out, the key light dims to
+    // moonlight, so a sub-horizon sun is fine and keeps shadows raking long near
+    // dawn/dusk). Clamp the minimum height a touch so the shadow rig stays sane.
+    const horiz = Math.cos(ang); // radius of the horizontal sweep component
+    sunDir.set(Math.cos(azi) * 0.78, Math.max(elev, -0.35), Math.sin(azi) * 0.78 * Math.sign(horiz) || 0.0001);
+    // Keep a sensible minimum so normalize never blows up and the rig isn't flat.
+    if (Math.abs(sunDir.y) < 0.04 && Math.abs(sunDir.x) < 0.04 && Math.abs(sunDir.z) < 0.04) {
+      sunDir.z = -0.66;
+    }
+    sunDir.normalize();
+
+    // --- Blend the mood by elevation --------------------------------------
+    // dayK: 0 at/below horizon → 1 when the sun is well up. twiK: peaks right at
+    // the horizon (the orange band), falling off as the sun climbs or sinks.
+    const dayK = smooth((elev - 0.06) / 0.34); // ramps in just above the horizon
+    const nightK = smooth((-elev - 0.04) / 0.22); // ramps in just below
+    // Twilight weight: strongest when |elev| is small (sun near the horizon).
+    const twiK = clamp01(1 - Math.min(1, Math.abs(elev) / 0.28));
+
+    // Choose the two endpoints to blend between based on which side of the horizon
+    // the sun is on, then fold in the twilight band. We build it as:
+    //   base = mix(NIGHT, DAY, dayK)      (the broad day/night axis)
+    //   final = mix(base, TWILIGHT, twiK) (warm band near the horizon)
+    // Doing it per-channel with scratch colours keeps allocation at zero.
+    applyMood(dayK, twiK, nightK, elev);
+
+    // --- Sun/key elevation gates the shadow + disc visibility -------------
+    // Position the visible disc on the dome along the live sun direction.
+    sunDisc.sprite.position.copy(sunDir).multiplyScalar(470);
+    // Fade the disc out as it sinks below the horizon (and slightly as it climbs
+    // to noon so the glow doesn't blow out the bright daytime sky).
+    const discVis = clamp01((elev + 0.12) / 0.25);
+    sunDisc.mat.opacity = 0.18 + discVis * 0.77;
+    sunDisc.mat.color.copy(cDisc);
+
+    // Reposition the key + fill rigs along the new sun direction so shadows and
+    // the bright/shaded faces track the moving sun.
+    const cc = lights.cityCenter;
+    lights.sun.position.copy(sunDir).multiplyScalar(160).add(cc);
+    lights.fill.position.copy(sunDir).multiplyScalar(-120).add(cc);
+    lights.fill.position.y = 45;
+  }
+
+  // Per-channel mood blend writing into the scratch colours, then push to the GPU
+  // objects. dayK ∈[0,1] day axis, twiK ∈[0,1] twilight band, nightK ∈[0,1].
+  function applyMood(dayK, twiK, nightK, elev) {
+    // Sky gradient stops.
+    blend3(cZen, NIGHT.zenith, DAY.zenith, dayK, TWILIGHT.zenith, twiK);
+    blend3(cMid, NIGHT.mid, DAY.mid, dayK, TWILIGHT.mid, twiK);
+    blend3(cHor, NIGHT.horizon, DAY.horizon, dayK, TWILIGHT.horizon, twiK);
+    // Fog matches the horizon mood (distances stay fixed at 220/480).
+    blend3(cFog, NIGHT.fog, DAY.fog, dayK, TWILIGHT.fog, twiK);
+    // Hemisphere ambient sky + ground.
+    blend3(cSkyAmb, NIGHT.skyAmb, DAY.skyAmb, dayK, TWILIGHT.skyAmb, twiK);
+    blend3(cGndAmb, NIGHT.groundAmb, DAY.groundAmb, dayK, TWILIGHT.groundAmb, twiK);
+    // Sun / fill / disc colours.
+    blend3(cSun, NIGHT.sun, DAY.sun, dayK, TWILIGHT.sun, twiK);
+    blend3(cFill, NIGHT.fill, DAY.fill, dayK, TWILIGHT.fill, twiK);
+    blend3(cDisc, NIGHT.discColor, DAY.discColor, dayK, TWILIGHT.discColor, twiK);
+
+    // Scalar moods (intensities + exposure + stars).
+    const ambInt = blendN(NIGHT.ambInt, DAY.ambInt, dayK, TWILIGHT.ambInt, twiK);
+    const fillInt = blendN(NIGHT.fillInt, DAY.fillInt, dayK, TWILIGHT.fillInt, twiK);
+    const exposure = blendN(NIGHT.exposure, DAY.exposure, dayK, TWILIGHT.exposure, twiK);
+    const stars = blendN(NIGHT.stars, DAY.stars, dayK, TWILIGHT.stars, twiK);
+    // Sun intensity: fade with elevation so it's near-zero below the horizon and
+    // the night moonlight floor takes over. We drive the max-intensity through the
+    // same mood blend, then gate it by how high the sun is.
+    const sunMax = blendN(NIGHT.sunMax, DAY.sunMax, dayK, TWILIGHT.sunMax, twiK);
+    const sunGate = clamp01((elev + 0.18) / 0.4); // 0 well below horizon → 1 up
+    // Keep a faint moonlight floor at night so the scene isn't pitch black.
+    const moonFloor = NIGHT.sunMax * nightK;
+    const sunInt = Math.max(sunMax * sunGate, moonFloor);
+
+    // --- Push to GPU objects (reusing materials/lights) -------------------
+    // Sky dome: repaint the gradient (canvas reused) with CSS hex strings.
+    sky.paint("#" + cZen.getHexString(), "#" + cMid.getHexString(), "#" + cHor.getHexString(), stars);
+    // Fog colour (distances untouched).
+    fog.color.copy(cFog);
+    // Hemisphere ambient.
+    lights.ambient.color.copy(cSkyAmb);
+    lights.ambient.groundColor.copy(cGndAmb);
+    lights.ambient.intensity = ambInt;
+    // Directional key (sun/moon).
+    lights.sun.color.copy(cSun);
+    lights.sun.intensity = sunInt;
+    // Cool fill.
+    lights.fill.color.copy(cFill);
+    lights.fill.intensity = fillInt;
+    // Tone-mapping exposure dips at night so the dark scene reads dark and the
+    // emissive lamps/neon/windows pop instead of being lifted to grey.
+    renderer.toneMappingExposure = exposure;
+  }
+
+  // Blend NIGHT/DAY along the day axis, then fold in TWILIGHT, into a scratch Color.
+  function blend3(out, nightHex, dayHex, dayK, twiHex, twiK) {
+    mix(out, nightHex, dayHex, dayK); // out = night→day
+    tmpB.setHex(twiHex);
+    out.lerp(tmpB, twiK); // out = base→twilight
+  }
+  function blendN(nightV, dayV, dayK, twiV, twiK) {
+    const base = lerpN(nightV, dayV, dayK);
+    return lerpN(base, twiV, twiK);
+  }
+
+  return {
+    get t() {
+      return state.t;
+    },
+    setTimeOfDay(t) {
+      // wrap into [0,1)
+      t = t % 1;
+      if (t < 0) t += 1;
+      state.t = t;
+      apply();
+    },
+    update(dt) {
+      if (!(dt > 0)) {
+        // dt may be 0/NaN on a paused/first frame — still keep the look current.
+        apply();
+        return;
+      }
+      state.t = (state.t + dt / CYCLE_SECONDS) % 1;
+      apply();
+    },
+  };
 }

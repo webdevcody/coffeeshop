@@ -73,6 +73,27 @@ const cMagenta = new THREE.MeshStandardMaterial({ color: "#d24a96", roughness: 0
 const cPurple = new THREE.MeshStandardMaterial({ color: "#7d54c9", roughness: 0.55, metalness: 0.15, flatShading: true });
 const cWhite = new THREE.MeshStandardMaterial({ color: "#f3efe6", roughness: 0.6, flatShading: true });
 
+// --- Gallery gift-shop interior materials (created ONCE, reused) ------------
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#efe4d2", roughness: 0.9, side: THREE.DoubleSide }); // warm gallery white; DoubleSide so walls read from inside
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#b59b78", roughness: 0.92 });                       // pale wood floor
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#cabfa9", roughness: 0.9, side: THREE.DoubleSide }); // ceiling underside visible
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6b4a2f", roughness: 0.6, flatShading: true });       // wood service counter
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#2e2a26", roughness: 0.4, metalness: 0.2 });       // dark stone top
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#8a6a45", roughness: 0.7, flatShading: true });         // shelving wood
+const caseGlassMat = new THREE.MeshStandardMaterial({ color: "#bfe6e2", roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#c0392b", roughness: 0.7, flatShading: true });     // red stool cushions
+const stoolLegMat = new THREE.MeshStandardMaterial({ color: "#2b2e33", roughness: 0.5, metalness: 0.6 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#3b5f8a", roughness: 0.95 });                             // blue rug
+const rugTrimMat = new THREE.MeshStandardMaterial({ color: "#d8c089", roughness: 0.95 });
+const bulbMat = new THREE.MeshStandardMaterial({                                                                  // glowing pendant bulb
+  color: "#fff3cf", roughness: 0.3,
+  emissive: new THREE.Color("#ffe9b0"), emissiveIntensity: 1.0,
+});
+const cordMat = new THREE.MeshStandardMaterial({ color: "#2a2622", roughness: 0.8 });
+// Small themed "products" on the shelves — reuse the bold sculpture palette as
+// colourful gift goods (mugs / prints / boxes), drawn as one InstancedMesh.
+const goodsMats = [cRed, cYellow, cBlue, cTeal, cMagenta, cPurple];
+
 // --- Shared geometries (created ONCE) --------------------------------------
 const torusGeo = new THREE.TorusGeometry(1.0, 0.34, 10, 20);
 const torusKnotGeo = new THREE.TorusKnotGeometry(0.8, 0.26, 64, 10, 2, 3);
@@ -93,6 +114,7 @@ const bollardGeo = new THREE.CylinderGeometry(0.16, 0.18, 0.9, 10);
 const binGeo = new THREE.CylinderGeometry(0.32, 0.28, 0.9, 12);
 const spotGeo = new THREE.CylinderGeometry(0.12, 0.18, 0.4, 8);
 const spotLensGeo = new THREE.CircleGeometry(0.13, 10);
+const goodGeo = new THREE.BoxGeometry(0.32, 0.4, 0.32);      // ONE shared "gift product" box (instanced)
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -443,6 +465,176 @@ function makePlanterTree(x, z) {
   return g;
 }
 
+// ── Enterable gallery GIFT SHOP ─────────────────────────────────────────────
+// A small walk-in room: 4 walls (back + 2 sides + 2 short front segments that
+// flank a 2.2 m doorway gap), a floor, and a flat ceiling. The street-facing
+// (+Z) wall carries the doorway and an exterior shop SIGN. Inside: a service
+// counter, wall shelving stocked with colourful gift "products", a glass display
+// case, two stools, wall signage, two hanging pendant lights and a rug.
+//
+// Footprint: width `W` along X, depth `D` along Z, centred at (cx,cz). The
+// doorway opens on +Z toward the plaza. Wall colliders are pushed individually
+// for the back wall, both side walls and the two front segments — and NOTHING
+// across the doorway gap, so the player walks straight in.
+function buildGiftShop(parent, colliders, cx, cz, W, D) {
+  const t = 0.25;            // wall thickness
+  const h = 3.2;             // interior wall height
+  const door = 2.2;          // doorway gap width (in the +Z front wall)
+  const minX = cx - W / 2, maxX = cx + W / 2;
+  const minZ = cz - D / 2, maxZ = cz + D / 2;   // maxZ = street-facing (+Z) wall
+
+  // Floor (slightly inset wood slab) sitting just above the pavement.
+  const floor = box(W, 0.1, D, shopFloorMat, false);
+  floor.position.set(cx, 0.06, cz);
+  floor.receiveShadow = true;
+  parent.add(floor);
+
+  // Flat roof / ceiling slab.
+  const roof = box(W + 0.2, 0.2, D + 0.2, shopRoofMat);
+  roof.position.set(cx, h + 0.1, cz);
+  parent.add(roof);
+
+  // --- WALLS (each a box; colliders added individually) --------------------
+  // Back wall (-Z) — full width.
+  const backWall = box(W, h, t, shopWallMat);
+  backWall.position.set(cx, h / 2, minZ + t / 2);
+  parent.add(backWall);
+  addCollider(colliders, cx, minZ + t / 2, W, t);
+
+  // Side walls (-X and +X) — full depth.
+  for (const sx of [minX + t / 2, maxX - t / 2]) {
+    const sideWall = box(t, h, D, shopWallMat);
+    sideWall.position.set(sx, h / 2, cz);
+    parent.add(sideWall);
+    addCollider(colliders, sx, cz, t, D);
+  }
+
+  // Front (+Z, street-facing) wall: TWO short segments flanking the doorway gap.
+  // Segment runs from a side wall in toward the door opening (gap = `door`,
+  // centred on cx). NO collider spans the gap → the doorway is walkable.
+  const gapHalf = door / 2;
+  const segLen = (W - door) / 2;                 // length of each front segment
+  for (const dirSign of [-1, 1]) {
+    const segCx = dirSign < 0
+      ? (minX + (cx - gapHalf)) / 2              // centre of low-X segment
+      : ((cx + gapHalf) + maxX) / 2;             // centre of high-X segment
+    const seg = box(segLen, h, t, shopWallMat);
+    seg.position.set(segCx, h / 2, maxZ - t / 2);
+    parent.add(seg);
+    addCollider(colliders, segCx, maxZ - t / 2, segLen, t);
+    // a short lintel header above the doorway side of each segment (visual only)
+  }
+  // Door header lintel spanning the gap up high (visual; well above head height,
+  // no collider so entry stays clear).
+  const lintel = box(door + 0.2, 0.3, t, shopWallMat);
+  lintel.position.set(cx, h - 0.15, maxZ - t / 2);
+  parent.add(lintel);
+
+  // --- Exterior SHOP SIGN above the door, facing the street (+Z) -----------
+  // artPanel('sign') is double-sided; orient FRONT outward (+Z) so it reads
+  // un-mirrored from the plaza (rotY = atan2(dir.x,dir.z) = 0 for +Z).
+  const sign = artPanel(Math.min(W * 0.8, 4.4), 0.95, "sign", {
+    text: "GIFT GALLERY", bg: "#7d54c9", fg: "#fff3cf",
+    emissiveIntensity: 0.5, file: "arts-shop-gift.png",
+  });
+  sign.position.set(cx, h + 0.55, maxZ + 0.08);   // mounted on the outside facade
+  parent.add(sign);
+
+  // === INTERIOR CONTENT =====================================================
+  // Rug centred on the floor.
+  const rug = box(W * 0.6, 0.04, D * 0.55, rugMat, false);
+  rug.position.set(cx, 0.12, cz + 0.2);
+  rug.receiveShadow = true;
+  const rugTrim = box(W * 0.6 + 0.18, 0.03, D * 0.55 + 0.18, rugTrimMat, false);
+  rugTrim.position.set(cx, 0.11, cz + 0.2);
+  parent.add(rugTrim, rug);
+
+  // Service COUNTER along the back-left, with a dark stone top.
+  const counter = box(2.6, 1.0, 0.8, counterMat);
+  counter.position.set(minX + 1.8, 0.55, minZ + 0.9);
+  const counterTop = box(2.8, 0.1, 0.95, counterTopMat);
+  counterTop.position.set(minX + 1.8, 1.08, minZ + 0.9);
+  parent.add(counter, counterTop);
+  // A small register/box on the counter.
+  const register = box(0.5, 0.35, 0.4, counterTopMat);
+  register.position.set(minX + 1.2, 1.3, minZ + 0.9);
+  parent.add(register);
+
+  // SHELVES on the back wall (right of the counter): three stacked planks.
+  const shelfX = maxX - 1.6;
+  for (let s = 0; s < 3; s++) {
+    const plank = box(2.4, 0.08, 0.4, shelfMat);
+    plank.position.set(shelfX, 0.9 + s * 0.7, minZ + 0.35);
+    parent.add(plank);
+  }
+  // Colourful gift PRODUCTS on the shelves — one InstancedMesh (no per-frame alloc).
+  const perShelf = 5, shelfRows = 3;
+  const goods = new THREE.InstancedMesh(goodGeo, goodsMats[0], perShelf * shelfRows);
+  goods.castShadow = true;
+  // Per-instance colour: assign a colour attribute by reusing tinted instances.
+  // (InstancedMesh shares one material, so we vary colour via instanceColor.)
+  goods.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(perShelf * shelfRows * 3), 3);
+  let gi = 0;
+  const _c = new THREE.Color();
+  for (let s = 0; s < shelfRows; s++) {
+    for (let p = 0; p < perShelf; p++) {
+      const u = -1.0 + p * 0.5;
+      _dummy.position.set(shelfX + u, 1.18 + s * 0.7, minZ + 0.35);
+      _dummy.rotation.set(0, (p + s) * 0.4, 0);
+      _dummy.scale.set(1, 0.8 + ((p + s) % 3) * 0.18, 1);
+      _dummy.updateMatrix();
+      goods.setMatrixAt(gi, _dummy.matrix);
+      _c.copy(goodsMats[(p + s) % goodsMats.length].color);
+      goods.setColorAt(gi, _c);
+      gi++;
+    }
+  }
+  goods.instanceMatrix.needsUpdate = true;
+  if (goods.instanceColor) goods.instanceColor.needsUpdate = true;
+  parent.add(goods);
+
+  // Glass DISPLAY CASE near the front-right, with a couple of small prints inside.
+  const caseBase = box(1.4, 0.8, 0.8, counterMat);
+  caseBase.position.set(maxX - 1.3, 0.45, maxZ - 1.3);
+  const caseGlass = box(1.4, 0.7, 0.8, caseGlassMat, false);
+  caseGlass.position.set(maxX - 1.3, 1.2, maxZ - 1.3);
+  parent.add(caseBase, caseGlass);
+  for (const [ix, col] of [[-0.35, cMagenta], [0.35, cTeal]]) {
+    const item = box(0.3, 0.45, 0.06, col);
+    item.position.set(maxX - 1.3 + ix, 1.2, maxZ - 1.3);
+    parent.add(item);
+  }
+
+  // Two STOOLS near the counter for browsing customers.
+  for (const sx of [minX + 1.2, minX + 2.4]) {
+    const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.12, 12), stoolSeatMat);
+    seat.position.set(sx, 0.62, minZ + 1.9);
+    seat.castShadow = true;
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.5, 8), stoolLegMat);
+    leg.position.set(sx, 0.3, minZ + 1.9);
+    parent.add(seat, leg);
+  }
+
+  // Wall SIGNAGE (a framed poster) on the back wall above the counter, facing +Z.
+  const wallSign = artPanel(1.6, 1.0, "poster", {
+    top: "ART", bottom: "GIFTS", foot: "GALLERY SHOP", glyph: "❖",
+    accent: "#c0392b", bg: "#f1e8d4", emissiveIntensity: 0.35, file: "arts-giftshop-poster.png",
+  });
+  wallSign.position.set(minX + 1.8, 2.1, minZ + t + 0.04);
+  parent.add(wallSign);
+
+  // Two hanging PENDANT LIGHTS (cord + glowing bulb) from the ceiling.
+  for (const lx of [cx - 1.6, cx + 1.6]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), cordMat);
+    cord.position.set(lx, h - 0.4, cz + 0.2);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), bulbMat);
+    bulb.position.set(lx, h - 0.85, cz + 0.2);
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.25, 12, 1, true), counterTopMat);
+    shade.position.set(lx, h - 0.72, cz + 0.2);
+    parent.add(cord, bulb, shade);
+  }
+}
+
 export function buildArts() {
   const group = new THREE.Group();
   const colliders = [];
@@ -647,6 +839,15 @@ export function buildArts() {
     side: new THREE.Vector3(1, 0, 0),   // secondary face +X -> N-S lane / plaza
     sign: { text: "ART STUDIO", bg: "#c0392b", fg: "#f6efe0", file: "arts-shop-studio.png" },
   });
+
+  // --- ENTERABLE gallery GIFT SHOP — walk-in interior ----------------------
+  // Tucked into the open band on the WEST side of the plaza, between Gallery A
+  // (south) and the central lanes, clear of both through-lanes and the plaza
+  // ring. Footprint 7.6 (X) x 6.0 (Z) at centre (-17.6,-7.6) → X[-21.4,-13.8],
+  // Z[-10.6,-4.6] (all within local +-23). The doorway opens on +Z toward the
+  // plaza; the player walks straight in. Wall colliders are added individually,
+  // none across the doorway gap.
+  buildGiftShop(group, colliders, -17.6, -7.6, 7.6, 6.0);
 
   // --- Banner flags on a row of slim poles flanking the plaza approach ------
   // Placed in the open corner quadrants, clear of BOTH through-lanes

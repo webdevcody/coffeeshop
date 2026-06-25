@@ -452,6 +452,150 @@ export function buildHarbor() {
     addBox(cylGeo, buoyMat, 18 + i * 3, -0.2, 6 + i * 4, 0.7, 0.9, 0.7, false);
   }
 
+  // ── ENTERABLE BAIT & TACKLE SHACK (a real walk-in interior) ───────────────
+  // A small chandlery/bait shop on the pier deck the player can walk INTO. It is
+  // ADDITIVE (its own 4 walls + floor + roof), tucked onto the open pier deck in
+  // the SW quad so it clears the quay buildings, the crane and the bollard/cleat
+  // line. Footprint X[-13,-5] Z[2.75,9.25] (8m wide × 6.5m deep) sits squarely on
+  // the plank deck (X[-16,-2] Z[-14,18]) between the pier piles at X=-15/-3, all
+  // well inside X,Z ∈ [-23,23]. The FRONT (door gap + sign) faces +Z toward the
+  // open south end of the pier — artPanel faces +Z by default, so the sign reads
+  // un-mirrored with NO rotation.
+  {
+    const shX = -9;            // shop centre X
+    const shZ = 6;             // shop centre Z
+    const shW = 8;             // interior+wall span in X (X[-13,-5])
+    const shD = 6.5;           // span in Z (Z[2.75,9.25])
+    const wallT = 0.25;        // wall thickness
+    const wallH = 3.2;         // wall height
+    const floorY = 0.22;       // pier deck top
+    const frontZ = shZ + shD / 2;  // +Z wall plane (street/pier-facing front)
+    const backZ = shZ - shD / 2;
+    const leftX = shX - shW / 2;   // -13
+    const rightX = shX + shW / 2;  // -5
+    const doorW = 2.2;             // doorway gap width in the front wall
+
+    // Shop-specific materials (created ONCE, reused across the room).
+    const matShopWall = new THREE.MeshStandardMaterial({ color: "#5d7c84", roughness: 0.95 });
+    const matShopWallIn = new THREE.MeshStandardMaterial({ color: "#7d9aa0", roughness: 0.95, side: THREE.DoubleSide });
+    const matShopFloor = new THREE.MeshStandardMaterial({ color: "#7a6244", roughness: 0.96 });
+    const matShopRoof = new THREE.MeshStandardMaterial({ color: "#39474f", roughness: 0.85, metalness: 0.3 });
+    const matShopTrim = new THREE.MeshStandardMaterial({ color: "#274049", roughness: 0.8 });
+    const matCounter = new THREE.MeshStandardMaterial({ color: "#6b4a2c", roughness: 0.85 });
+    const matCounterTop = new THREE.MeshStandardMaterial({ color: "#caa86a", roughness: 0.5, metalness: 0.2 });
+    const matShelf = new THREE.MeshStandardMaterial({ color: "#8a6a44", roughness: 0.9 });
+    const matRug = new THREE.MeshStandardMaterial({ color: "#3f6b6e", roughness: 1 });
+    const matStool = new THREE.MeshStandardMaterial({ color: "#2c3a40", roughness: 0.7, metalness: 0.3 });
+    const matGlass = new THREE.MeshStandardMaterial({ color: "#bfe2ea", roughness: 0.2, metalness: 0.2, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+    const matLamp = new THREE.MeshStandardMaterial({ color: "#ffe9b0", emissive: "#ffcf6a", emissiveIntensity: 0.9, roughness: 0.6 });
+    const matProd = [
+      new THREE.MeshStandardMaterial({ color: "#c8412f", roughness: 0.8 }),
+      new THREE.MeshStandardMaterial({ color: "#2f9e58", roughness: 0.8 }),
+      new THREE.MeshStandardMaterial({ color: "#e0a52a", roughness: 0.8 }),
+      new THREE.MeshStandardMaterial({ color: "#3b6fb0", roughness: 0.8 }),
+    ];
+
+    // FLOOR slab (its own walkable surface; ground rect already covers the tile).
+    addBox(boxGeo, matShopFloor, shX, floorY + 0.02, shZ, shW, 0.1, shD);
+
+    // ── WALLS (each a box mesh) + matching individual AABB colliders ──────────
+    // Back wall (−Z), full width.
+    addBox(boxGeo, matShopWall, shX, floorY + wallH / 2, backZ, shW, wallH, wallT);
+    colliders.push({ minX: leftX, maxX: rightX, minZ: backZ - wallT / 2, maxZ: backZ + wallT / 2 });
+    // Left side wall (−X), full depth.
+    addBox(boxGeo, matShopWall, leftX, floorY + wallH / 2, shZ, wallT, wallH, shD);
+    colliders.push({ minX: leftX - wallT / 2, maxX: leftX + wallT / 2, minZ: backZ, maxZ: frontZ });
+    // Right side wall (+X), full depth.
+    addBox(boxGeo, matShopWall, rightX, floorY + wallH / 2, shZ, wallT, wallH, shD);
+    colliders.push({ minX: rightX - wallT / 2, maxX: rightX + wallT / 2, minZ: backZ, maxZ: frontZ });
+    // FRONT wall (+Z) split into two short segments flanking a 2.2m doorway GAP.
+    // segWidth on each side of the centred door; NO collider spans the gap, so
+    // the player walks straight through the door into the interior.
+    const segW = (shW - doorW) / 2; // 2.9m each
+    const segLcx = leftX + segW / 2;   // centre of left front segment
+    const segRcx = rightX - segW / 2;  // centre of right front segment
+    addBox(boxGeo, matShopWall, segLcx, floorY + wallH / 2, frontZ, segW, wallH, wallT);
+    colliders.push({ minX: leftX, maxX: leftX + segW, minZ: frontZ - wallT / 2, maxZ: frontZ + wallT / 2 });
+    addBox(boxGeo, matShopWall, segRcx, floorY + wallH / 2, frontZ, segW, wallH, wallT);
+    colliders.push({ minX: rightX - segW, maxX: rightX, minZ: frontZ - wallT / 2, maxZ: frontZ + wallT / 2 });
+    // Door lintel above the gap (flat, ABOVE head height — NO collider, the gap
+    // below it stays clear and walkable).
+    addBox(boxGeo, matShopTrim, shX, floorY + wallH - 0.25, frontZ, doorW + 0.3, 0.5, wallT + 0.04, false);
+
+    // ROOF / flat ceiling slab capping the room.
+    addBox(boxGeo, matShopRoof, shX, floorY + wallH + 0.08, shZ, shW + 0.5, 0.2, shD + 0.5);
+
+    // ── SHOP SIGN above the door, OUTSIDE, facing the street (+Z, un-mirrored).
+    const shopSign = artPanel(4.4, 1.2, "sign", {
+      text: "HARBOR BAIT & TACKLE",
+      bg: "#13414f", fg: "#ffd23f",
+      file: "harbor-bait-tackle.png",
+      emissiveIntensity: 0.55,
+    });
+    shopSign.position.set(shX, floorY + wallH + 0.45, frontZ + wallT / 2 + 0.05);
+    group.add(shopSign);
+
+    // ── INTERIOR CONTENT (cozy + themed) ─────────────────────────────────────
+    // Floor RUG (flat, decorative).
+    addBox(boxGeo, matRug, shX, floorY + 0.09, shZ - 0.3, shW - 2.4, 0.04, shD - 2.6, false);
+
+    // Service COUNTER along the back-left, with a lighter countertop.
+    const cntZ = backZ + 1.0;
+    addBox(boxGeo, matCounter, shX - 1.3, floorY + 0.55, cntZ, 3.4, 1.1, 0.9);
+    addBox(boxGeo, matCounterTop, shX - 1.3, floorY + 1.13, cntZ, 3.6, 0.1, 1.0, false);
+    // An old brass register / scale on the counter.
+    addBox(boxGeo, matCounterTop, shX - 2.2, floorY + 1.32, cntZ, 0.5, 0.35, 0.5, false);
+
+    // SHELVES against the left wall (stacked planks) with little product boxes.
+    const shelfX = leftX + 0.45;
+    for (let s = 0; s < 3; s++) {
+      const sy = floorY + 0.9 + s * 0.8;
+      addBox(boxGeo, matShelf, shelfX, sy, shZ + 0.6, 0.35, 0.06, 3.4, false);
+      for (let p = 0; p < 4; p++) {
+        const pm = matProd[(s + p) % matProd.length];
+        addBox(boxGeo, pm, shelfX, sy + 0.22, shZ - 0.9 + p * 0.85, 0.26, 0.32, 0.36, false);
+      }
+    }
+    // Wall SIGNAGE inside above the shelves (faces +X into the room).
+    const inSign = artPanel(2.2, 0.9, "sign", {
+      text: "FRESH BAIT", bg: "#5a3a22", fg: "#ffe08a", file: "harbor-bait-inside.png",
+    });
+    inSign.rotation.y = Math.PI / 2;
+    inSign.position.set(leftX + wallT / 2 + 0.04, floorY + 2.55, shZ + 0.6);
+    group.add(inSign);
+
+    // DISPLAY CASE / glass tackle cabinet against the right wall (lures & reels).
+    const caseX = rightX - 0.6;
+    addBox(boxGeo, matShelf, caseX, floorY + 0.5, shZ - 0.4, 0.7, 1.0, 2.6, false);
+    addBox(boxGeo, matGlass, caseX, floorY + 1.4, shZ - 0.4, 0.55, 0.8, 2.5, false);
+    // A fishing-ROD rack standing in the front-right corner (a few thin rods).
+    for (let r = 0; r < 4; r++) {
+      const rod = new THREE.Mesh(cylGeo, matWood);
+      rod.scale.set(0.04, 2.6, 0.04);
+      rod.position.set(rightX - 0.5 - r * 0.18, floorY + 1.3, frontZ - 0.9);
+      rod.rotation.z = 0.12;
+      group.add(rod);
+    }
+
+    // Two STOOLS in front of the counter (seat + single post).
+    for (const sx of [shX + 0.4, shX + 1.6]) {
+      addBox(cylGeo, matStool, sx, floorY + 0.62, cntZ + 1.1, 0.42, 0.12, 0.42, false);
+      addBox(cylGeo, matStool, sx, floorY + 0.3, cntZ + 1.1, 0.1, 0.6, 0.1, false);
+    }
+
+    // Hanging interior LIGHTS (two warm lamps under the ceiling) + a tiny cord.
+    for (const lx of [shX - 1.8, shX + 1.8]) {
+      addBox(boxGeo, matLamp, lx, floorY + wallH - 0.45, shZ - 0.2, 0.5, 0.22, 0.5, false);
+      addBox(cylGeo, matShopTrim, lx, floorY + wallH - 0.18, shZ - 0.2, 0.03, 0.4, 0.03, false);
+    }
+
+    // A coiled rope + a life-ring on the front exterior beside the door for charm
+    // (decorative, no collider; sits flush on the front wall).
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.14, 6, 14), matHull3);
+    ring.position.set(segLcx, floorY + 1.6, frontZ + wallT / 2 + 0.08);
+    group.add(ring);
+  }
+
   // ── ground: whole tile is walkable floor ──────────────────────────────────
   const ground = [{ minX: -30, maxX: 30, minZ: -30, maxZ: 30 }];
 

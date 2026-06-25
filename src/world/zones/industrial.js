@@ -60,6 +60,29 @@ const ventMat = new THREE.MeshStandardMaterial({ color: "#aeb3b8", roughness: 0.
 const railMat = new THREE.MeshStandardMaterial({ color: "#c9b23a", roughness: 0.55, metalness: 0.5 });
 const catwalkMat = new THREE.MeshStandardMaterial({ color: "#3f444a", roughness: 0.8, metalness: 0.4 });
 
+// --- Tool/supply SHOP interior materials (created ONCE, reused) ------------
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#7e8489", roughness: 0.9, metalness: 0.15 });
+const shopWallInMat = new THREE.MeshStandardMaterial({ color: "#9aa0a4", roughness: 0.95, metalness: 0.05, side: THREE.DoubleSide });
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#41464b", roughness: 0.85, metalness: 0.2 });
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#5b5e63", roughness: 1 });
+const shopRugMat = new THREE.MeshStandardMaterial({ color: "#8a3b2c", roughness: 0.95, side: THREE.DoubleSide });
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6b4a2f", roughness: 0.75 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#caa46a", roughness: 0.5, metalness: 0.25 });
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#5a4632", roughness: 0.85 });
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#3a3d42", roughness: 0.7, metalness: 0.4 });
+const stoolLegMat = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.5, metalness: 0.6 });
+const rackMat = new THREE.MeshStandardMaterial({ color: "#454a50", roughness: 0.6, metalness: 0.55 });
+const lampShadeMat = new THREE.MeshStandardMaterial({
+  color: "#ffd27a", emissive: "#ffb347", emissiveIntensity: 0.9, roughness: 0.5,
+});
+const cordMat = new THREE.MeshStandardMaterial({ color: "#26282b", roughness: 0.9 });
+// Little themed products on the shelves (paint cans, tool boxes, bolt boxes…),
+// drawn from a small reused palette so an InstancedMesh-per-colour stays cheap.
+const prodMatA = new THREE.MeshStandardMaterial({ color: "#c0392b", roughness: 0.6 }); // red paint cans
+const prodMatB = new THREE.MeshStandardMaterial({ color: "#2f6fb8", roughness: 0.6 }); // blue toolboxes
+const prodMatC = new THREE.MeshStandardMaterial({ color: "#e0a82e", roughness: 0.7 }); // yellow boxes
+const prodMatD = new THREE.MeshStandardMaterial({ color: "#3a8d54", roughness: 0.65 }); // green tins
+
 // --- Shared geometries (created ONCE, reused) ------------------------------
 const smokeGeo = new THREE.IcosahedronGeometry(0.55, 0);
 const siloGeo = new THREE.CylinderGeometry(2, 2, 9, 16);
@@ -74,6 +97,13 @@ const railPostGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.9, 6);
 const turbineBaseGeo = new THREE.CylinderGeometry(0.45, 0.55, 0.35, 12);
 const turbineDomeGeo = new THREE.SphereGeometry(0.45, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2);
 const bumperGeo = new THREE.BoxGeometry(0.25, 0.55, 0.18);
+// Shop interior detail geometries (reused across the instanced products + props)
+const shopProdCanGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.3, 8); // paint can
+const shopProdBoxGeo = new THREE.BoxGeometry(0.34, 0.26, 0.26);         // toolbox / parts box
+const stoolSeatGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.07, 12);
+const stoolLegGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.62, 6);
+const lampCordGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 5);     // scaled per lamp
+const lampShadeGeo = new THREE.ConeGeometry(0.26, 0.26, 12, 1, true);
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -417,6 +447,229 @@ function makeFence(len) {
   return g;
 }
 
+// ── Enterable TOOL & SUPPLY SHOP ───────────────────────────────────────────
+// A small walk-in storefront themed to the works yard: four walls + a floor +
+// a flat steel roof, with a 2.2 m DOORWAY GAP cut into the street-facing (−Z)
+// wall. Built around a LOCAL origin (centre of the room floor at y=0); the
+// caller positions the whole group and offsets the returned colliders.
+//
+// The doorway is the gap between the two short front-wall segments — and gets
+// NO collider, so the player walks straight in. Every other wall (back + two
+// sides + the two front flanks) becomes an individual AABB so the shell is
+// solid but the interior is fully walkable.
+//
+// Returns { group, colliders } where colliders are AABBs in the shop's LOCAL
+// frame (caller adds the shop's world x/z offset before pushing them).
+function makeToolShop(W, D, H, wallT, doorGap) {
+  const g = new THREE.Group();
+  const colliders = [];
+
+  const hw = W / 2, hd = D / 2;             // interior half-extents
+  const wallCX = hw + wallT / 2;            // side-wall centreline offset (X)
+  const wallCZ = hd + wallT / 2;            // front/back-wall centreline offset (Z)
+  const outerW = W + 2 * wallT;             // front/back walls span past the corners
+
+  // --- Floor slab (sits flush at y=0) and a flat steel roof/ceiling ---------
+  const floor = box(W + wallT, 0.12, D + wallT, shopFloorMat, false);
+  floor.position.y = 0.06;
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  const roof = box(outerW, 0.2, D + 2 * wallT, shopRoofMat, true);
+  roof.position.y = H + 0.1;
+  g.add(roof);
+  // a slim eaves/parapet lip so the roof reads as a real cap
+  const parapet = box(outerW + 0.18, 0.28, D + 2 * wallT + 0.18, roofMat, false);
+  parapet.position.y = H + 0.04;
+  g.add(parapet);
+
+  // --- Walls (visible mesh) -------------------------------------------------
+  // Back wall (+Z), full span.
+  const back = box(outerW, H, wallT, shopWallMat);
+  back.position.set(0, H / 2, wallCZ);
+  g.add(back);
+  // Side walls (±X), span the interior depth.
+  for (const sx of [-1, 1]) {
+    const side = box(wallT, H, D, shopWallMat);
+    side.position.set(sx * wallCX, H / 2, 0);
+    g.add(side);
+  }
+  // Front wall (−Z): two segments flanking the doorway gap.
+  const frontSegLen = (outerW - doorGap) / 2;
+  const segOffset = doorGap / 2 + frontSegLen / 2;
+  for (const sx of [-1, 1]) {
+    const seg = box(frontSegLen, H, wallT, shopWallMat);
+    seg.position.set(sx * segOffset, H / 2, -wallCZ);
+    g.add(seg);
+  }
+  // A header/lintel spanning ABOVE the doorway (door clear height ~2.4 m) so the
+  // opening reads as a framed door, not a missing wall chunk. It is up high, so
+  // it does NOT block the walkable doorway and gets no collider.
+  const doorClear = 2.4;
+  if (H > doorClear + 0.1) {
+    const lintel = box(doorGap + 0.2, H - doorClear, wallT, shopWallMat);
+    lintel.position.set(0, doorClear + (H - doorClear) / 2, -wallCZ);
+    g.add(lintel);
+  }
+  // Door jambs (thin frames either side of the opening) for a finished look.
+  for (const sx of [-1, 1]) {
+    const jamb = box(0.1, doorClear, wallT + 0.04, frameMat, false);
+    jamb.position.set(sx * (doorGap / 2 + 0.05), doorClear / 2, -wallCZ);
+    g.add(jamb);
+  }
+
+  // --- WALL COLLIDERS (local frame) -----------------------------------------
+  // Back wall.
+  addCollider(colliders, 0, wallCZ, outerW, wallT);
+  // Side walls.
+  addCollider(colliders, -wallCX, 0, wallT, D);
+  addCollider(colliders, wallCX, 0, wallT, D);
+  // Front flanks (NONE across the doorway gap — that span stays open).
+  addCollider(colliders, -segOffset, -wallCZ, frontSegLen, wallT);
+  addCollider(colliders, segOffset, -wallCZ, frontSegLen, wallT);
+
+  // --- Inviting interior content -------------------------------------------
+  // A rug anchoring the centre.
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.55, D * 0.5), shopRugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(0, 0.13, 0.2);
+  rug.receiveShadow = true;
+  g.add(rug);
+
+  // Service COUNTER along the back-left, with a lighter countertop.
+  const counterW = W * 0.5, counterD = 0.7, counterH = 1.05;
+  const counterX = -hw + counterW / 2 + 0.4;
+  const counterZ = hd - counterD / 2 - 0.5;
+  const counterBody = box(counterW, counterH, counterD, counterMat);
+  counterBody.position.set(counterX, counterH / 2, counterZ);
+  g.add(counterBody);
+  const counterTop = box(counterW + 0.12, 0.08, counterD + 0.12, counterTopMat);
+  counterTop.position.set(counterX, counterH + 0.04, counterZ);
+  g.add(counterTop);
+  // A small register block + a couple of paint cans on the counter.
+  const register = box(0.34, 0.22, 0.26, stoolSeatMat);
+  register.position.set(counterX - counterW / 2 + 0.45, counterH + 0.19, counterZ);
+  g.add(register);
+  for (let i = 0; i < 3; i++) {
+    const can = new THREE.Mesh(shopProdCanGeo, i % 2 ? prodMatD : prodMatA);
+    can.position.set(counterX + 0.4 + i * 0.32, counterH + 0.23, counterZ + 0.05);
+    can.castShadow = true;
+    g.add(can);
+  }
+
+  // SHELVING along the back wall + the +X side wall, each a stack of planks.
+  // Little themed products sit on the planks via InstancedMesh (one per shape).
+  const prodCans = []; // {x,y,z}
+  const prodBoxes = [];
+  function shelfUnit(cxL, czL, unitW, faceX) {
+    // faceX !== 0 → unit runs along Z against an X-wall; else along X against +Z wall
+    const planks = 3;
+    const unitH = 2.0;
+    const frame = box(faceX ? 0.3 : unitW, unitH, faceX ? unitW : 0.3, shelfMat, false);
+    frame.position.set(cxL, unitH / 2, czL);
+    g.add(frame);
+    for (let p = 0; p < planks; p++) {
+      const py = 0.55 + p * 0.6;
+      const plank = box(faceX ? 0.34 : unitW, 0.05, faceX ? unitW : 0.34, shelfMat, false);
+      plank.position.set(cxL, py, czL);
+      g.add(plank);
+      // scatter products along this plank
+      const n = faceX ? Math.max(2, Math.floor(unitW / 0.5)) : Math.max(2, Math.floor(unitW / 0.5));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n - 0.5;
+        const ox = faceX ? cxL : cxL + t * (unitW - 0.4);
+        const oz = faceX ? czL + t * (unitW - 0.4) : czL;
+        const slot = (p + k) % 2;
+        if (slot === 0) prodCans.push({ x: ox, y: py + 0.18, z: oz });
+        else prodBoxes.push({ x: ox, y: py + 0.16, z: oz });
+      }
+    }
+  }
+  // back-wall shelving (right of the counter), running along X
+  shelfUnit(hw - 1.9, hd - 0.32, 3.0, 0);
+  // +X side-wall shelving, running along Z
+  shelfUnit(hw - 0.32, -hd + 1.6, 2.6, 1);
+
+  // Instanced product meshes (4 colour pools → still few draw calls).
+  function placeProducts(list, geo, mats) {
+    if (!list.length) return;
+    const per = Math.ceil(list.length / mats.length);
+    let idx = 0;
+    for (let mi = 0; mi < mats.length; mi++) {
+      const slice = list.slice(idx, idx + per);
+      idx += per;
+      if (!slice.length) continue;
+      const inst = new THREE.InstancedMesh(geo, mats[mi], slice.length);
+      inst.castShadow = true;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < slice.length; i++) {
+        m.makeTranslation(slice[i].x, slice[i].y, slice[i].z);
+        inst.setMatrixAt(i, m.clone());
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      g.add(inst);
+    }
+  }
+  placeProducts(prodCans, shopProdCanGeo, [prodMatA, prodMatD]);
+  placeProducts(prodBoxes, shopProdBoxGeo, [prodMatB, prodMatC]);
+
+  // A DISPLAY RACK (tool wall) of hanging hand tools against the −X wall:
+  // a slim pegboard panel + a few hung "tools" (thin boxes).
+  const pegboard = box(0.12, 1.6, 2.4, rackMat, false);
+  pegboard.position.set(-hw + 0.12, 1.4, -hd + 1.8);
+  g.add(pegboard);
+  const toolGeo = new THREE.BoxGeometry(0.06, 0.5, 0.12);
+  for (let i = 0; i < 5; i++) {
+    const tool = new THREE.Mesh(toolGeo, i % 2 ? stoolLegMat : prodMatC);
+    tool.position.set(-hw + 0.22, 1.5, -hd + 0.9 + i * 0.45);
+    tool.castShadow = true;
+    g.add(tool);
+  }
+
+  // A couple of STOOLS by the counter for customers.
+  for (const sx of [-0.5, 0.55]) {
+    const stool = new THREE.Group();
+    const seat = new THREE.Mesh(stoolSeatGeo, stoolSeatMat);
+    seat.position.y = 0.64;
+    seat.castShadow = true;
+    stool.add(seat);
+    for (let l = 0; l < 3; l++) {
+      const a = (l / 3) * Math.PI * 2;
+      const leg = new THREE.Mesh(stoolLegGeo, stoolLegMat);
+      leg.position.set(Math.cos(a) * 0.13, 0.31, Math.sin(a) * 0.13);
+      leg.rotation.z = Math.cos(a) * 0.08;
+      leg.rotation.x = -Math.sin(a) * 0.08;
+      stool.add(leg);
+    }
+    stool.position.set(counterX + sx, 0.13, counterZ - 0.95);
+    g.add(stool);
+  }
+
+  // Hanging INTERIOR LIGHTS (cord + glowing conical shade) — two of them.
+  for (const lx of [-W * 0.22, W * 0.26]) {
+    const cordLen = H - 0.9;
+    const cord = new THREE.Mesh(lampCordGeo, cordMat);
+    cord.scale.y = cordLen;
+    cord.position.set(lx, H - cordLen / 2 - 0.1, -0.2);
+    g.add(cord);
+    const shade = new THREE.Mesh(lampShadeGeo, lampShadeMat);
+    shade.position.set(lx, H - cordLen - 0.1, -0.2);
+    shade.castShadow = false;
+    g.add(shade);
+  }
+
+  // Interior WALL SIGNAGE behind the counter (un-mirrored, faces −Z into room).
+  const wallSign = artPanel(2.4, 0.9, "sign", {
+    text: "TOOLS PARTS", bg: "#222831", fg: "#ffd369", emissiveIntensity: 0.4,
+    file: "industrial-shop-wallsign.png",
+  });
+  wallSign.position.set(counterX, 2.2, hd - 0.06);
+  wallSign.rotation.y = Math.PI; // textured front faces −Z (into the room)
+  g.add(wallSign);
+
+  return { group: g, colliders };
+}
+
 export function buildIndustrial() {
   const group = new THREE.Group();
   const colliders = [];
@@ -649,6 +902,38 @@ export function buildIndustrial() {
   const beacon = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.18), beaconMat);
   beacon.position.set(18, 4.4, 11);
   group.add(beacon);
+
+  // --- Enterable TOOL & SUPPLY SHOP (SE quadrant, inner edge) ---------------
+  // Tucked into clear space east of the open centre cross: interior 7.0 × 5.8 m,
+  // street-facing (−Z) wall toward the player's approach from the open lane.
+  // Outer footprint x∈[7.25,14.75], z∈[6.05,12.35] — inside ±23, clear of the
+  // open lanes (minZ 6.05 > the z≈3.4 kerb), the warehouses, silos, tanks and
+  // scatter props. The doorway gap in the −Z wall gets NO collider, so the
+  // player walks straight in; every other wall is an individual AABB.
+  const SHOP = { x: 11.0, z: 9.2, W: 7.0, D: 5.8, H: 3.2, wallT: 0.25, door: 2.2 };
+  const shop = makeToolShop(SHOP.W, SHOP.D, SHOP.H, SHOP.wallT, SHOP.door);
+  shop.group.position.set(SHOP.x, 0, SHOP.z);
+  group.add(shop.group);
+  // Offset the shop's local wall colliders into world space and add them.
+  for (const c of shop.colliders) {
+    colliders.push({
+      minX: c.minX + SHOP.x, maxX: c.maxX + SHOP.x,
+      minZ: c.minZ + SHOP.z, maxZ: c.maxZ + SHOP.z,
+    });
+  }
+  // Exterior SHOP SIGN above the door, on the OUTSIDE of the −Z (street) wall,
+  // facing the street. The street wall is the −Z face and the player approaches
+  // from the open centre at LOWER z, looking in +Z toward the shop. artPanel's
+  // textured front points +Z by default — i.e. AWAY from that viewer — so we
+  // rotate it 180° (rotation.y = π) to face −Z toward the player, so the text
+  // reads correctly (un-mirrored). (Same pattern as the SW warehouse sign2.)
+  const shopSign = artPanel(3.4, 1.1, "sign", {
+    text: "BOLT & BARREL", bg: "#1d4e89", fg: "#ffd166", emissiveIntensity: 0.5,
+    file: "industrial-shop-sign.png",
+  });
+  shopSign.position.set(SHOP.x, SHOP.H + 0.7, SHOP.z - (SHOP.D / 2 + SHOP.wallT) - 0.05);
+  shopSign.rotation.y = Math.PI;
+  group.add(shopSign);
 
   // --- Animation -------------------------------------------------------------
   let beaconT = 0;

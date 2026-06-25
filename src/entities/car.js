@@ -219,9 +219,15 @@ function buildCarGroup(color) {
     wheels.push(w);
   }
 
-  // --- Headlights (front, +Z): bright emissive + forward spotlight glow ---
-  const head = new THREE.MeshStandardMaterial({ color: "#fffdf2", emissive: "#fff4c4", emissiveIntensity: 2.4, roughness: 0.2 });
-  const tail = new THREE.MeshStandardMaterial({ color: "#ff6a58", emissive: "#ff2412", emissiveIntensity: 1.8, roughness: 0.35 });
+  // --- Headlights (front, +Z): soft always-on glow + forward spotlight ---
+  // headMat is a shared, dimmable emissive: it idles at a soft glow and the
+  // horn() honk flashes it up briefly (see drive()'s honk ticker). Stored on
+  // userData so drive() can reuse the same material ref every frame (no alloc).
+  const head = new THREE.MeshStandardMaterial({ color: "#fffdf2", emissive: "#fff4c4", emissiveIntensity: 0.85, roughness: 0.2 });
+  // tailMat idles dim and BRIGHTENS while braking (driven each frame in drive()).
+  const tail = new THREE.MeshStandardMaterial({ color: "#ff6a58", emissive: "#ff2412", emissiveIntensity: 0.7, roughness: 0.35 });
+  // reverseMat: white, only lit while the car is moving backwards.
+  const reverse = new THREE.MeshStandardMaterial({ color: "#f6f6ff", emissive: "#ffffff", emissiveIntensity: 0, roughness: 0.3 });
   for (const hx of [-0.62, 0.62]) {
     const h = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.08), head);
     h.position.set(hx, 0.72, 1.96); // proud of the nose face, above the bumper
@@ -234,6 +240,13 @@ function buildCarGroup(color) {
   const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.06, 0.05), tail);
   tailBar.position.set(0, 0.78, -1.945);
   g.add(tailBar);
+  // Reverse lights — small white lenses inboard of the taillights, just proud
+  // of the tail face. Dark until the car rolls backwards.
+  for (const rx of [-0.34, 0.34]) {
+    const rv = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.05), reverse);
+    rv.position.set(rx, 0.7, -1.945);
+    g.add(rv);
+  }
 
   // Subtle forward beam so the headlights actually throw light at night.
   const beam = new THREE.SpotLight("#fff3cf", 6, 22, Math.PI / 6, 0.5, 1.4);
@@ -252,7 +265,29 @@ function buildCarGroup(color) {
   plate.rotation.y = Math.PI;
   g.add(plate);
 
+  // --- Horn honk effect: a reusable expanding ring that flashes on horn() ---
+  // Built once, hidden, with its own material so the honk animation never
+  // touches the headlight/taillight materials' base state. drive() advances it.
+  const ringMat = new THREE.MeshBasicMaterial({ color: "#fff6c0", transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.62, 28), ringMat);
+  ring.position.set(0, 0.72, 2.02); // just ahead of the headlights
+  ring.visible = false;
+  g.add(ring);
+
+  // Stash material/mesh refs + idle baselines so drive() can mutate emissive
+  // intensity in place each frame with zero per-frame allocation.
   g.userData.wheels = wheels;
+  g.userData.lights = {
+    head,
+    headBase: head.emissiveIntensity, // soft idle glow
+    tail,
+    tailBase: tail.emissiveIntensity, // dim idle
+    tailBrake: 2.6, // bright when braking
+    reverse,
+    reverseLit: 2.2, // white reverse glow
+    ring,
+    ringMat,
+  };
   return g;
 }
 
@@ -272,6 +307,12 @@ export function makeCar(opts = {}) {
   const _camLook = new THREE.Vector3();
   let _camInit = false;
 
+  // Horn honk state: countdown timer (seconds remaining) ticked down in drive().
+  // Self-contained + visual-only (no audio) so horn() can be called anywhere.
+  const HONK_TIME = 0.45;
+  let _honk = 0;
+  const _lights = group.userData.lights;
+
   function syncGroup() {
     group.position.x = state.x;
     group.position.z = state.z;
@@ -282,6 +323,7 @@ export function makeCar(opts = {}) {
   // colliders: world AABBs; isGround(x,z): bool. Returns nothing.
   function drive(dt, input, colliders, isGround) {
     const { throttle, steer } = input;
+    const prevSpeed = state.speed; // for "speed dropping" brake-light detection
     // Longitudinal
     if (throttle > 0) {
       state.speed += CAR.accel * throttle * dt;
@@ -331,6 +373,43 @@ export function makeCar(opts = {}) {
     // spin wheels for feel
     const ws = group.userData.wheels;
     if (ws) for (const w of ws) w.rotation.x += state.speed * dt * 2.2;
+
+    // --- Lights (mutate shared material refs in place; no per-frame alloc) ---
+    if (_lights) {
+      // Brake lights: lit when braking while moving forward (throttle<0 and
+      // still rolling forward) OR whenever forward speed is actively dropping.
+      const movingFwd = state.speed > 0.1;
+      const slowingFwd = movingFwd && state.speed < prevSpeed - 1e-4;
+      const braking = (throttle < 0 && movingFwd) || slowingFwd;
+      _lights.tail.emissiveIntensity = braking ? _lights.tailBrake : _lights.tailBase;
+
+      // Reverse lights: white, lit only while the car is actually moving backward.
+      _lights.reverse.emissiveIntensity = state.speed < -0.05 ? _lights.reverseLit : 0;
+
+      // Horn honk: flash the headlights up + expand/fade the ring while active.
+      if (_honk > 0) {
+        _honk = Math.max(0, _honk - dt);
+        const t = _honk / HONK_TIME; // 1 -> 0 over the honk
+        // Headlight flash: pulse above the soft idle glow, settle back to base.
+        _lights.head.emissiveIntensity = _lights.headBase + 2.4 * t;
+        // Ring: grow from the headlights outward and fade as the honk ends.
+        const ring = _lights.ring;
+        ring.visible = true;
+        const s = 1 + (1 - t) * 2.2; // expand outward
+        ring.scale.set(s, s, s);
+        _lights.ringMat.opacity = 0.55 * t;
+        if (_honk === 0) ring.visible = false;
+      } else {
+        _lights.head.emissiveIntensity = _lights.headBase;
+      }
+    }
+  }
+
+  // Visual horn honk — flashes the headlights + an expanding ring for ~0.45s.
+  // Self-contained and audio-free by default; safe to call from anywhere (the
+  // animation is advanced inside drive() each frame). Returns nothing.
+  function horn() {
+    _honk = HONK_TIME;
   }
 
   // Trailing chase camera behind the car.
@@ -370,5 +449,5 @@ export function makeCar(opts = {}) {
     return Math.hypot(state.x - x, state.z - z);
   }
 
-  return { group, state, drive, updateCamera, resetCamera, footprint, exitSpot, distanceTo, syncGroup };
+  return { group, state, drive, updateCamera, resetCamera, footprint, exitSpot, distanceTo, syncGroup, horn };
 }

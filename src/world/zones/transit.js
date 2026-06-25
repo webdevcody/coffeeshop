@@ -39,6 +39,12 @@ const GEO = {
   bollard: new THREE.CylinderGeometry(0.13, 0.16, 0.9, 10),
   vent: new THREE.CylinderGeometry(0.3, 0.3, 0.4, 10),
   clockHand: new THREE.BoxGeometry(0.06, 1, 0.04),
+  // NEW shared geometry for the enterable newsstand/cafe shop interior
+  shopShelf: new THREE.BoxGeometry(2.0, 0.08, 0.45), // a shelf plank, scaled per use
+  shopProduct: new THREE.BoxGeometry(0.22, 0.3, 0.18), // a little product/good on a shelf
+  shopStoolSeat: new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12),
+  shopStoolLeg: new THREE.CylinderGeometry(0.04, 0.05, 0.7, 8),
+  shopPendant: new THREE.SphereGeometry(0.18, 12, 10), // hanging interior light bulb
 };
 
 // --- Shared materials (created ONCE) ---------------------------------------
@@ -93,7 +99,29 @@ const MAT = {
   bin: new THREE.MeshStandardMaterial({ color: "#2e3a2f", roughness: 0.8, metalness: 0.2 }),
   clockHandMat: new THREE.MeshStandardMaterial({ color: "#1a1d22", roughness: 0.5 }),
   awning: new THREE.MeshStandardMaterial({ color: "#b23a3a", roughness: 0.7, flatShading: true }),
+  // NEW materials for the enterable newsstand/cafe shop
+  shopWall: new THREE.MeshStandardMaterial({ color: "#e7ddc8", roughness: 0.9, flatShading: true }),
+  shopWallOut: new THREE.MeshStandardMaterial({ color: "#8a5a3c", roughness: 0.92, flatShading: true }),
+  shopFloor: new THREE.MeshStandardMaterial({ color: "#5c4632", roughness: 0.85, flatShading: true }),
+  shopRoof: new THREE.MeshStandardMaterial({ color: "#46484f", roughness: 0.85, flatShading: true }),
+  shopCounter: new THREE.MeshStandardMaterial({ color: "#7a4a2a", roughness: 0.6, flatShading: true }),
+  shopCounterTop: new THREE.MeshStandardMaterial({ color: "#2b2f36", roughness: 0.4, metalness: 0.3 }),
+  shopShelfMat: new THREE.MeshStandardMaterial({ color: "#9c6b3f", roughness: 0.8, flatShading: true }),
+  shopRug: new THREE.MeshStandardMaterial({ color: "#7a2e2e", roughness: 0.95, flatShading: true }),
+  shopStoolMat: new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness: 0.5, metalness: 0.5 }),
+  shopGlow: new THREE.MeshStandardMaterial({
+    color: "#fff0c0", emissive: "#ffdf8a", emissiveIntensity: 0.95, roughness: 0.4,
+  }),
 };
+
+// Bright themed product colours for the newsstand shelves (cycled per item).
+const SHOP_PRODUCT_MATS = [
+  new THREE.MeshStandardMaterial({ color: "#c43d3d", roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: "#3d72c4", roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: "#3fae5a", roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: "#e0a92e", roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: "#9c4fc4", roughness: 0.7 }),
+];
 
 function box(w, h, d, mat, cast = true, receive = true) {
   const m = new THREE.Mesh(GEO.unit, mat);
@@ -274,6 +302,193 @@ function makeKiosk(w, d, h, signText, signBg) {
   sign.position.set(0, h - 0.5, -d / 2 - 0.08);
   g.add(sign);
   return g;
+}
+
+// --- ENTERABLE SHOP: a station NEWSSTAND / CAFE the player can walk INTO -------
+// Builds a real room (4 walls + floor + flat ceiling) with a ~2.2 m doorway gap
+// in the STREET-FACING (-Z, toward the plaza/lanes) wall, cozy themed interior
+// content, an exterior shop sign over the door, and INDIVIDUAL wall colliders
+// (back + two sides + the two short front segments flanking the door — and NO
+// collider across the doorway gap, so the player enters through the door).
+//
+// All geometry is local to the returned group; the caller positions it and pushes
+// the returned colliders (already in WORLD/tile-local coords, computed from cx,cz).
+// Returns { group, colliders }.
+function makeNewsstandShop(cx, cz) {
+  const g = new THREE.Group();
+  g.position.set(cx, 0, cz);
+
+  // Room dimensions (interior footprint, centre-of-walls span)
+  const RW = 8.0;     // room width  (X)
+  const RD = 6.5;     // room depth  (Z)
+  const RH = 3.0;     // wall height
+  const T = 0.25;     // wall thickness
+  const DOOR = 2.2;   // doorway gap width
+  const halfW = RW / 2;
+  const halfD = RD / 2;
+  const shopColliders = [];
+
+  // FLOOR slab
+  const floor = box(RW + T, 0.1, RD + T, MAT.shopFloor, false, true);
+  floor.position.set(0, 0.05, 0);
+  g.add(floor);
+
+  // RUG in the centre (cozy)
+  const rug = box(3.4, 0.04, 2.6, MAT.shopRug, false, false);
+  rug.position.set(0, 0.12, 0.4);
+  g.add(rug);
+
+  // FLAT ROOF / ceiling slab
+  const roof = box(RW + T, 0.18, RD + T, MAT.shopRoof, true, false);
+  roof.position.set(0, RH + 0.09, 0);
+  g.add(roof);
+
+  // --- WALLS ----------------------------------------------------------------
+  // The plaza / drivable lane / station are to the NORTH (+Z); the player
+  // approaches the shop from there. So the STREET-FACING front wall (with the
+  // DOORWAY) is the +Z wall, and the solid BACK wall is the -Z wall (toward the
+  // tile's south edge). Front wall is split into two short segments flanking the
+  // doorway; NO collider spans the gap.
+
+  // BACK wall (z = -halfD), full width
+  const backWall = box(RW + T, RH, T, MAT.shopWall, true, true);
+  backWall.position.set(0, RH / 2, -halfD);
+  g.add(backWall);
+  shopColliders.push({ cx: cx + 0, cz: cz - halfD, w: RW + T, d: T });
+
+  // SIDE walls (x = ±halfW), full depth
+  for (const sx of [-halfW, halfW]) {
+    const sideWall = box(T, RH, RD + T, MAT.shopWall, true, true);
+    sideWall.position.set(sx, RH / 2, 0);
+    g.add(sideWall);
+    shopColliders.push({ cx: cx + sx, cz: cz + 0, w: T, d: RD + T });
+  }
+
+  // FRONT (street-facing, +Z) wall: TWO short segments flanking a DOORWAY GAP.
+  // Total front span = RW + T; doorway = DOOR centred at x=0; each segment width:
+  const frontSpan = RW + T;
+  const segW = (frontSpan - DOOR) / 2;            // width of each flanking segment
+  const segCenterX = DOOR / 2 + segW / 2;         // |x| of each segment centre
+  for (const sgn of [-1, 1]) {
+    const sx = sgn * segCenterX;
+    const seg = box(segW, RH, T, MAT.shopWall, true, true);
+    seg.position.set(sx, RH / 2, halfD);
+    g.add(seg);
+    shopColliders.push({ cx: cx + sx, cz: cz + halfD, w: segW, d: T });
+  }
+  // A lintel/header spanning ABOVE the doorway (visual only — above head height,
+  // does NOT block the doorway opening, so no collider here).
+  const lintel = box(DOOR + 0.2, 0.45, T, MAT.shopWall, true, false);
+  lintel.position.set(0, RH - 0.225, halfD);
+  g.add(lintel);
+
+  // Paint the OUTSIDE faces of the walls a warmer brick tone (thin overlay slabs)
+  // so the shop reads as a distinct little building from the street. Visual only.
+  const outBack = box(RW + T + 0.04, RH, 0.04, MAT.shopWallOut, false, false);
+  outBack.position.set(0, RH / 2, -halfD - T / 2 - 0.02);
+  g.add(outBack);
+  for (const sgn of [-1, 1]) {
+    const outFront = box(segW, RH, 0.04, MAT.shopWallOut, false, false);
+    outFront.position.set(sgn * segCenterX, RH / 2, halfD + T / 2 + 0.02);
+    g.add(outFront);
+  }
+
+  // --- INTERIOR CONTENT -----------------------------------------------------
+  // The BACK wall is at z = -halfD; interior fittings hug that wall so the
+  // player walking IN through the +Z doorway faces the counter and shelves.
+  // SERVICE COUNTER along the back-left, with a dark counter top.
+  const counterW = 3.4, counterD = 0.8, counterH = 1.05;
+  const counterX = -halfW + counterW / 2 + 0.5;
+  const counterZ = -halfD + counterD / 2 + 0.5;
+  const counterBody = box(counterW, counterH, counterD, MAT.shopCounter, true, false);
+  counterBody.position.set(counterX, counterH / 2, counterZ);
+  g.add(counterBody);
+  const counterTop = box(counterW + 0.2, 0.08, counterD + 0.2, MAT.shopCounterTop, true, false);
+  counterTop.position.set(counterX, counterH + 0.04, counterZ);
+  g.add(counterTop);
+  // a glowing register/display on the counter
+  const register = box(0.5, 0.3, 0.4, MAT.shopGlow, false, false);
+  register.position.set(counterX + counterW / 2 - 0.5, counterH + 0.25, counterZ);
+  g.add(register);
+
+  // SHELVES on the back wall (right of the counter) with little products.
+  // Three plank shelves; products vary colour, so a handful of small meshes
+  // (kept low) cycling SHOP_PRODUCT_MATS. (No per-frame allocation.)
+  const shelfX = halfW - 1.4;
+  const shelfZ = -halfD + 0.18 + T / 2;
+  for (let s = 0; s < 3; s++) {
+    const shelfY = 0.9 + s * 0.7;
+    const shelf = new THREE.Mesh(GEO.shopShelf, MAT.shopShelfMat);
+    shelf.scale.set(1.3, 1, 1);                  // ~2.6 m wide shelf
+    shelf.position.set(shelfX, shelfY, shelfZ);
+    shelf.castShadow = true;
+    g.add(shelf);
+    // products lined along the shelf
+    for (let p = 0; p < 5; p++) {
+      const prod = new THREE.Mesh(GEO.shopProduct, SHOP_PRODUCT_MATS[(s * 5 + p) % SHOP_PRODUCT_MATS.length]);
+      prod.position.set(shelfX - 1.0 + p * 0.5, shelfY + 0.19, shelfZ);
+      prod.castShadow = true;
+      g.add(prod);
+    }
+  }
+
+  // DISPLAY RACK (a newspaper/magazine rack) standing against the right wall.
+  const rackX = halfW - 0.5;
+  const rack = box(0.3, 1.6, 2.4, MAT.shopShelfMat, true, false);
+  rack.position.set(rackX, 0.8, -0.6);
+  g.add(rack);
+  // a few magazine fronts on the rack (lit/colourful)
+  for (let r = 0; r < 4; r++) {
+    const mag = box(0.06, 0.34, 0.5, SHOP_PRODUCT_MATS[r % SHOP_PRODUCT_MATS.length], false, false);
+    mag.position.set(rackX - 0.18, 0.55 + r * 0.34, -0.6);
+    g.add(mag);
+  }
+
+  // STOOLS / SEATS at a small standing ledge near the front window side (+Z).
+  for (const stx of [-2.0, -0.8]) {
+    const stool = new THREE.Group();
+    const seat = new THREE.Mesh(GEO.shopStoolSeat, MAT.shopStoolMat);
+    seat.position.y = 0.7;
+    seat.castShadow = true;
+    const leg = new THREE.Mesh(GEO.shopStoolLeg, MAT.shopStoolMat);
+    leg.position.y = 0.35;
+    stool.add(seat, leg);
+    stool.position.set(stx, 0.1, halfD - 1.6);
+    g.add(stool);
+  }
+
+  // WALL SIGNAGE inside (a menu board on the BACK wall, facing INTO the room
+  // toward the entering player, i.e. +Z). artPanel's textured front faces +Z and
+  // reads correctly from +Z, so a plain artPanel (no mirror flip) is right here.
+  const menu = artPanel(2.2, 1.0, "sign", {
+    text: "CAFE", bg: "#1d2b1f", fg: "#ffe6a8", emissiveIntensity: 0.4,
+  });
+  menu.position.set(counterX, RH - 0.7, -halfD + T / 2 + 0.06);
+  g.add(menu);
+
+  // HANGING INTERIOR LIGHTS (two pendants) — glowing bulbs on short stems.
+  for (const lx of [-1.8, 1.8]) {
+    const stem = box(0.04, 0.5, 0.04, MAT.shopStoolMat, false, false);
+    stem.position.set(lx, RH - 0.25, 0.2);
+    g.add(stem);
+    const bulb = new THREE.Mesh(GEO.shopPendant, MAT.shopGlow);
+    bulb.position.set(lx, RH - 0.55, 0.2);
+    g.add(bulb);
+  }
+
+  // --- EXTERIOR SHOP SIGN over the door, facing the STREET (+Z, the plaza side
+  // the player approaches from). The doorway faces +Z, so the sign's readable
+  // front must face +Z. artPanel's textured front faces +Z and reads correctly
+  // from +Z, so a plain artPanel (NO mirror flip) shows the text un-mirrored.
+  const sign = artPanel(3.2, 0.8, "sign", {
+    text: "NEWSSTAND", bg: "#10324a", fg: "#ffd34d", emissiveIntensity: 0.5,
+    file: "sign-newsstand.png",
+  });
+  // mounted on the outside of the front wall, above the doorway
+  sign.position.set(0, RH + 0.2, halfD + T / 2 + 0.08);
+  g.add(sign);
+
+  return { group: g, colliders: shopColliders };
 }
 
 export function buildTransit() {
@@ -857,6 +1072,20 @@ export function buildTransit() {
   }
   bulbs.instanceMatrix.needsUpdate = true;
   group.add(bulbs);
+
+  // --- ENTERABLE NEWSSTAND/CAFE SHOP -----------------------------------------
+  // A real little room the player can walk INTO, tucked into the OPEN south-east
+  // quadrant of the plaza verge (south of the drivable lane Z≈[-8,+5] and the
+  // bollard line Z=-13). Centre at (14, -19.5): footprint X∈[10,18], Z∈[-22.9,-16.1]
+  // — entirely inside the [-23,23] band, clear of the clock (-2,-11), bin (-9,-13.8),
+  // plaza bench (6,-15) and string-light posts (±21,-10.5). Its DOORWAY faces the
+  // street (-Z, toward the plaza/lanes), so the player walks straight in. The shop
+  // builder returns INDIVIDUAL wall colliders (back + two sides + the two front
+  // segments flanking the door) — and NO collider across the doorway gap.
+  const SHOP_X = 14, SHOP_Z = -19.5;
+  const shop = makeNewsstandShop(SHOP_X, SHOP_Z);
+  group.add(shop.group);
+  for (const c of shop.colliders) addCollider(colliders, c.cx, c.cz, c.w, c.d);
 
   // --- Animation state ------------------------------------------------------
   // The train slowly slides in and out along X (parked → eases away → returns),

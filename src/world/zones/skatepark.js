@@ -45,6 +45,24 @@ const parapetMat = new THREE.MeshStandardMaterial({ color: "#6f6c66", roughness:
 const winMat = new THREE.MeshStandardMaterial({ color: "#8fb6c9", roughness: 0.25, metalness: 0.5, emissive: "#22323b", emissiveIntensity: 0.3 });
 const doorMat = new THREE.MeshStandardMaterial({ color: "#2c2f36", roughness: 0.6, metalness: 0.3 });
 const awningMat = new THREE.MeshStandardMaterial({ color: "#cf3f5c", roughness: 0.8, side: THREE.DoubleSide });
+// Enterable skate-shop interior materials (created ONCE, reused).
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#3a4654", roughness: 0.9, side: THREE.DoubleSide });
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#7a6a55", roughness: 0.95 });
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#262b33", roughness: 0.92, side: THREE.DoubleSide });
+const shopCounterMat = new THREE.MeshStandardMaterial({ color: "#9c5a32", roughness: 0.7 });
+const shopCounterTop = new THREE.MeshStandardMaterial({ color: "#1f242b", roughness: 0.5, metalness: 0.3 });
+const shopShelfMat = new THREE.MeshStandardMaterial({ color: "#caa46a", roughness: 0.8 });
+const shopRugMat = new THREE.MeshStandardMaterial({ color: "#b8324f", roughness: 0.95 });
+const shopStoolMat = new THREE.MeshStandardMaterial({ color: "#23262c", roughness: 0.6, metalness: 0.2 });
+const shopGlassMat = new THREE.MeshStandardMaterial({ color: "#9fd0e0", roughness: 0.15, metalness: 0.4, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+const shopBulbMat = new THREE.MeshStandardMaterial({ color: "#fff0c8", emissive: "#ffdf9a", emissiveIntensity: 1.0, roughness: 0.3 });
+// Deck-product palette for shelved skateboard decks (instanced repeat).
+const deckProductMats = [
+  new THREE.MeshStandardMaterial({ color: "#e0552e", roughness: 0.55 }),
+  new THREE.MeshStandardMaterial({ color: "#2f9e8f", roughness: 0.55 }),
+  new THREE.MeshStandardMaterial({ color: "#e7c23a", roughness: 0.55 }),
+  new THREE.MeshStandardMaterial({ color: "#5b6bd0", roughness: 0.55 }),
+];
 
 // --- Shared geometries (created ONCE, reused) ------------------------------
 const coneConeGeo = new THREE.ConeGeometry(0.22, 0.62, 12);
@@ -55,6 +73,8 @@ const railBarGeo = new THREE.CylinderGeometry(0.045, 0.045, 1, 10); // scaled in
 const lampPoleGeo = new THREE.BoxGeometry(0.16, 5.0, 0.16);
 const lampHeadGeo = new THREE.SphereGeometry(0.26, 12, 10);
 const winGeo = new THREE.BoxGeometry(0.9, 1.2, 0.12); // upper-floor window pane (instanced)
+const shopDeckGeo = new THREE.BoxGeometry(0.22, 0.9, 0.04); // a skate deck standing on a shelf
+const shopWheelGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.06, 12); // boxed wheel set on a shelf
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -501,6 +521,202 @@ export function buildSkatepark() {
   sk.rotation.y = 0.6;
   group.add(sk);
 
+  // === ENTERABLE SKATE SHOP — a real walk-in interior ======================
+  // A small standalone shop the player can walk INTO: 4 walls, a floor, a flat
+  // ceiling and a ~2.2 m doorway gap in the STREET-FACING (-Z) wall. Tucked into
+  // the open SE quadrant along the inner edge, clear of the cafe (+Z rim, z>=16),
+  // the quarter-pipe (x~18,z=[-13,-3]), the cones and the spin sign (22,18).
+  // Footprint centre (shX,shZ); room is shW wide (X) × shD deep (Z). The door
+  // faces -Z toward the plaza centre. Each wall gets its OWN AABB collider; the
+  // doorway gap gets NONE so the player strolls straight in.
+  {
+    const shX = 17.5, shZ = 8.0;     // room centre
+    const shW = 8.0, shD = 7.0;      // interior footprint (X × Z)
+    const wallH = 3.0;               // wall height
+    const wallT = 0.25;              // wall thickness
+    const doorW = 2.2;               // doorway gap width
+    const shop = new THREE.Group();
+    shop.position.set(shX, 0, shZ);
+    group.add(shop);
+
+    const halfW = shW / 2, halfD = shD / 2;
+    const frontZ = -halfD;           // street-facing wall sits at local -Z
+    const backZ = halfD;
+
+    // Floor (a touch proud of the plaza so it reads as a shop floor).
+    const floor = box(shW + wallT, 0.08, shD + wallT, shopFloorMat, false);
+    floor.position.set(0, 0.04, 0);
+    floor.receiveShadow = true;
+    shop.add(floor);
+
+    // Flat roof / ceiling.
+    const roof = box(shW + wallT * 2, 0.18, shD + wallT * 2, shopRoofMat, false);
+    roof.position.set(0, wallH + 0.09, 0);
+    shop.add(roof);
+
+    // --- Walls (each a mesh + its own collider; world-space colliders) ------
+    // Back wall (+Z, full width).
+    const backWall = box(shW + wallT, wallH, wallT, shopWallMat);
+    backWall.position.set(0, wallH / 2, backZ);
+    shop.add(backWall);
+    addCollider(colliders, shX, shZ + backZ, shW + wallT, wallT);
+
+    // Side walls (±X, full depth).
+    const leftWall = box(wallT, wallH, shD + wallT, shopWallMat);
+    leftWall.position.set(-halfW, wallH / 2, 0);
+    shop.add(leftWall);
+    addCollider(colliders, shX - halfW, shZ, wallT, shD + wallT);
+
+    const rightWall = box(wallT, wallH, shD + wallT, shopWallMat);
+    rightWall.position.set(halfW, wallH / 2, 0);
+    shop.add(rightWall);
+    addCollider(colliders, shX + halfW, shZ, wallT, shD + wallT);
+
+    // Front wall (-Z) split into TWO segments flanking the central doorway gap.
+    // Each segment spans from a side wall inward to the edge of the 2.2 m gap.
+    const segW = (shW - doorW) / 2;          // width of each front segment
+    const segCx = (doorW / 2) + segW / 2;    // |X| centre of each segment
+    const frontLeft = box(segW + wallT, wallH, wallT, shopWallMat);
+    frontLeft.position.set(-segCx, wallH / 2, frontZ);
+    shop.add(frontLeft);
+    addCollider(colliders, shX - segCx, shZ + frontZ, segW + wallT, wallT);
+
+    const frontRight = box(segW + wallT, wallH, wallT, shopWallMat);
+    frontRight.position.set(segCx, wallH / 2, frontZ);
+    shop.add(frontRight);
+    addCollider(colliders, shX + segCx, shZ + frontZ, segW + wallT, wallT);
+    // NOTE: the doorway gap (|X| < doorW/2 on the front wall) gets NO collider.
+
+    // A small lintel beam above the doorway so the gap reads as a real opening.
+    const lintel = box(doorW, 0.35, wallT, shopWallMat, false);
+    lintel.position.set(0, wallH - 0.175, frontZ);
+    shop.add(lintel);
+
+    // --- Outside SHOP SIGN above the door, facing the street (-Z) -----------
+    // artPanel faces +Z by default; rotate 180° so it points -Z (the street) and
+    // reads un-mirrored.
+    const sign = artPanel(3.6, 0.95, "sign", {
+      text: "SHRED CITY SKATES",
+      fg: "#ffe14a",
+      bg: "#161a22",
+      template: 0,
+      file: "sign-skateshop.png",
+      emissiveIntensity: 0.55,
+    });
+    sign.position.set(0, wallH + 0.55, frontZ - wallT / 2 - 0.05);
+    sign.rotation.y = Math.PI;
+    shop.add(sign);
+
+    // === INTERIOR CONTENT — cozy + themed ===================================
+    // Rug centred on the floor.
+    const rug = box(4.0, 0.02, 3.0, shopRugMat, false);
+    rug.position.set(0, 0.09, -0.3);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // Service COUNTER along the back-right, with a dark top.
+    const counterX = halfW - 1.4, counterZ = backZ - 1.0;
+    const counter = box(2.6, 1.0, 0.7, shopCounterMat);
+    counter.position.set(counterX, 0.5, counterZ);
+    shop.add(counter);
+    const counterTop = box(2.7, 0.08, 0.8, shopCounterTop, false);
+    counterTop.position.set(counterX, 1.04, counterZ);
+    shop.add(counterTop);
+    // A register block on the counter.
+    const register = box(0.4, 0.28, 0.3, shopStoolMat, false);
+    register.position.set(counterX + 0.7, 1.22, counterZ);
+    shop.add(register);
+
+    // SHELVES on the back wall + left wall, holding little products.
+    // Back-wall shelf unit (left of counter).
+    const shelfBack = box(3.0, 1.6, 0.4, shopShelfMat);
+    shelfBack.position.set(-halfW + 1.8, 0.85, backZ - 0.25);
+    shop.add(shelfBack);
+    // Two shelf planks across it.
+    for (const sy of [0.7, 1.25]) {
+      const plank = box(2.9, 0.05, 0.42, shopCounterTop, false);
+      plank.position.set(-halfW + 1.8, sy, backZ - 0.25);
+      shop.add(plank);
+    }
+    // Left-wall shelf unit.
+    const shelfLeft = box(0.4, 1.7, 3.4, shopShelfMat);
+    shelfLeft.position.set(-halfW + 0.25, 0.9, -0.2);
+    shop.add(shelfLeft);
+
+    // DISPLAY RACK / case for stickers near the front-right.
+    const displayCase = box(1.1, 1.3, 0.5, shopShelfMat);
+    displayCase.position.set(halfW - 0.9, 0.65, frontZ + 1.4);
+    shop.add(displayCase);
+    const caseGlass = box(0.95, 0.9, 0.06, shopGlassMat, false);
+    caseGlass.position.set(halfW - 0.9, 0.85, frontZ + 1.16);
+    shop.add(caseGlass);
+
+    // Wheels-in-a-box products on the back-wall shelf (instanced, themed goods).
+    const wheelMatrices = [];
+    const _bm = new THREE.Matrix4();
+    for (const wy of [0.78, 1.33]) {        // shelf-plank tops (local Y)
+      for (let c = 0; c < 5; c++) {
+        const wx = (-halfW + 1.8) - 1.15 + c * 0.55;
+        _bm.makeRotationX(Math.PI / 2);
+        _bm.setPosition(wx, wy, backZ - 0.25);
+        wheelMatrices.push(_bm.clone());
+      }
+    }
+    if (wheelMatrices.length) {
+      const wheels = new THREE.InstancedMesh(shopWheelGeo, wheelMat, wheelMatrices.length);
+      wheels.castShadow = false;
+      wheels.receiveShadow = true;
+      for (let i = 0; i < wheelMatrices.length; i++) wheels.setMatrixAt(i, wheelMatrices[i]);
+      wheels.instanceMatrix.needsUpdate = true;
+      shop.add(wheels);
+    }
+
+    // DECKS standing on the left-wall shelf (a few colored boards leaning up).
+    const deckZs = [-1.4, -0.55, 0.3, 1.15, 1.95];
+    for (let i = 0; i < deckZs.length; i++) {
+      const d = new THREE.Mesh(shopDeckGeo, deckProductMats[i % deckProductMats.length]);
+      d.position.set(-halfW + 0.55, 1.1, deckZs[i]);
+      d.rotation.z = Math.PI / 2;       // lay the deck so its long axis is vertical-ish
+      d.rotation.y = Math.PI / 2;       // face into the room
+      d.castShadow = true;
+      shop.add(d);
+    }
+
+    // A couple of STOOLS / seats by the counter.
+    for (const sx of [counterX - 0.6, counterX + 0.4]) {
+      const stoolSeat = box(0.42, 0.08, 0.42, shopStoolMat);
+      stoolSeat.position.set(sx, 0.62, counterZ - 1.1);
+      shop.add(stoolSeat);
+      const stoolLeg = box(0.1, 0.6, 0.1, poleMat);
+      stoolLeg.position.set(sx, 0.31, counterZ - 1.1);
+      shop.add(stoolLeg);
+    }
+
+    // Wall SIGNAGE inside (above the counter on the back wall, faces -Z/inward).
+    const innerSign = artPanel(2.2, 0.7, "sign", {
+      text: "GRIP & GRIND",
+      fg: "#2fe0c2",
+      bg: "#101418",
+      template: 2,
+      emissiveIntensity: 0.5,
+    });
+    innerSign.position.set(counterX, 2.1, backZ - wallT / 2 - 0.06);
+    // faces -Z (into the room) — artPanel default is +Z, so rotate 180°.
+    innerSign.rotation.y = Math.PI;
+    shop.add(innerSign);
+
+    // Hanging interior LIGHTS — two bulbs on short cords from the ceiling.
+    for (const bx of [-1.8, 1.8]) {
+      const cord = box(0.03, 0.5, 0.03, poleMat, false);
+      cord.position.set(bx, wallH - 0.25, -0.3);
+      shop.add(cord);
+      const bulb = new THREE.Mesh(lampHeadGeo, shopBulbMat);
+      bulb.scale.setScalar(0.55);
+      bulb.position.set(bx, wallH - 0.55, -0.3);
+      shop.add(bulb);
+    }
+  }
+
   // --- Ambient animation -----------------------------------------------------
   // Cache the materials we flicker so we never allocate per frame.
   const neonMat = neon.material;
@@ -514,6 +730,8 @@ export function buildSkatepark() {
     neonMat.emissiveIntensity = 0.7 + Math.sin(t * 7.0) * 0.12 + (Math.random() < 0.04 ? -0.4 : 0);
     // gentle lamp pulse at night-feel
     lampGlass.emissiveIntensity = 0.85 + Math.sin(t * 1.7) * 0.08;
+    // warm flicker for the interior shop bulbs (shared material)
+    shopBulbMat.emissiveIntensity = 1.0 + Math.sin(t * 2.3) * 0.12;
     // sway the pennant flag
     flag.rotation.z = Math.sin(t * 2.2) * 0.12;
     flag.rotation.y = Math.sin(t * 1.6) * 0.18;

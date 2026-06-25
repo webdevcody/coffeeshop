@@ -61,6 +61,26 @@ const doorMat = new THREE.MeshStandardMaterial({ color: "#3a2c20", roughness: 0.
 const trimMat = new THREE.MeshStandardMaterial({ color: "#efe6d4", roughness: 0.8 });
 const shopAwningMat = new THREE.MeshStandardMaterial({ roughness: 0.8, side: THREE.DoubleSide });
 
+// --- Enterable deli/grocery interior materials (created ONCE, reused) -------
+const delWallMat = new THREE.MeshStandardMaterial({ color: "#e7dcc4", roughness: 0.95, side: THREE.DoubleSide });
+const delFloorMat = new THREE.MeshStandardMaterial({ color: "#b9a37e", roughness: 0.95 });
+const delCeilMat = new THREE.MeshStandardMaterial({ color: "#cdbf9f", roughness: 0.95, side: THREE.DoubleSide });
+const delCounterMat = new THREE.MeshStandardMaterial({ color: "#5a3a24", roughness: 0.7 });
+const delCounterTopMat = new THREE.MeshStandardMaterial({ color: "#cfd2d6", roughness: 0.35, metalness: 0.3 });
+const delShelfMat = new THREE.MeshStandardMaterial({ color: "#7a5230", roughness: 0.8 });
+const delCaseGlassMat = new THREE.MeshStandardMaterial({
+  color: "#cfeef5", roughness: 0.2, metalness: 0.15,
+  emissive: "#bfe6ef", emissiveIntensity: 0.12, transparent: true, opacity: 0.45,
+});
+const delStoolMat = new THREE.MeshStandardMaterial({ color: "#9a3b28", roughness: 0.6 });
+const delStoolLegMat = new THREE.MeshStandardMaterial({ color: "#3a3a40", roughness: 0.5, metalness: 0.6 });
+const delRugMat = new THREE.MeshStandardMaterial({ color: "#7a2f24", roughness: 1 });
+const delLightMat = new THREE.MeshStandardMaterial({
+  color: "#fff2c4", emissive: "#ffe2a0", emissiveIntensity: 1.0, roughness: 0.4,
+});
+// Themed deli product colors for the shelf goods (instanced, vertex-colored).
+const DELI_GOODS_COLORS = ["#e0473c", "#e8b53a", "#5fae3f", "#c4502a", "#d8742a", "#a8632c", "#e8efe4", "#9a3b28"];
+
 // Bright alternating canopy colors for the awnings (vertex-colored instances).
 const AWNING_COLORS = ["#e0473c", "#2f9e6e", "#e8a93a", "#3f7fd0"];
 const UMBRELLA_COLORS = ["#d8453a", "#e8b53a", "#3f9e8e"];
@@ -192,6 +212,211 @@ function makeShopBuilding(group, colliders, dummy, opts) {
   const exX = (w * cos + d * sin);
   const exZ = (w * sin + d * cos);
   addCollider(colliders, x, z, exX, exZ);
+}
+
+// Build a small ENTERABLE deli/grocery shop the player can walk INTO. Unlike the
+// solid storefront blocks above, this is a hollow room: 4 walls (with a doorway
+// GAP in the street-facing wall), a floor and a flat ceiling, plus cozy themed
+// interior content. Each WALL gets its own AABB collider (back + two sides + the
+// two short front segments flanking the door) — and crucially NO collider spans
+// the doorway gap, so the player enters through the door and the interior stays
+// walkable.
+//
+//   cx,cz       centre of the room footprint (placed in a clear open quadrant)
+//   w,d,h       interior-ish room WIDTH (X) / DEPTH (Z) / wall HEIGHT
+//   doorW       width of the doorway gap in the front (street-facing) wall
+//   frontZsign  +1 if the front (door) wall faces +Z, -1 if it faces -Z
+//               (the doorway must open toward the central lane / street at z≈0)
+function makeDeliShop(group, colliders, dummy, col, opts) {
+  const { cx, cz, w, d, h, doorW, frontZsign } = opts;
+  const t = 0.25;                       // wall thickness
+  const halfW = w / 2, halfD = d / 2;
+  const shop = new THREE.Group();
+  shop.position.set(cx, 0, cz);
+  group.add(shop);
+
+  // Wall Z planes: the front (door) wall sits on the side facing the street.
+  const frontZ = frontZsign * halfD;    // street-facing wall plane (local Z)
+  const backZ = -frontZsign * halfD;    // opposite wall plane
+
+  // --- Floor + flat ceiling (roof) ---------------------------------------
+  const floor = box(new THREE.BoxGeometry(w, 0.12, d), delFloorMat, false);
+  floor.position.set(0, 0.06, 0);
+  floor.receiveShadow = true;
+  shop.add(floor);
+  const ceil = box(new THREE.BoxGeometry(w + t, 0.18, d + t), delCeilMat);
+  ceil.position.set(0, h + 0.09, 0);
+  shop.add(ceil);
+
+  // --- Walls (each its OWN AABB collider; NONE across the doorway) --------
+  // Back wall (full span).
+  const back = box(new THREE.BoxGeometry(w + t, h, t), delWallMat);
+  back.position.set(0, h / 2, backZ);
+  shop.add(back);
+  addCollider(colliders, cx, cz + backZ, w + t, t);
+
+  // Two side walls (run along Z, full depth).
+  for (const sx of [-1, 1]) {
+    const side = box(new THREE.BoxGeometry(t, h, d), delWallMat);
+    side.position.set(sx * halfW, h / 2, 0);
+    shop.add(side);
+    addCollider(colliders, cx + sx * halfW, cz, t, d);
+  }
+
+  // Front (street-facing) wall: TWO short segments flanking a doorway GAP.
+  // gap is centered at x=0; each flank runs from |x|=doorW/2 to |x|=halfW.
+  const segW = halfW - doorW / 2;       // width of each front-wall segment
+  if (segW > 0.01) {
+    const segCx = (doorW / 2 + halfW) / 2; // centre of one flank segment
+    for (const sx of [-1, 1]) {
+      const seg = box(new THREE.BoxGeometry(segW, h, t), delWallMat);
+      seg.position.set(sx * segCx, h / 2, frontZ);
+      shop.add(seg);
+      addCollider(colliders, cx + sx * segCx, cz + frontZ, segW, t);
+    }
+  }
+  // A slim lintel header spanning ABOVE the doorway (no collider — it is up high,
+  // the gap below it is the walkable opening).
+  const lintel = box(new THREE.BoxGeometry(doorW + 0.1, h - 2.2, t), delWallMat);
+  lintel.position.set(0, h - (h - 2.2) / 2, frontZ);
+  shop.add(lintel);
+
+  // --- Service COUNTER along the back wall, with a steel top --------------
+  const counterD = 0.9;
+  const ccz = backZ + frontZsign * (counterD / 2 + 0.35); // inside the room, off back wall
+  const counter = box(new THREE.BoxGeometry(w - 1.8, 1.0, counterD), delCounterMat);
+  counter.position.set(0, 0.5, ccz);
+  shop.add(counter);
+  const ctop = box(new THREE.BoxGeometry(w - 1.6, 0.08, counterD + 0.15), delCounterTopMat);
+  ctop.position.set(0, 1.04, ccz);
+  shop.add(ctop);
+
+  // --- DISPLAY CASE (refrigerated deli case) at the front of the counter --
+  const caseBody = box(new THREE.BoxGeometry(w - 2.4, 0.7, 0.55), delCounterMat);
+  const caseCz = ccz + frontZsign * 0.85;
+  caseBody.position.set(0, 0.55, caseCz);
+  shop.add(caseBody);
+  const caseGlass = box(new THREE.BoxGeometry(w - 2.5, 0.5, 0.45), delCaseGlassMat, false);
+  caseGlass.position.set(0, 1.05, caseCz);
+  shop.add(caseGlass);
+
+  // --- SHELVES of little products on BOTH side walls ----------------------
+  // Two shelf boards per side at different heights, with instanced goods on top.
+  const shelfLen = d - 1.4;
+  const shelfYs = [1.1, 1.85];
+  const goodsCount = shelfYs.length * 2 * 6;  // 6 goods per shelf board
+  const goods = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.28, 0.34, 0.28),
+    new THREE.MeshStandardMaterial({ roughness: 0.75, flatShading: true }),
+    goodsCount
+  );
+  goods.castShadow = true;
+  let gi = 0;
+  for (const sx of [-1, 1]) {
+    const shelfX = sx * (halfW - 0.32);
+    for (const sy of shelfYs) {
+      const board = box(new THREE.BoxGeometry(0.34, 0.05, shelfLen), delShelfMat);
+      board.position.set(shelfX, sy, 0);
+      shop.add(board);
+      // little bracket under each shelf
+      const brkt = box(new THREE.BoxGeometry(0.3, 0.3, 0.06), delShelfMat, false);
+      brkt.position.set(shelfX, sy - 0.18, 0);
+      shop.add(brkt);
+      // products lined up on the board
+      for (let p = 0; p < 6; p++) {
+        const gz = -shelfLen / 2 + 0.4 + p * (shelfLen - 0.8) / 5;
+        dummy.position.set(shelfX, sy + 0.2, gz);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 0.7 + ((p + (sx > 0 ? 3 : 0)) % 3) * 0.25, 1);
+        dummy.updateMatrix();
+        goods.setMatrixAt(gi, dummy.matrix);
+        goods.setColorAt(gi, col.set(DELI_GOODS_COLORS[(p + gi) % DELI_GOODS_COLORS.length]));
+        gi++;
+      }
+    }
+  }
+  dummy.scale.set(1, 1, 1);
+  goods.instanceMatrix.needsUpdate = true;
+  if (goods.instanceColor) goods.instanceColor.needsUpdate = true;
+  shop.add(goods);
+
+  // --- A standing produce/bread RACK near a front corner ------------------
+  const rackX = (halfW - 0.7) * -1;            // tuck in one front corner
+  const rackZ = frontZ - frontZsign * 1.1;
+  const rack = box(new THREE.BoxGeometry(0.8, 1.4, 0.8), delShelfMat);
+  rack.position.set(rackX, 0.7, rackZ);
+  shop.add(rack);
+  const rackGoods = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(0.13, 8, 6),
+    new THREE.MeshStandardMaterial({ roughness: 0.7, flatShading: true }),
+    9
+  );
+  rackGoods.castShadow = true;
+  let rgi = 0;
+  for (let ly = 0; ly < 3; ly++) {
+    for (let p = 0; p < 3; p++) {
+      dummy.position.set(rackX + (p - 1) * 0.22, 0.55 + ly * 0.4, rackZ + (p % 2 ? 0.12 : -0.12));
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      rackGoods.setMatrixAt(rgi, dummy.matrix);
+      rackGoods.setColorAt(rgi, col.set(DELI_GOODS_COLORS[(ly + p) % DELI_GOODS_COLORS.length]));
+      rgi++;
+    }
+  }
+  rackGoods.instanceMatrix.needsUpdate = true;
+  if (rackGoods.instanceColor) rackGoods.instanceColor.needsUpdate = true;
+  shop.add(rackGoods);
+
+  // --- A couple of STOOLS by the counter ----------------------------------
+  for (const sx of [-1.0, 1.0]) {
+    const seat = box(new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12), delStoolMat);
+    const stz = caseCz + frontZsign * 0.9;
+    seat.position.set(sx, 0.62, stz);
+    shop.add(seat);
+    const leg = box(new THREE.CylinderGeometry(0.05, 0.06, 0.62, 8), delStoolLegMat, false);
+    leg.position.set(sx, 0.31, stz);
+    shop.add(leg);
+  }
+
+  // --- RUG in the middle of the floor -------------------------------------
+  const rug = box(new THREE.BoxGeometry(w - 2.6, 0.04, d - 3.0), delRugMat, false);
+  rug.position.set(0, 0.13, frontZsign * 0.4);
+  rug.receiveShadow = true;
+  shop.add(rug);
+
+  // --- Hanging interior LIGHTS (two pendant bulbs) ------------------------
+  for (const lz of [-1.4, 1.4]) {
+    const cord = box(new THREE.CylinderGeometry(0.015, 0.015, 0.5, 6), delStoolLegMat, false);
+    cord.position.set(0, h - 0.25, lz);
+    shop.add(cord);
+    const bulb = box(new THREE.SphereGeometry(0.16, 10, 8), delLightMat, false);
+    bulb.position.set(0, h - 0.55, lz);
+    shop.add(bulb);
+  }
+
+  // --- Interior wall SIGNAGE on the back wall (faces into the room) -------
+  // The panel faces +Z by default; flip it by π when the room's interior is on
+  // the -Z side of the back wall so the text reads correctly to a player inside.
+  const innerSign = artPanel(2.6, 0.9, "sign", {
+    text: "DELI MENU", bg: "#2d6a4f", fg: "#f7fff7",
+    emissiveIntensity: 0.3, file: "market-deli-menu.png",
+  });
+  innerSign.position.set(0, 2.3, backZ + frontZsign * 0.14);
+  // Back wall is on the -frontZsign side; its inward face points +frontZsign.
+  // artPanel front is +Z, so flip when frontZsign is -1.
+  if (frontZsign < 0) innerSign.rotation.y = Math.PI;
+  shop.add(innerSign);
+
+  // --- Exterior shop SIGN above the door, FACING THE STREET ---------------
+  // Front wall faces frontZsign·Z toward the lane. artPanel front is +Z, so flip
+  // when the front faces -Z to keep the text un-mirrored to a player on the street.
+  const outerSign = artPanel(3.2, 1.1, "sign", {
+    text: "CORNER DELI", bg: "#8d0801", fg: "#fff3b0",
+    emissiveIntensity: 0.5, file: "market-corner-deli.png",
+  });
+  outerSign.position.set(0, h + 0.4, frontZ + frontZsign * 0.16);
+  if (frontZsign < 0) outerSign.rotation.y = Math.PI;
+  shop.add(outerSign);
 }
 
 export function buildMarket() {
@@ -652,6 +877,16 @@ export function buildMarket() {
   makeShopBuilding(group, colliders, dummy, {
     x: 16, z: -18.5, ry: 0, w: 11, d: 8, h: 7.0,
     text: "DELI", bg: "#e8a93a", accent: "#e8a93a", wallMat: brickMat2,
+  });
+
+  // --- ENTERABLE deli/grocery shop (a hollow room the player walks INTO) ---
+  // Tucked into the open SOUTH-CENTRE quadrant between the BAKERY (right edge
+  // x≈-9) and DELI (left edge x≈10.5) storefronts, set back so it clears the
+  // hall columns (z=±11.6) and stalls (z=±9). The door faces +Z toward the
+  // central lane/street. Room: 8 m wide × 7 m deep, walls 3.2 m tall, 2.2 m
+  // doorway. Footprint x∈[-4.1,4.1], z∈[-22.1,-15] — all inside [-23,23].
+  makeDeliShop(group, colliders, dummy, col, {
+    cx: 0, cz: -18.5, w: 8, d: 7, h: 3.2, doorW: 2.2, frontZsign: 1,
   });
 
   // --- Rotating market hub sign (animated) --------------------------------

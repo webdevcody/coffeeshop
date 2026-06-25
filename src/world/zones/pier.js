@@ -79,6 +79,30 @@ const shopWinMat = new THREE.MeshStandardMaterial({
 const awningMat = new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.75 });
 const awningStripeMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.75 });
 const columnMat = new THREE.MeshStandardMaterial({ color: "#d8cfb8", roughness: 0.85 });
+// --- Ice-cream & souvenir shack skins (created ONCE, reused) ---------------
+// Mint-and-cream seaside shack: pastel walls, a candy-stripe interior accent,
+// pale wood floor and a coral roof so it reads as a cheerful beach kiosk.
+const shackWallMat = new THREE.MeshStandardMaterial({ color: "#bfe7df", roughness: 0.85 });
+const shackWallInMat = new THREE.MeshStandardMaterial({ color: "#f3efe2", roughness: 0.9, side: THREE.DoubleSide });
+const shackRoofMat = new THREE.MeshStandardMaterial({ color: "#e8896b", roughness: 0.75 });
+const shackFloorMat = new THREE.MeshStandardMaterial({ color: "#caa86a", roughness: 0.95 });
+const counterMat = new THREE.MeshStandardMaterial({ color: "#9c6b3f", roughness: 0.8 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.6 });
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#7d5230", roughness: 0.9 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.95, side: THREE.DoubleSide });
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#2f7f93", roughness: 0.7 });
+const stoolLegMat = new THREE.MeshStandardMaterial({ color: "#444", roughness: 0.5, metalness: 0.6 });
+const bulbMat = new THREE.MeshStandardMaterial({
+  color: "#fff3c4", emissive: "#ffe08a", emissiveIntensity: 1.2, roughness: 0.3,
+});
+// A small pool of pastel "product" colours for the shelf goods + display tubs.
+const goodsMats = [
+  new THREE.MeshStandardMaterial({ color: "#ff9eb5", roughness: 0.7 }), // strawberry
+  new THREE.MeshStandardMaterial({ color: "#fff1b8", roughness: 0.7 }), // vanilla
+  new THREE.MeshStandardMaterial({ color: "#a8e6cf", roughness: 0.7 }), // mint
+  new THREE.MeshStandardMaterial({ color: "#c8a2c8", roughness: 0.7 }), // grape
+  new THREE.MeshStandardMaterial({ color: "#ffcf3f", roughness: 0.7 }), // lemon
+];
 
 // --- Shared geometries (reused across repeated props) ----------------------
 const pilingGeo = new THREE.CylinderGeometry(0.22, 0.26, 5, 8);
@@ -509,6 +533,199 @@ export function buildPier() {
     bollard.position.set(x, 0.85, DECK_Z1 - 3);
     bollard.castShadow = true;
     group.add(bollard);
+  }
+
+  // --- ENTERABLE ICE-CREAM & SOUVENIR SHACK -------------------------------
+  // A small walk-in beach kiosk tucked into the open promenade pocket BETWEEN
+  // the arcade (ends X=-8.5) and the pier hall (starts X=4), well BEHIND the
+  // clear driving lane (Z in [-12,-2]). Its whole footprint sits in LOCAL
+  // X[-6.5,1.5], Z[-21,-14] — clear of every existing building, the deck, the
+  // lighthouse and the lane — and entirely inside the [-23,23] setback.
+  //
+  // The room is a real interior: 4 thin walls (back + 2 sides + 2 short front
+  // segments flanking a 2.2 m doorway), a floor and a flat ceiling. The FRONT
+  // wall faces +Z toward the lane, so the player walks in from the promenade and
+  // the outside sign (artPanel, faces +Z) reads un-mirrored. Each wall gets its
+  // OWN AABB collider; the doorway gap gets NONE, so the inside is walkable.
+  const shopCx = -2.5, shopCz = -17.5;     // room centre
+  const shopW = 8, shopD = 7, shopH = 3.2; // 8 m wide × 7 m deep × 3.2 m tall
+  const WT = 0.25;                          // wall thickness
+  const DOOR_W = 2.2;                        // doorway gap width
+  const shop = new THREE.Group();
+  shop.position.set(shopCx, 0, shopCz);
+  const frontZ = shopD / 2;   // +Z wall (street-facing), local = +3.5
+  const backZ = -shopD / 2;   // -Z wall, local = -3.5
+  const leftX = -shopW / 2;   // local -4
+  const rightX = shopW / 2;   // local +4
+
+  // Floor (pale wood) + flat ceiling/roof.
+  const shopFloor = new THREE.Mesh(new THREE.PlaneGeometry(shopW, shopD), shackFloorMat);
+  shopFloor.rotation.x = -Math.PI / 2;
+  shopFloor.position.y = 0.12;
+  shopFloor.receiveShadow = true;
+  shop.add(shopFloor);
+  const shopRoof = box(shopW + 0.4, 0.2, shopD + 0.4, shackRoofMat);
+  shopRoof.position.set(0, shopH + 0.1, 0);
+  shop.add(shopRoof);
+  // A slim coral fascia band just under the eave on the front, for kerb appeal.
+  const fascia = box(shopW + 0.4, 0.4, 0.12, shackRoofMat, false);
+  fascia.position.set(0, shopH - 0.2, frontZ + 0.22);
+  shop.add(fascia);
+
+  // Walls (thin boxes). Outer skin = mint, but we keep one material; interior
+  // reads via the cream ceiling + props. Each load-bearing wall is its own mesh
+  // AND its own collider; the doorway gap in the front wall has neither blocker.
+  // Back wall (full width).
+  const backWall = box(shopW, shopH, WT, shackWallMat);
+  backWall.position.set(0, shopH / 2, backZ);
+  shop.add(backWall);
+  // Side walls (full depth).
+  const leftWall = box(WT, shopH, shopD, shackWallMat);
+  leftWall.position.set(leftX, shopH / 2, 0);
+  shop.add(leftWall);
+  const rightWall = box(WT, shopH, shopD, shackWallMat);
+  rightWall.position.set(rightX, shopH / 2, 0);
+  shop.add(rightWall);
+  // Front wall = two short segments flanking the central doorway gap.
+  const frontSegW = (shopW - DOOR_W) / 2; // each flank = 2.9 m
+  for (const sx of [-(DOOR_W / 2 + frontSegW / 2), (DOOR_W / 2 + frontSegW / 2)]) {
+    const seg = box(frontSegW, shopH, WT, shackWallMat);
+    seg.position.set(sx, shopH / 2, frontZ);
+    shop.add(seg);
+  }
+  // A lintel beam bridges over the doorway (above head height, no collider).
+  const lintel = box(DOOR_W + 0.3, 0.4, WT, shackRoofMat, false);
+  lintel.position.set(0, shopH - 0.2, frontZ);
+  shop.add(lintel);
+
+  // INTERIOR CONTENT --------------------------------------------------------
+  // Rug on the floor (welcoming a customer in from the door).
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.6), rugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(0, 0.13, 0.6);
+  shop.add(rug);
+
+  // Service COUNTER along the back-left, with a pale top and a display of
+  // ice-cream tubs sunk into it (a row of pastel scoops).
+  const counterW = 4.4, counterD = 1.0, counterH = 1.05;
+  const counterCx = -0.7, counterCz = backZ + counterD / 2 + 0.45;
+  const counterBody = box(counterW, counterH, counterD, counterMat);
+  counterBody.position.set(counterCx, counterH / 2 + 0.12, counterCz);
+  shop.add(counterBody);
+  const counterTop = box(counterW + 0.2, 0.12, counterD + 0.2, counterTopMat, false);
+  counterTop.position.set(counterCx, counterH + 0.18, counterCz);
+  shop.add(counterTop);
+  // Ice-cream tubs along the counter (instanced; one geo, pastel colours).
+  const tubGeo = new THREE.CylinderGeometry(0.28, 0.24, 0.34, 12);
+  for (let i = 0; i < 5; i++) {
+    const tub = new THREE.Mesh(tubGeo, goodsMats[i % goodsMats.length]);
+    tub.position.set(counterCx - counterW / 2 + 0.5 + i * 0.85, counterH + 0.32, counterCz);
+    tub.castShadow = true;
+    shop.add(tub);
+  }
+
+  // SHELVES on the back wall stocked with little souvenir goods (instanced
+  // boxes). Two tiers of shelf plus a grid of pastel product blocks.
+  const shelfX = 1.9, shelfClearW = 3.6;
+  for (let tier = 0; tier < 2; tier++) {
+    const shelf = box(shelfClearW, 0.1, 0.5, shelfMat, false);
+    shelf.position.set(shelfX, 1.2 + tier * 0.9, backZ + 0.35);
+    shop.add(shelf);
+  }
+  // Instanced souvenir goods sitting on the two shelves (5 per tier × 2 tiers).
+  const goodGeo = new THREE.BoxGeometry(0.32, 0.42, 0.3);
+  const goodsCount = 10;
+  const goods = new THREE.InstancedMesh(goodGeo, goodsMats[1], goodsCount);
+  goods.castShadow = true;
+  const gm = new THREE.Matrix4();
+  let gi = 0;
+  for (let tier = 0; tier < 2; tier++) {
+    for (let i = 0; i < 5; i++) {
+      gm.makeTranslation(
+        shelfX - shelfClearW / 2 + 0.45 + i * 0.7,
+        1.2 + tier * 0.9 + 0.28,
+        backZ + 0.35,
+      );
+      goods.setMatrixAt(gi++, gm);
+    }
+  }
+  goods.instanceMatrix.needsUpdate = true;
+  shop.add(goods);
+
+  // DISPLAY CASE / souvenir rack near the right wall: a glass-fronted cabinet
+  // showing a couple of bright trinkets.
+  const caseBody = box(0.7, 1.5, 2.2, shelfMat);
+  caseBody.position.set(rightX - 0.55, 0.75 + 0.12, 0.4);
+  shop.add(caseBody);
+  const caseGlass = box(0.12, 1.1, 1.9, shopWinMat, false);
+  caseGlass.position.set(rightX - 0.55 - 0.42, 0.95 + 0.12, 0.4);
+  shop.add(caseGlass);
+  for (let i = 0; i < 3; i++) {
+    const trinket = new THREE.Mesh(
+      new THREE.ConeGeometry(0.14, 0.34, 10),
+      goodsMats[i % goodsMats.length],
+    );
+    trinket.position.set(rightX - 0.7, 1.05 + 0.12, -0.4 + i * 0.7);
+    shop.add(trinket);
+  }
+
+  // A couple of STOOLS in front of the counter (round seat + four thin legs).
+  const seatGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.1, 14);
+  const legGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.62, 6);
+  for (const sx of [-1.6, -0.2]) {
+    const stool = new THREE.Group();
+    stool.position.set(sx, 0, counterCz + 1.0);
+    const seat = new THREE.Mesh(seatGeo, stoolSeatMat);
+    seat.position.y = 0.74 + 0.12;
+    seat.castShadow = true;
+    stool.add(seat);
+    for (const [lx, lz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]]) {
+      const leg = new THREE.Mesh(legGeo, stoolLegMat);
+      leg.position.set(lx, 0.31 + 0.12, lz);
+      stool.add(leg);
+    }
+    shop.add(stool);
+  }
+
+  // Wall SIGNAGE inside (a little menu board on the cream back wall, faces +Z).
+  const menu = artPanel(2.2, 1.2, "sign", {
+    text: "ICE CREAM", bg: "#0b6e4f", fg: "#f7fff7",
+    file: "pier-shack-menu.png", emissiveIntensity: 0.5,
+  });
+  menu.position.set(-1.4, 2.3, backZ + WT / 2 + 0.02);
+  shop.add(menu);
+
+  // Hanging interior LIGHTS: two glowing bulbs on short cords from the ceiling.
+  const cordGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.5, 6);
+  const bulbGeo = new THREE.SphereGeometry(0.13, 10, 8);
+  for (const lx of [-1.5, 1.5]) {
+    const cord = new THREE.Mesh(cordGeo, stoolLegMat);
+    cord.position.set(lx, shopH - 0.25, 0.3);
+    shop.add(cord);
+    const bulb = new THREE.Mesh(bulbGeo, bulbMat);
+    bulb.position.set(lx, shopH - 0.55, 0.3);
+    shop.add(bulb);
+  }
+
+  // OUTSIDE shop SIGN above the door, facing the street (+Z). artPanel faces +Z
+  // by default, so the text reads correctly (un-mirrored) from the lane.
+  const shopSign = artPanel(3.6, 1.0, "sign", {
+    text: "SEASIDE SCOOPS", bg: "#1a73e8", fg: "#fff8e1",
+    file: "pier-shack-sign.png", emissiveIntensity: 0.55,
+  });
+  shopSign.position.set(0, shopH + 0.45, frontZ + 0.2);
+  shop.add(shopSign);
+
+  group.add(shop);
+
+  // Per-wall AABB colliders (world space = local + shop centre). The DOORWAY
+  // GAP (front-wall centre, X in [shopCx ± DOOR_W/2]) gets NO collider, so the
+  // player can walk through the door into the interior.
+  addCollider(colliders, shopCx, shopCz + backZ, shopW, WT);   // back wall
+  addCollider(colliders, shopCx + leftX, shopCz, WT, shopD);   // left wall
+  addCollider(colliders, shopCx + rightX, shopCz, WT, shopD);  // right wall
+  for (const sx of [-(DOOR_W / 2 + frontSegW / 2), (DOOR_W / 2 + frontSegW / 2)]) {
+    addCollider(colliders, shopCx + sx, shopCz + frontZ, frontSegW, WT); // front flanks
   }
 
   // --- Seagulls circling overhead -----------------------------------------

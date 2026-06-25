@@ -78,6 +78,15 @@ const matWinLit = new THREE.MeshStandardMaterial({
 const matBulb = new THREE.MeshStandardMaterial({
   color: "#fff6da", emissive: "#ffe9a8", emissiveIntensity: 0.9, roughness: 0.4,
 });
+// --- Parts & accessories SHOP interior palette (reused across its props) ------
+const matShopWall = new THREE.MeshStandardMaterial({ color: "#3a4654", roughness: 0.85 });
+const matShopFloor = new THREE.MeshStandardMaterial({ color: "#4a4a52", roughness: 0.95 });
+const matShelf = new THREE.MeshStandardMaterial({ color: "#7a6a52", roughness: 0.9 });
+const matCounter = new THREE.MeshStandardMaterial({ color: "#b54a3a", roughness: 0.6 });
+const matRug = new THREE.MeshStandardMaterial({ color: "#264a63", roughness: 0.95 });
+const matProdBlue = new THREE.MeshStandardMaterial({ color: "#3f7fd0", roughness: 0.55 });
+const matProdRed = new THREE.MeshStandardMaterial({ color: "#d6453a", roughness: 0.55 });
+const matProdYel = new THREE.MeshStandardMaterial({ color: "#e7c24a", roughness: 0.55 });
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(boxGeo, mat);
@@ -636,6 +645,177 @@ export function buildAutoPlaza() {
   bin.position.set(-22, 0, -22);
   group.add(bin);
   addCollider(colliders, -22, -22, 0.7, 0.7);
+
+  // === ENTERABLE PARTS & ACCESSORIES SHOP (SE open quadrant) ================
+  // A small, real interior the player can WALK INTO: 4 thin walls, a floor and a
+  // flat ceiling, with a 2.2 m DOORWAY GAP in the street-facing (-X) wall that
+  // faces the central drive lane. Each wall is a SOLID box; the back wall, both
+  // side walls and the two short front segments flanking the door each get their
+  // own AABB collider — and crucially NO collider spans the doorway gap, so the
+  // interior is walkable and the player enters through the door.
+  // Placed clear of the showroom (z≈12+), gas forecourt (x<-5), pylon (z≈-18)
+  // and the central lane (x≈0). Footprint X∈[11,19], Z∈[-11.5,-4.5] — all well
+  // inside local X,Z ∈ [-23,23].
+  const SHOP = { x: 15, z: -8, w: 8, d: 7, h: 3.4, t: 0.25 };
+  const shop = new THREE.Group();
+  const hw = SHOP.w / 2, hd = SHOP.d / 2, ht = SHOP.t / 2;
+  const doorGap = 2.2;          // clear opening width in the front (-X) wall
+  // The front (-X) wall runs along Z, so its total length is SHOP.d. Split it
+  // into two flanking segments with the doorway gap centred between them.
+  const frontSeg = (SHOP.d - doorGap) / 2; // length of each flanking front segment
+
+  // Floor plate + a thin slab so the floor reads from outside too.
+  const shopFloor = flat(SHOP.w, SHOP.d, matShopFloor);
+  shopFloor.position.y = 0.03;
+  shop.add(shopFloor);
+  // Flat ceiling / roof.
+  const shopRoof = box(SHOP.w + 0.3, SHOP.t, SHOP.d + 0.3, matRoof);
+  shopRoof.position.y = SHOP.h + ht;
+  shop.add(shopRoof);
+
+  // --- Four walls (front wall is split by the doorway gap) ------------------
+  // Back wall (+X face, away from the street).
+  const wBack = box(SHOP.t, SHOP.h, SHOP.d, matShopWall);
+  wBack.position.set(hw - ht, SHOP.h / 2, 0);
+  // Two side walls (±Z).
+  const wSideN = box(SHOP.w, SHOP.h, SHOP.t, matShopWall);
+  wSideN.position.set(0, SHOP.h / 2, hd - ht);
+  const wSideS = box(SHOP.w, SHOP.h, SHOP.t, matShopWall);
+  wSideS.position.set(0, SHOP.h / 2, -hd + ht);
+  // Front wall (-X, street-facing) split into two short segments flanking the door.
+  const frontZ0 = -hd + frontSeg / 2; // segment toward -Z
+  const frontZ1 = hd - frontSeg / 2;  // segment toward +Z
+  const wFrontA = box(SHOP.t, SHOP.h, frontSeg, matShopWall);
+  wFrontA.position.set(-hw + ht, SHOP.h / 2, frontZ0);
+  const wFrontB = box(SHOP.t, SHOP.h, frontSeg, matShopWall);
+  wFrontB.position.set(-hw + ht, SHOP.h / 2, frontZ1);
+  // Door header lintel over the gap (above head height, doesn't block walking).
+  const lintelS = box(SHOP.t, 0.5, doorGap, matTrim, false);
+  lintelS.position.set(-hw + ht, SHOP.h - 0.25, 0);
+  shop.add(wBack, wSideN, wSideS, wFrontA, wFrontB, lintelS);
+
+  // --- INTERIOR: rug, service counter, shelves of goods, display rack, stools,
+  // signage, hanging lights — a cozy, themed reason to step inside. ----------
+  // Rug centred on the floor.
+  const rug = flat(4.4, 3.2, matRug);
+  rug.position.set(0.3, 0.05, 0);
+  shop.add(rug);
+
+  // Service counter along the back wall (with a darker top kick).
+  const counter = box(2.8, 1.0, 0.9, matCounter);
+  counter.position.set(hw - 0.7, 0.5, -1.4);
+  const counterTop = box(3.0, 0.12, 1.1, matDark, false);
+  counterTop.position.set(hw - 0.7, 1.06, -1.4);
+  shop.add(counter, counterTop);
+  // A small cash register box + a couple of boxed parts on the counter.
+  const register = box(0.5, 0.35, 0.4, matSteel, false);
+  register.position.set(hw - 0.9, 1.3, -1.1);
+  shop.add(register);
+
+  // Shelving unit along the back-N wall, stacked with little product boxes.
+  const shelfUnit = new THREE.Group();
+  for (let lvl = 0; lvl < 3; lvl++) {
+    const plank = box(0.6, 0.08, 3.4, matShelf, false);
+    plank.position.set(0, 0.9 + lvl * 0.85, 0);
+    shelfUnit.add(plank);
+  }
+  // Side standards for the shelf.
+  for (const sz of [-1.7, 1.7]) {
+    const stud = box(0.6, 2.7, 0.08, matShelf, false);
+    stud.position.set(0, 1.35, sz);
+    shelfUnit.add(stud);
+  }
+  shelfUnit.position.set(hw - 0.4, 0, hd - 0.7);
+  shop.add(shelfUnit);
+  // Instanced product boxes on the shelf levels (themed: oil cans / parts boxes).
+  {
+    const prodMats = [matProdBlue, matProdRed, matProdYel];
+    const groups = [[], [], []];
+    for (let lvl = 0; lvl < 3; lvl++) {
+      const y = 1.0 + lvl * 0.85;
+      for (let i = 0; i < 5; i++) {
+        const z = (hd - 0.7) - 1.5 + i * 0.75;
+        groups[(lvl + i) % 3].push({ pos: [hw - 0.4, y, z], scale: [0.34, 0.34, 0.5] });
+      }
+    }
+    for (let k = 0; k < 3; k++) instance(boxGeo, prodMats[k], groups[k], shop, false);
+  }
+
+  // Display rack near the front-S corner: a panel with hanging tools/accessories
+  // (instanced little bars, like wiper blades / belts on a pegboard).
+  const pegboard = box(0.12, 1.8, 2.4, matShelf, false);
+  pegboard.position.set(-hw + 0.55, 1.4, -hd + 1.5);
+  shop.add(pegboard);
+  {
+    const items = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 4; c++) {
+        items.push({
+          pos: [-hw + 0.5, 1.85 - r * 0.45, -hd + 0.7 + c * 0.55],
+          scale: [0.06, 0.34, 0.07],
+        });
+      }
+    }
+    instance(boxGeo, matSteel, items, shop, false);
+  }
+
+  // A couple of stools by the counter (cylinder seat on a slim post).
+  for (const sz of [-0.6, 0.4]) {
+    const stool = new THREE.Group();
+    const post = box(0.1, 0.6, 0.1, matSteel, false);
+    post.position.y = 0.3;
+    const seat = cyl(0.22, 0.1, matDark, false);
+    seat.position.y = 0.62;
+    stool.add(post, seat);
+    stool.position.set(hw - 2.2, 0, sz);
+    shop.add(stool);
+  }
+
+  // Two hanging interior lights (emissive discs on short drops).
+  for (const lz of [-1.6, 1.6]) {
+    const drop = box(0.05, 0.5, 0.05, matDark, false);
+    drop.position.set(-0.5, SHOP.h - 0.25, lz);
+    const lamp = cyl(0.3, 0.12, matLight, false);
+    lamp.position.set(-0.5, SHOP.h - 0.55, lz);
+    shop.add(drop, lamp);
+  }
+
+  // Interior wall signage above the counter (faces -X into the room).
+  const wallSign = artPanel(2.4, 0.7, "sign", {
+    text: "PARTS DESK", bg: "#1a2742", fg: "#ffd23f",
+    emissiveIntensity: 0.4, file: "autoplaza-partsdesk.png",
+  });
+  wallSign.position.set(hw - 0.13, 2.2, -1.4);
+  wallSign.rotation.y = -Math.PI / 2; // readable face toward -X (into the room)
+  shop.add(wallSign);
+
+  // --- OUTSIDE shop sign above the door, facing the street (-X) -------------
+  // artPanel faces +Z by default; rotate -90° about Y so its readable front
+  // faces -X (toward the central drive lane) and reads un-mirrored.
+  const shopSign = artPanel(3.6, 1.0, "sign", {
+    text: "AUTO PARTS", bg: "#c8362e", fg: "#ffffff",
+    emissiveIntensity: 0.5, file: "autoplaza-parts.png",
+  });
+  shopSign.position.set(-hw - 0.13, SHOP.h + 0.55, 0);
+  shopSign.rotation.y = -Math.PI / 2; // readable front faces -X (the street)
+  shop.add(shopSign);
+  // Small fascia band behind the outside sign so it has a backing.
+  const fasciaBand = box(SHOP.t, 1.3, SHOP.d, matTrim, false);
+  fasciaBand.position.set(-hw + ht, SHOP.h + 0.55, 0);
+  shop.add(fasciaBand);
+
+  shop.position.set(SHOP.x, 0, SHOP.z);
+  group.add(shop);
+
+  // --- Wall COLLIDERS (world space). NO collider across the doorway gap. -----
+  // Back wall (runs along Z at +X face).
+  addCollider(colliders, SHOP.x + hw - ht, SHOP.z, SHOP.t, SHOP.d);
+  // Side walls (run along X at ±Z faces).
+  addCollider(colliders, SHOP.x, SHOP.z + hd - ht, SHOP.w, SHOP.t);
+  addCollider(colliders, SHOP.x, SHOP.z - hd + ht, SHOP.w, SHOP.t);
+  // Two short front-wall segments flanking the doorway (gap between them is open).
+  addCollider(colliders, SHOP.x - hw + ht, SHOP.z + frontZ0, SHOP.t, frontSeg);
+  addCollider(colliders, SHOP.x - hw + ht, SHOP.z + frontZ1, SHOP.t, frontSeg);
 
   // --- Update: rotate the pylon sign + hero turntable; flicker the lights ----
   let t = 0;

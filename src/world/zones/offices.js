@@ -528,6 +528,168 @@ export function buildOffices() {
     box(2.2, 0.55, 0.8, hedgeMat, px, 0.82, pz, true);  // clipped hedge
   }
 
+  // ── ENTERABLE SHOP: "MIDTOWN DELI" — a lunch deli the player can walk INTO ──
+  // A small standalone room (additive — NOT carved from a tower) tucked along the
+  // open WEST inner edge of the tile, in the clear strip between the SW and NW
+  // blocks (X[-20.1,-11.8], Z[-3.6,3.6] — verified not to overlap any building, the
+  // pool, flagpoles, trees or planters, all within ±23). It sits on the WEST
+  // SHOULDER of the open cross (like the existing trees/planters at Z≈-2/-3): the
+  // N-S drive lane (X[-5,5]) stays fully clear, and the doorway faces +X toward the
+  // central plaza so a player crossing the cross walks straight in. It has
+  // four real walls, a floor + flat roof, and a 2.2 m DOORWAY GAP in the street-
+  // facing (+X, toward the central plaza) wall. Each wall segment gets its OWN AABB
+  // collider; the doorway gap gets NONE, so the interior is genuinely walkable and
+  // the player enters through the door.
+  {
+    const sx = -16, sz = 0;        // shop center (open west-edge strip)
+    const SW = 8.0, SD = 7.0;      // outer width (X) × depth (Z)
+    const WT = 0.25, WH = 3.0;     // wall thickness, wall height
+    const hw = SW / 2, hd = SD / 2;
+    const door = 2.2;              // doorway clear width (in the +X street wall)
+    const fX = sx + hw;            // street-facing wall centerline (+X)
+    const bX = sx - hw;            // back wall centerline (-X)
+    const nZ = sz - hd, pZ = sz + hd; // side-wall centerlines (−Z, +Z)
+
+    // Themed materials (deli palette) — created once, reused.
+    const deliWall = new THREE.MeshStandardMaterial({ color: "#e7ddc7", roughness: 0.9 });
+    const deliTrim = new THREE.MeshStandardMaterial({ color: "#7a4a2b", roughness: 0.75 });
+    const deliFloor = new THREE.MeshStandardMaterial({ color: "#b8a47e", roughness: 0.85 });
+    const counterMat = new THREE.MeshStandardMaterial({ color: "#9a6b3f", roughness: 0.6 });
+    const counterTop = new THREE.MeshStandardMaterial({ color: "#dfe3e6", roughness: 0.35, metalness: 0.5 });
+    const caseGlass = new THREE.MeshStandardMaterial({
+      color: "#cfe8ee", roughness: 0.1, metalness: 0.2,
+      emissive: "#9fd0da", emissiveIntensity: 0.25, transparent: true, opacity: 0.55,
+    });
+    const shelfMat = new THREE.MeshStandardMaterial({ color: "#8a5a36", roughness: 0.7 });
+    const rugMat = new THREE.MeshStandardMaterial({ color: "#7a2f2f", roughness: 0.95 });
+    const stoolMat = new THREE.MeshStandardMaterial({ color: "#2b2b30", roughness: 0.5, metalness: 0.4 });
+    const lampShade = new THREE.MeshStandardMaterial({
+      color: "#ffdf9e", roughness: 0.4, emissive: "#ffcf6a", emissiveIntensity: 0.8,
+    });
+    // Bright little grocery "products" for the shelves (one shared instanced bank).
+    const productMat = new THREE.MeshStandardMaterial({ color: "#d9b24a", roughness: 0.6, flatShading: true });
+    const products = makeBank(unitBox, productMat);
+
+    // ── FLOOR + flat ROOF/ceiling ─────────────────────────────────────────────
+    box(SW, 0.12, SD, deliFloor, sx, 0.06, sz, false);      // interior floor slab
+    box(SW + 0.3, 0.25, SD + 0.3, deliTrim, sx, WH + 0.12, sz, true); // flat roof/ceiling cap
+
+    // ── WALLS (each its own collider; NO collider across the doorway gap) ──────
+    // Back wall (−X): full span along Z.
+    box(WT, WH, SD, deliWall, bX, WH / 2, sz, true);
+    colliders.push({ minX: bX - WT / 2, maxX: bX + WT / 2, minZ: sz - hd, maxZ: sz + hd });
+    // Side wall (−Z): full span along X.
+    box(SW, WH, WT, deliWall, sx, WH / 2, nZ, true);
+    colliders.push({ minX: sx - hw, maxX: sx + hw, minZ: nZ - WT / 2, maxZ: nZ + WT / 2 });
+    // Side wall (+Z): full span along X.
+    box(SW, WH, WT, deliWall, sx, WH / 2, pZ, true);
+    colliders.push({ minX: sx - hw, maxX: sx + hw, minZ: pZ - WT / 2, maxZ: pZ + WT / 2 });
+    // Street-facing wall (+X) with a 2.2 m DOORWAY GAP centered at sz: two short
+    // flanking segments only — and a lintel above the gap (high, no collider).
+    // Each flanking segment runs from a side wall to the doorway jamb; the jambs sit
+    // at sz ± door/2 with a small extra clearance so NOTHING (wall or collider)
+    // touches the 2.2 m opening — the gap stays strictly open for walk-through.
+    const jamb = door / 2 + 0.05;                   // doorway half-width + clearance
+    const segLen = hd - jamb;                        // length of each flanking segment
+    const segZneg = -hd + (hd - jamb) / 2;           // center of −Z-side front segment
+    const segZpos = hd - (hd - jamb) / 2;            // center of +Z-side front segment
+    box(WT, WH, segLen, deliWall, fX, WH / 2, segZneg, true);
+    colliders.push({ minX: fX - WT / 2, maxX: fX + WT / 2, minZ: segZneg - segLen / 2, maxZ: segZneg + segLen / 2 });
+    box(WT, WH, segLen, deliWall, fX, WH / 2, segZpos, true);
+    colliders.push({ minX: fX - WT / 2, maxX: fX + WT / 2, minZ: segZpos - segLen / 2, maxZ: segZpos + segLen / 2 });
+    // Door lintel above the opening (spans the gap up high; NO collider — walkable).
+    box(WT, 0.6, door, deliTrim, fX, WH - 0.3, sz, true);
+
+    // ── SHOP SIGN above the door, OUTSIDE, facing the street (+X), un-mirrored ──
+    // artPanel's text reads correctly from its +X face after rotating +90° about Y
+    // (default panel faces +Z; rotating +PI/2 turns the readable face to +X).
+    const deliSign = artPanel(3.4, 1.1, "sign", {
+      text: "MIDTOWN DELI",
+      bg: "#0b6e4f", fg: "#fff3b0",
+      emissiveIntensity: 0.45,
+      file: "sign-midtowndeli.png",
+    });
+    deliSign.position.set(fX + WT / 2 + 0.06, WH + 0.45, sz);
+    deliSign.rotation.y = Math.PI / 2; // readable face points +X (out to the plaza)
+    deliSign.castShadow = true;
+    group.add(deliSign);
+
+    // ── INTERIOR CONTENT (cozy + themed) ──────────────────────────────────────
+    // RUG on the floor (center, a welcoming red runner).
+    box(3.4, 0.04, 4.2, rugMat, sx, 0.13, sz, false);
+
+    // SERVICE COUNTER along the back wall: a solid base + a light stone top, with
+    // a glass DISPLAY CASE sitting on it (deli case full of goods).
+    const cx0 = bX + 0.9;          // counter sits just in front of the back wall
+    box(1.0, 1.1, 4.6, counterMat, cx0, 0.55, sz, true);          // counter body
+    box(1.1, 0.08, 4.7, counterTop, cx0, 1.14, sz, true);        // counter top
+    box(1.0, 0.7, 4.4, caseGlass, cx0, 1.55, sz, false);         // glass display case
+    box(1.0, 0.06, 4.4, counterTop, cx0, 1.18, sz, false);       // case base tray
+    // a few "trays of goods" inside the case (instanced products)
+    for (let i = 0; i < 5; i++) {
+      const gz = sz - 1.8 + i * 0.9;
+      products.add(cx0, 1.3, gz, 0.7, 0.18, 0.55, 0, 0, 0);
+    }
+
+    // SHELVES on the −Z wall stocked with little products (instanced goods).
+    const shZ = nZ + 0.25;         // shelves hug the −Z wall, just inside
+    for (let s = 0; s < 3; s++) {
+      const shelfY = 0.7 + s * 0.7;
+      box(3.6, 0.06, 0.4, shelfMat, sx + 0.4, shelfY, shZ, true); // shelf board
+      // line of product boxes on each shelf
+      for (let i = 0; i < 6; i++) {
+        const px2 = sx + 0.4 - 1.55 + i * 0.62;
+        products.add(px2, shelfY + 0.22, shZ, 0.34, 0.36, 0.3, 0, 0, 0);
+      }
+    }
+
+    // DISPLAY RACK (a small open shelving unit) near the +Z wall with goods on top.
+    const rkZ = pZ - 0.3;
+    box(2.2, 1.4, 0.45, shelfMat, sx + 0.6, 0.7, rkZ, true);       // rack carcass
+    box(2.0, 0.05, 0.4, shelfMat, sx + 0.6, 1.05, rkZ, false);     // mid shelf
+    for (let i = 0; i < 5; i++) {
+      products.add(sx + 0.6 - 0.8 + i * 0.4, 1.5, rkZ, 0.3, 0.22, 0.32, 0, 0, 0);
+    }
+
+    // A COUPLE OF STOOLS at a slim standing counter by the doorway side.
+    for (let i = 0; i < 2; i++) {
+      const stz = sz - 0.8 + i * 1.6;
+      const stx = fX - 1.4;
+      const leg = new THREE.Mesh(poleGeo, stoolMat);
+      leg.scale.set(0.5, 0.7, 0.5);
+      leg.position.set(stx, 0.35, stz);
+      leg.castShadow = true;
+      group.add(leg);
+      box(0.5, 0.08, 0.5, stoolMat, stx, 0.72, stz, true);        // seat
+    }
+
+    // WALL SIGNAGE inside (a small menu board on the back wall, reading toward +X).
+    const menu = artPanel(2.0, 1.2, "sign", {
+      text: "SOUPS SUBS SALADS",
+      bg: "#222831", fg: "#ffd369",
+      emissiveIntensity: 0.4,
+      file: "sign-delimenu.png",
+    });
+    menu.position.set(bX + WT / 2 + 0.05, 2.1, sz);
+    menu.rotation.y = Math.PI / 2; // faces into the room (+X)
+    menu.castShadow = false;
+    group.add(menu);
+
+    // HANGING INTERIOR LIGHTS (two pendant lamps over the floor — glowing shades).
+    for (const lz of [sz - 1.4, sz + 1.4]) {
+      const lx = sx + 0.6;
+      box(0.04, 0.7, 0.04, deliTrim, lx, WH - 0.35, lz, false);   // cord
+      const shade = new THREE.Mesh(coneGeo, lampShade);
+      shade.scale.set(0.55, 0.45, 0.55);
+      shade.rotation.x = Math.PI;                                  // open end downward
+      shade.position.set(lx, WH - 0.75, lz);
+      group.add(shade);
+    }
+
+    // commit the shop's product goods as a single InstancedMesh (one draw call)
+    products.commit(true);
+  }
+
   // ── Commit all instanced banks (one draw call each) ───────────────────────
   mullions.commit(false); // curtain-wall bars: many hundreds, 1 InstancedMesh
   rails.commit(false);    // parapet rail posts + tubes

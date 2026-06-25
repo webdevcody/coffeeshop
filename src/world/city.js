@@ -29,6 +29,7 @@ import { buildIndustrial } from "./zones/industrial.js";
 import { buildNightlife } from "./zones/nightlife.js";
 import { buildStreets } from "./cityStreets.js";
 import { buildCityLife } from "./cityLife.js";
+import { buildCityWeather } from "./cityWeather.js";
 
 // 4 columns × 4 rows of 60m tiles. Row z grows AWAY from the cafe (entrance at z≈11).
 const LAYOUT = [
@@ -81,6 +82,16 @@ export function buildCity(scene) {
     if (typeof life.update === "function") updates.push(life.update);
   } catch (e) {
     console.warn("[city] cityLife failed", e);
+  }
+
+  // Ambient weather: a slow clear→overcast→rain→clearing cycle with drifting clouds,
+  // pooled instanced rain that blankets the map, distant lightning, and a wind value.
+  try {
+    const weather = buildCityWeather();
+    if (weather && weather.group) group.add(weather.group);
+    if (weather && typeof weather.update === "function") updates.push(weather.update);
+  } catch (e) {
+    console.warn("[city] cityWeather failed", e);
   }
 
   for (const tile of LAYOUT) {

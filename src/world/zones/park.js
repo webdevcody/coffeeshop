@@ -119,6 +119,31 @@ const fountainPool = new THREE.MeshStandardMaterial({
   emissive: "#16566f", emissiveIntensity: 0.3, transparent: true, opacity: 0.88,
 });
 const rockMat = new THREE.MeshStandardMaterial({ color: "#8d8576", roughness: 1, flatShading: true });
+// --- Snack/ice-cream kiosk (enterable shop) materials (created ONCE, reused) --
+const kioskWallMat = new THREE.MeshStandardMaterial({ color: "#fbe4c4", roughness: 0.9 }); // warm cream plaster
+const kioskTrimMat = new THREE.MeshStandardMaterial({ color: "#e2604a", roughness: 0.7 }); // candy-red trim
+const kioskFloorMat = new THREE.MeshStandardMaterial({ color: "#caa46a", roughness: 0.85 }); // warm timber floor
+const kioskRoofMat = new THREE.MeshStandardMaterial({ color: "#f1f1ec", roughness: 0.85 }); // pale flat roof/ceiling
+const counterMat = new THREE.MeshStandardMaterial({ color: "#9c5b34", roughness: 0.6 }); // wood counter body
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#3a4a52", roughness: 0.35, metalness: 0.4 }); // slate top
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#a9794a", roughness: 0.75 });
+const caseGlassMat = new THREE.MeshStandardMaterial({
+  color: "#cfeefb", roughness: 0.08, metalness: 0.2, transparent: true, opacity: 0.34,
+});
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#e0526a", roughness: 0.6 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#c43d5a", roughness: 0.95 });
+const rugTrimMat = new THREE.MeshStandardMaterial({ color: "#f4d27a", roughness: 0.95 });
+const kioskBulbMat = new THREE.MeshStandardMaterial({
+  color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 1.0, roughness: 0.4,
+});
+const kioskAwningMat = new THREE.MeshStandardMaterial({ color: "#e74c4c", roughness: 0.7, side: THREE.DoubleSide });
+const kioskAwningStripeMat = new THREE.MeshStandardMaterial({ color: "#f6f1e7", roughness: 0.7, side: THREE.DoubleSide });
+// Bright ice-cream/treat scoop colours for shelf goods + cone displays (each its own InstancedMesh).
+const treatColors = ["#f6a8c0", "#9e6b3f", "#fff1a8", "#a3e0c0", "#caa6ff", "#ff9b6b"];
+const treatMats = treatColors.map(
+  (col) => new THREE.MeshStandardMaterial({ color: col, roughness: 0.6, flatShading: true })
+);
+const coneMat = new THREE.MeshStandardMaterial({ color: "#d9a85c", roughness: 0.7, flatShading: true });
 // Duck parts.
 const duckBodyMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.8, flatShading: true });
 const duckHeadMat = new THREE.MeshStandardMaterial({ color: "#3e7a3a", roughness: 0.8, flatShading: true });
@@ -328,6 +353,213 @@ function makePavilion(W = 7.2, D = 6.2, wallH = 3.6) {
   g.add(wins);
 
   return { group: g, W, D, wallH };
+}
+
+// An ENTERABLE park snack / ice-cream kiosk: a real little room the player can
+// walk INTO. Four walls (back + two sides + two short front segments flanking a
+// centred doorway gap), a timber FLOOR and a flat ROOF/ceiling, plus a cosy
+// themed interior (service counter, shelves of treats, a glass display case,
+// stools, wall signage, hanging bulbs and a rug). The street-facing wall is the
+// front (−Z) and carries the doorway gap + an awning; the caller mounts the
+// outdoor shop sign above it. Geometry is built around a LOCAL origin (0,0) at
+// floor level so the caller positions it. Exterior W×D, walls thickness T,
+// doorway width `door`. The caller pushes matching wall colliders (with NO
+// collider across the doorway). Returns { group, lights } where `lights` are the
+// bulb meshes for the gentle flicker in update().
+function makeSnackShop(W = 8.0, D = 6.5, wallH = 3.0, T = 0.25, door = 2.2) {
+  const g = new THREE.Group();
+  const hw = W / 2, hd = D / 2;
+
+  // Floor slab (warm timber), sitting just above the lawn so it reads as a step.
+  const floor = box(W, 0.12, D, kioskFloorMat);
+  floor.position.set(0, 0.06, 0);
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  // Flat roof / ceiling cap covering the whole footprint, with a small eave.
+  const roof = box(W + 0.4, 0.2, D + 0.4, kioskRoofMat);
+  roof.position.set(0, wallH + 0.1, 0);
+  roof.castShadow = true;
+  roof.receiveShadow = true;
+  g.add(roof);
+
+  // --- Walls (each a solid box; caller adds matching AABB colliders) ---------
+  const wallY = wallH / 2;
+  // Back wall (+Z).
+  const back = box(W, wallH, T, kioskWallMat);
+  back.position.set(0, wallY, hd - T / 2);
+  g.add(back);
+  // Left wall (−X) and right wall (+X).
+  const left = box(T, wallH, D, kioskWallMat);
+  left.position.set(-hw + T / 2, wallY, 0);
+  g.add(left);
+  const right = box(T, wallH, D, kioskWallMat);
+  right.position.set(hw - T / 2, wallY, 0);
+  g.add(right);
+  // Front (−Z) wall: two short segments flanking the centred doorway GAP.
+  const segW = (W - door) / 2;
+  const segCx = door / 2 + segW / 2;
+  const frontL = box(segW, wallH, T, kioskWallMat);
+  frontL.position.set(-segCx, wallY, -hd + T / 2);
+  g.add(frontL);
+  const frontR = box(segW, wallH, T, kioskWallMat);
+  frontR.position.set(segCx, wallY, -hd + T / 2);
+  g.add(frontR);
+  // Door lintel spanning the gap (above head height — no collider needed).
+  const lintel = box(door + 0.3, 0.4, T, kioskTrimMat);
+  lintel.position.set(0, wallH - 0.2, -hd + T / 2);
+  g.add(lintel);
+  // A coloured trim band along the top of each wall for a tidy finish.
+  for (const m of [back, frontL, frontR]) {
+    const band = box(m.scale.x, 0.18, T + 0.02, kioskTrimMat);
+    band.position.set(m.position.x, wallH - 0.09, m.position.z);
+    g.add(band);
+  }
+
+  // --- Striped awning over the front doorway (outside, faces the street) -----
+  const awY = wallH - 0.55, awZ = -hd - 0.55;
+  const awning = box(door + 1.6, 0.08, 1.2, kioskAwningMat);
+  awning.position.set(0, awY, awZ);
+  awning.rotation.x = -0.35;
+  awning.castShadow = true;
+  g.add(awning);
+  for (let i = -1; i <= 1; i++) {
+    const stripe = box(0.5, 0.085, 1.2, kioskAwningStripeMat);
+    stripe.position.set(i * 1.1, awY + 0.002, awZ);
+    stripe.rotation.x = -0.35;
+    g.add(stripe);
+  }
+
+  // --- Service COUNTER along the back-right, with a slate top --------------
+  const counterBody = box(4.2, 1.0, 0.8, counterMat);
+  counterBody.position.set(0.9, 0.56, hd - 1.1);
+  counterBody.castShadow = true;
+  g.add(counterBody);
+  const counterTop = box(4.4, 0.1, 0.95, counterTopMat);
+  counterTop.position.set(0.9, 1.11, hd - 1.05);
+  g.add(counterTop);
+
+  // --- Glass DISPLAY CASE on the counter (chilled treats behind glass) ------
+  const caseBody = box(2.4, 0.55, 0.7, caseGlassMat);
+  caseBody.position.set(0.4, 1.43, hd - 1.05);
+  g.add(caseBody);
+  // Little scoop blobs inside the case (instanced per colour).
+  const caseRow = [-0.9, -0.45, 0, 0.45, 0.9];
+  const caseScoopGeo = new THREE.IcosahedronGeometry(0.13, 0);
+  const cm = new THREE.Matrix4(), cq = new THREE.Quaternion(), cp = new THREE.Vector3(), cs = new THREE.Vector3(1, 1, 1);
+  // Assign one scoop per slot, colour cycling — one instanced mesh per colour.
+  const slotByColor = [];
+  for (let k = 0; k < treatMats.length; k++) slotByColor.push([]);
+  for (let i = 0; i < caseRow.length; i++) slotByColor[i % treatMats.length].push(caseRow[i]);
+  for (let k = 0; k < treatMats.length; k++) {
+    const xs = slotByColor[k];
+    if (!xs.length) continue;
+    const inst = new THREE.InstancedMesh(caseScoopGeo, treatMats[k], xs.length);
+    for (let i = 0; i < xs.length; i++) {
+      cp.set(0.4 + xs[i], 1.4, hd - 1.05);
+      cm.compose(cp, cq, cs);
+      inst.setMatrixAt(i, cm);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    g.add(inst);
+  }
+
+  // --- SHELVES on the left wall with little product jars/cartons ------------
+  for (const sy of [1.0, 1.7, 2.4]) {
+    const shelf = box(0.5, 0.06, 3.6, shelfMat);
+    shelf.position.set(-hw + 0.4, sy, 0.2);
+    g.add(shelf);
+  }
+  // Jars/cartons on the shelves (instanced per colour, upright little boxes).
+  const jarGeo = new THREE.BoxGeometry(0.22, 0.34, 0.22);
+  const jm = new THREE.Matrix4(), jq = new THREE.Quaternion(), jp = new THREE.Vector3(), js = new THREE.Vector3(1, 1, 1);
+  const shelfYs = [1.0, 1.7, 2.4];
+  const jarZs = [-1.3, -0.7, -0.1, 0.5, 1.1, 1.6];
+  const jarsByColor = [];
+  for (let k = 0; k < treatMats.length; k++) jarsByColor.push([]);
+  let ji = 0;
+  for (const sy of shelfYs) {
+    for (const z of jarZs) {
+      jarsByColor[ji % treatMats.length].push([-hw + 0.4, sy + 0.2, z]);
+      ji++;
+    }
+  }
+  for (let k = 0; k < treatMats.length; k++) {
+    const pts = jarsByColor[k];
+    if (!pts.length) continue;
+    const inst = new THREE.InstancedMesh(jarGeo, treatMats[k], pts.length);
+    for (let i = 0; i < pts.length; i++) {
+      jp.set(pts[i][0], pts[i][1], pts[i][2]);
+      jm.compose(jp, jq, js);
+      inst.setMatrixAt(i, jm);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    g.add(inst);
+  }
+
+  // --- Cone RACK by the door: a small stand holding ice-cream cones ----------
+  const rackPost = box(0.12, 1.0, 0.12, shelfMat);
+  rackPost.position.set(hw - 0.8, 0.56, -hd + 1.2);
+  g.add(rackPost);
+  const rackTop = box(0.7, 0.08, 0.7, shelfMat);
+  rackTop.position.set(hw - 0.8, 1.05, -hd + 1.2);
+  g.add(rackTop);
+  const coneGeo = new THREE.ConeGeometry(0.1, 0.34, 8);
+  const scoopGeo = new THREE.IcosahedronGeometry(0.12, 0);
+  const conePos = [[-0.18, -0.18], [0.18, -0.18], [0, 0.18]];
+  for (let i = 0; i < conePos.length; i++) {
+    const [dx, dz] = conePos[i];
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.rotation.x = Math.PI; // tip up
+    cone.position.set(hw - 0.8 + dx, 1.26, -hd + 1.2 + dz);
+    g.add(cone);
+    const scoop = new THREE.Mesh(scoopGeo, treatMats[i % treatMats.length]);
+    scoop.position.set(hw - 0.8 + dx, 1.45, -hd + 1.2 + dz);
+    g.add(scoop);
+  }
+
+  // --- A couple of STOOLS at the counter (seat + leg) -----------------------
+  for (const sx of [-2.0, -1.0]) {
+    const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.1, 12), stoolSeatMat);
+    seat.position.set(sx, 0.62, hd - 2.0);
+    seat.castShadow = true;
+    g.add(seat);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.6, 8), metalMat);
+    leg.position.set(sx, 0.3, hd - 2.0);
+    g.add(leg);
+  }
+
+  // --- RUG on the floor in the middle of the room ---------------------------
+  const rug = box(3.4, 0.03, 2.4, rugMat);
+  rug.position.set(-0.5, 0.13, -0.6);
+  rug.receiveShadow = true;
+  g.add(rug);
+  const rugTrim = box(3.0, 0.032, 2.0, rugTrimMat);
+  rugTrim.position.set(-0.5, 0.135, -0.6);
+  g.add(rugTrim);
+
+  // --- Wall SIGNAGE inside (a little menu board on the back wall) -----------
+  const menu = artPanel(2.0, 1.0, "sign", {
+    text: "ICE CREAM", bg: "#2d6a4f", fg: "#fff3b0",
+    file: "sign-park-kiosk-menu.png", emissiveIntensity: 0.4,
+  });
+  menu.position.set(-1.6, 2.05, hd - T - 0.02);
+  menu.rotation.y = Math.PI; // face into the room (−Z)
+  g.add(menu);
+
+  // --- Hanging interior LIGHTS (two pendant bulbs) --------------------------
+  const lights = [];
+  for (const lx of [-1.8, 1.8]) {
+    const cord = box(0.03, 0.5, 0.03, metalMat);
+    cord.position.set(lx, wallH - 0.25, -0.3);
+    g.add(cord);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), kioskBulbMat);
+    bulb.position.set(lx, wallH - 0.55, -0.3);
+    g.add(bulb);
+    lights.push(bulb);
+  }
+
+  return { group: g, lights };
 }
 
 export function buildPark() {
@@ -639,6 +871,42 @@ export function buildPark() {
   group.add(fountain);
   addCollider(colliders, fx, fz, 5.2, 5.2);
 
+  // --- Park snack / ice-cream KIOSK (SE-south): an ENTERABLE shop ------------
+  // A small room the player can walk INTO, tucked into the open south-east
+  // quadrant along the inner edge by the south E–W lane. Its FRONT (−Z, with the
+  // doorway gap + awning + street sign) faces the lane. Footprint W×D = 8.0×6.5,
+  // centred at (kx, kz); whole thing (walls + sign) stays in X,Z ∈ [-23,23] and
+  // clears the pond, gazebo, pavilion, fountain, trees, beds and lanes.
+  const kx = 13.5, kz = -18;
+  const kW = 8.0, kD = 6.5, kWallH = 3.0, kT = 0.25, kDoor = 2.2;
+  const kiosk = makeSnackShop(kW, kD, kWallH, kT, kDoor);
+  kiosk.group.position.set(kx, 0, kz);
+  group.add(kiosk.group);
+
+  // Individual AABB colliders for the kiosk's WALLS so the interior is walkable
+  // and the player enters through the doorway. There is deliberately NO collider
+  // across the doorway GAP in the front (−Z) wall.
+  const kHW = kW / 2, kHD = kD / 2;
+  const kSegW = (kW - kDoor) / 2;
+  const kSegCx = kDoor / 2 + kSegW / 2;
+  addCollider(colliders, kx, kz + kHD - kT / 2, kW, kT);            // back wall (+Z)
+  addCollider(colliders, kx - kHW + kT / 2, kz, kT, kD);            // left wall (−X)
+  addCollider(colliders, kx + kHW - kT / 2, kz, kT, kD);            // right wall (+X)
+  addCollider(colliders, kx - kSegCx, kz - kHD + kT / 2, kSegW, kT); // front-left segment
+  addCollider(colliders, kx + kSegCx, kz - kHD + kT / 2, kSegW, kT); // front-right segment
+  // (No collider at X∈[kx−1.1, kx+1.1] on the front line — the doorway is open.)
+
+  // Outdoor shop SIGN above the door on the OUTSIDE front (−Z) wall, facing the
+  // street (−Z). artPanel faces +Z at ry=0, so ry=π turns it to face −Z without
+  // mirroring the text (a rotation, not a reflection — reads un-mirrored).
+  const kioskSign = artPanel(3.0, 1.0, "sign", {
+    text: "SCOOPS", bg: "#e2604a", fg: "#fff3cf",
+    accent: "#ffd86b", emissiveIntensity: 0.55, file: "sign-park-kiosk.png",
+  });
+  kioskSign.position.set(kx, kWallH + 0.55, kz - kHD - 0.06);
+  kioskSign.rotation.y = Math.PI; // face −Z (the street/lane)
+  group.add(kioskSign);
+
   // Reusable scratch objects for the spray animation (NO per-frame alloc).
   const sprayM = new THREE.Matrix4();
   const sprayQ = new THREE.Quaternion();
@@ -683,6 +951,8 @@ export function buildPark() {
     }
     // Pulsing lamp glow.
     lampGlass.emissiveIntensity = 0.75 + Math.sin(t * 2) * 0.2;
+    // Gentle flicker on the kiosk's interior pendant bulbs (shared material).
+    kioskBulbMat.emissiveIntensity = 0.95 + Math.sin(t * 3.1) * 0.12;
     // Sway the tree foliage groups subtly.
     for (let i = 0; i < trees.length; i++) {
       const tr = trees[i];

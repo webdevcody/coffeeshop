@@ -50,6 +50,32 @@ const blimpMat = new THREE.MeshStandardMaterial({ color: "#d6dadf", roughness: 0
 // volume (a mounted frame), never a floating flat card.
 const signFrameMat = new THREE.MeshStandardMaterial({ color: "#3a3f45", roughness: 0.8, metalness: 0.3 });
 
+// --- Team merch shop materials (created once, reused) -----------------------
+// A small pitchside club store the player can walk INTO. Themed to the home club
+// (CAFE FC) with the same red/blue palette as the banners.
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#e8e4da", roughness: 0.9 });
+const shopWallIn = new THREE.MeshStandardMaterial({ color: "#f4f1ea", roughness: 0.95, side: THREE.DoubleSide });
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#7a4a32", roughness: 0.85 });
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#9b1f2a", roughness: 0.7 });
+const shopTrimMat = new THREE.MeshStandardMaterial({ color: "#1f3a9b", roughness: 0.6 });
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6b4326", roughness: 0.6 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#cfc7b6", roughness: 0.4 });
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#caa46a", roughness: 0.7 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#16245a", roughness: 1 });
+const stoolMat = new THREE.MeshStandardMaterial({ color: "#2b2f36", roughness: 0.5, metalness: 0.4 });
+const caseMat = new THREE.MeshStandardMaterial({
+  color: "#bfe6ff", roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.32,
+});
+const shopBulbMat = new THREE.MeshStandardMaterial({
+  color: "#fff3cf", emissive: "#ffe9ad", emissiveIntensity: 0.9, roughness: 0.4,
+});
+// Little merch products on the shelves — scarves, jerseys, balls — as instanced
+// blocks/spheres in club colours.
+const merchRed = new THREE.MeshStandardMaterial({ color: "#c43b3b", roughness: 0.6 });
+const merchBlue = new THREE.MeshStandardMaterial({ color: "#3667c0", roughness: 0.6 });
+const merchGold = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.6 });
+const merchBall = new THREE.MeshStandardMaterial({ color: "#f2f2ee", roughness: 0.5 });
+
 // --- Shared geometries (reused across repeated props) ----------------------
 const lampGeo = new THREE.BoxGeometry(1.0, 1.1, 0.2);      // one floodlight lamp bank
 // Buttress column on the OUTER back of the grandstand shell (shared, instanced).
@@ -371,6 +397,185 @@ export function buildStadium() {
   blimp.add(banner);
   blimp.position.set(0, 18, 0);
   group.add(blimp);
+
+  // --- ENTERABLE TEAM MERCH SHOP (pitchside club store) ----------------------
+  // A small walk-IN store on the open pitch apron, set off to the +Z half so it
+  // clears the central Z≈0 gate drive-corridor and the centre circle. Real room:
+  // 4 walls + floor + flat roof, with a 2.2 m DOORWAY GAP in the STREET-facing
+  // (-Z, toward the halfway line) wall. Each wall gets its own AABB collider; the
+  // doorway has NONE, so the player walks straight in. All geometry + colliders
+  // stay within LOCAL X,Z in [-23, 23] and sit on clear, prop-free pitch ground.
+  {
+    const SW = 8.0;          // shop width  (X)
+    const SD = 6.0;          // shop depth  (Z)
+    const WT = 0.25;         // wall thickness
+    const WH = 3.2;          // wall height
+    const SCX = 0.0;         // shop centre X
+    const SCZ = 6.4;         // shop centre Z (front wall faces -Z)
+    const x0 = SCX - SW / 2, x1 = SCX + SW / 2;   // -4 .. 4
+    const z0 = SCZ - SD / 2, z1 = SCZ + SD / 2;   // 3.4 .. 9.4 (front=z0)
+    const DOOR = 2.2;                              // doorway gap width
+    const segW = (SW - DOOR) / 2;                  // each front segment width (2.9)
+    const FY = 0.13;                               // floor top sits just above pitch
+
+    const shop = new THREE.Group();
+
+    // FLOOR slab
+    const floor = box(SW, 0.12, SD, shopFloorMat, false);
+    floor.position.set(SCX, FY - 0.06, SCZ);
+    floor.receiveShadow = true;
+    shop.add(floor);
+
+    // RUG — a club-coloured rug in the middle of the floor
+    const rug = box(4.4, 0.03, 3.4, rugMat, false);
+    rug.position.set(SCX, FY + 0.02, SCZ + 0.3);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // WALLS — helper builds a box wall + pushes its collider.
+    const addWall = (cx, cz, w, d) => {
+      const wall = box(w, WH, d, shopWallMat);
+      wall.position.set(cx, FY + WH / 2, cz);
+      shop.add(wall);
+      colliders.push({
+        minX: cx - w / 2, maxX: cx + w / 2,
+        minZ: cz - d / 2, maxZ: cz + d / 2,
+      });
+    };
+    // BACK wall (+Z), full width (overlaps the side corners for a sealed box)
+    addWall(SCX, z1, SW + WT, WT);
+    // LEFT (-X) side wall, full depth
+    addWall(x0, SCZ, WT, SD);
+    // RIGHT (+X) side wall, full depth
+    addWall(x1, SCZ, WT, SD);
+    // FRONT (-Z) wall — TWO short segments flanking the central doorway gap.
+    addWall(x0 + segW / 2, z0, segW, WT);   // left of door
+    addWall(x1 - segW / 2, z0, segW, WT);   // right of door
+    // NOTE: no wall + NO collider across the doorway gap (x ∈ [-1.1, 1.1]).
+
+    // Door-frame lintel above the gap (decorative, no collider — passable head-room)
+    const lintel = box(DOOR + 0.4, 0.5, WT, shopTrimMat);
+    lintel.position.set(SCX, FY + WH - 0.25, z0);
+    shop.add(lintel);
+
+    // ROOF / flat ceiling slab capping the walls
+    const roof = box(SW + WT + 0.4, 0.2, SD + WT + 0.4, shopRoofMat);
+    roof.position.set(SCX, FY + WH + 0.1, SCZ);
+    roof.castShadow = true;
+    shop.add(roof);
+    // A thin trim band where roof meets walls
+    const fascia = box(SW + WT + 0.5, 0.3, SD + WT + 0.5, shopTrimMat, false);
+    fascia.position.set(SCX, FY + WH - 0.05, SCZ);
+    shop.add(fascia);
+
+    // SERVICE COUNTER along the back-right, facing the door
+    const counter = box(4.0, 1.0, 0.9, counterMat);
+    counter.position.set(SCX + 1.3, FY + 0.5, z1 - 1.2);
+    shop.add(counter);
+    const counterTop = box(4.2, 0.1, 1.1, counterTopMat, false);
+    counterTop.position.set(SCX + 1.3, FY + 1.05, z1 - 1.2);
+    shop.add(counterTop);
+    // a small register block on the counter
+    const reg = box(0.5, 0.35, 0.4, stoolMat);
+    reg.position.set(SCX + 2.6, FY + 1.28, z1 - 1.2);
+    shop.add(reg);
+
+    // SHELVES on the left wall — two stacked shelf boards with little products
+    const shelfX = x0 + 0.45;
+    const shelfYs = [FY + 0.9, FY + 1.7, FY + 2.5];
+    for (const sy of shelfYs) {
+      const board = box(0.5, 0.08, 4.2, shelfMat, false);
+      board.position.set(shelfX, sy, SCZ);
+      shop.add(board);
+    }
+    // little merch products lined on the shelves (instanced boxes in club colours)
+    {
+      const prodGeo = new THREE.BoxGeometry(0.34, 0.42, 0.34);
+      const prodMats = [merchRed, merchBlue, merchGold];
+      const spotsPerShelf = 5;
+      for (let mi = 0; mi < prodMats.length; mi++) {
+        const inst = new THREE.InstancedMesh(prodGeo, prodMats[mi], shelfYs.length * spotsPerShelf);
+        inst.castShadow = true;
+        const m = new THREE.Matrix4();
+        let n = 0;
+        for (let s = 0; s < shelfYs.length; s++) {
+          for (let p = 0; p < spotsPerShelf; p++) {
+            // 3 colour bands cycle along each shelf
+            if ((p % prodMats.length) !== mi) continue;
+            const pz = SCZ - 1.7 + p * 0.85;
+            m.makeTranslation(shelfX + 0.02, shelfYs[s] + 0.25, pz);
+            inst.setMatrixAt(n++, m);
+          }
+        }
+        inst.count = n;
+        inst.instanceMatrix.needsUpdate = true;
+        shop.add(inst);
+      }
+    }
+
+    // DISPLAY CASE — a glass cabinet by the right wall showing signed footballs
+    const caseBase = box(2.6, 0.9, 1.0, counterMat);
+    caseBase.position.set(x1 - 0.8, FY + 0.45, SCZ - 0.6);
+    shop.add(caseBase);
+    const caseGlass = box(2.5, 0.9, 0.9, caseMat, false);
+    caseGlass.position.set(x1 - 0.8, FY + 1.35, SCZ - 0.6);
+    shop.add(caseGlass);
+    {
+      const ballGeo = new THREE.SphereGeometry(0.22, 12, 10);
+      const balls = new THREE.InstancedMesh(ballGeo, merchBall, 3);
+      balls.castShadow = true;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < 3; i++) {
+        m.makeTranslation(x1 - 0.8, FY + 1.12, SCZ - 1.3 + i * 0.7);
+        balls.setMatrixAt(i, m);
+      }
+      balls.instanceMatrix.needsUpdate = true;
+      shop.add(balls);
+    }
+
+    // STOOLS — a couple of bar stools at the counter
+    for (const sx of [SCX - 0.6, SCX + 0.6]) {
+      const stool = new THREE.Group();
+      const legs = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.7, 6), stoolMat);
+      legs.position.y = 0.35;
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.1, 12), merchRed);
+      seat.position.y = 0.74;
+      legs.castShadow = seat.castShadow = true;
+      stool.add(legs, seat);
+      stool.position.set(sx, FY, z1 - 2.2);
+      shop.add(stool);
+    }
+
+    // WALL SIGNAGE — interior club crest panel mounted on the back wall, facing -Z
+    const innerSign = artPanel(2.6, 1.3, "sign", {
+      text: "CLUB SHOP", bg: "#1f3a9b", fg: "#ffe14d",
+      emissiveIntensity: 0.45, file: "stadium-shop-inner.png",
+    });
+    innerSign.position.set(SCX - 1.6, FY + 2.1, z1 - WT / 2 - 0.04);
+    innerSign.rotation.y = Math.PI; // face into the room (-Z)
+    shop.add(innerSign);
+
+    // HANGING INTERIOR LIGHTS — two glowing bulbs on short cords from the ceiling
+    for (const lx of [SCX - 1.8, SCX + 1.8]) {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 4), stoolMat);
+      cord.position.set(lx, FY + WH - 0.35, SCZ - 0.5);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), shopBulbMat);
+      bulb.position.set(lx, FY + WH - 0.62, SCZ - 0.5);
+      shop.add(cord, bulb);
+    }
+
+    // OUTSIDE SHOP SIGN above the door, facing the street (-Z), un-mirrored.
+    // artPanel faces +Z by default, so rotate 180° so the readable face looks -Z.
+    const shopSign = artPanel(5.0, 1.2, "sign", {
+      text: "CAFE FC MERCH", bg: "#9b1f2a", fg: "#ffffff",
+      emissiveIntensity: 0.5, file: "stadium-shop-sign.png",
+    });
+    shopSign.position.set(SCX, FY + WH + 0.55, z0 - WT / 2 - 0.05);
+    shopSign.rotation.y = Math.PI; // readable face toward -Z (the approach/street)
+    shop.add(shopSign);
+
+    group.add(shop);
+  }
 
   // --- update: flicker floodlights + orbit blimp -----------------------------
   let tAcc = 0;
