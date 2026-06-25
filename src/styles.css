@@ -851,27 +851,3 @@ body {
 @keyframes arcade-spin {
   to { transform: rotate(360deg); }
 }
-
-/* In-world game status banner (battleship etc.) — screen-space, top-centre. */
-.game-banner {
-  position: absolute;
-  top: 64px;
-  left: 50%;
-  transform: translateX(-50%) translateY(-8px);
-  max-width: 560px;
-  padding: 10px 20px;
-  background: rgba(8, 18, 30, 0.86);
-  border: 1px solid rgba(120, 180, 230, 0.5);
-  border-radius: 12px;
-  color: #eaf3fb;
-  font-weight: 600;
-  font-size: 15px;
-  text-align: center;
-  line-height: 1.35;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.18s ease, transform 0.18s ease;
-  z-index: 30;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
-}
-.game-banner.show { opacity: 1; transform: translateX(-50%) translateY(0); }

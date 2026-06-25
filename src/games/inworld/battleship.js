@@ -617,10 +617,6 @@ export function createGame(ctx) {
   // depthTest:false keeps it drawn on top; the per-frame billboard counter-rotates
   // the group's Y so the text stays upright/forward.
   function buildHud() {
-    // When the host app provides a DOM HUD hook (ctx.onHud), skip the in-world 3D
-    // billboard entirely — refreshHud() still forwards the text to the hook, which
-    // renders a screen-space banner that's always visible to every player.
-    if (hudHook) { hudMesh = null; return; }
     const canCreate = typeof document !== "undefined" && document.createElement;
     const cv = canCreate ? document.createElement("canvas") : null;
     if (cv) { cv.width = 512; cv.height = 192; }
