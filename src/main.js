@@ -74,8 +74,12 @@ scene.add(space.group);
 // walkable; island props (huts, palms, rail posts) + the gantry/fuel-tanks/flood
 // masts become solid. Used everywhere `ground`/`colliders` are consumed by the
 // player + rides so you can stroll the shoreline, sail the sea, and board the rocket.
-const groundAll = ground.concat(ocean.ground, space.ground);
-const collidersAll = colliders.concat(ocean.colliders, space.colliders);
+// The walkable orbital STATION interior rides along too: its deck rects join the
+// walkable ground (the player is LIFTED to space.stationFloorY on them — see
+// local.setStation below) and its hull-wall / console AABBs join the colliders so
+// you can't walk through them while strolling the station at altitude.
+const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround);
+const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders);
 
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -203,11 +207,12 @@ const gameMap = createMap({
 // coords). Only `player` changes per frame (mutated in place below), so opening the
 // map and tracking the arrow allocate nothing.
 const MAP_DISTRICTS = [
-  // 4×4 grid, NW→SE row-major (north row first): [name, block colour].
-  ["Plaza", "#8a9a6a"], ["Market", "#b08a4f"], ["Downtown", "#7f8a99"], ["Arts", "#9a6ba0"],
-  ["Park", "#5f9e5a"], ["Shopping", "#c9a24a"], ["Offices", "#6f8aa8"], ["Nightlife", "#a05a86"],
-  ["Harbor", "#5b8fa8"], ["Pier", "#7aa6b8"], ["Skatepark", "#8a8f9a"], ["Transit", "#9a8f5f"],
-  ["Autoplaza", "#9a7f5a"], ["Arcade", "#7a6aa0"], ["Industrial", "#7d7d7d"], ["Stadium", "#5f8a6a"],
+  // EXACT match to city.js LAYOUT, row-major with MAP_ROWS below (row 0 = z=245
+  // north, row 3 = z=65 south), cols west→east [-90,-30,30,90]: [name, colour].
+  ["Pier", "#5b8fa8"], ["Harbor", "#7aa6b8"], ["Industrial", "#7d7d7d"], ["Nightlife", "#a05a86"], // z=245
+  ["Park", "#5f9e5a"], ["Transit", "#9a8f5f"], ["Offices", "#6f8aa8"], ["Stadium", "#5f8a6a"],       // z=185
+  ["Downtown", "#7f8a99"], ["Autoplaza", "#9a7f5a"], ["Shopping", "#c9a24a"], ["Arts", "#9a6ba0"],   // z=125
+  ["Plaza", "#8a9a6a"], ["Skatepark", "#8a8f9a"], ["Market", "#b08a4f"], ["Arcade", "#7a6aa0"],      // z=65
 ];
 const MAP_COLS = [-90, -30, 30, 90];   // district centre X, west → east
 const MAP_ROWS = [245, 185, 125, 65];  // district centre Z, north (top) → south
@@ -520,6 +525,10 @@ hud.onJoin = ({ name, color }) => {
   // localPlayer._updateVertical). The void respawn still runs anywhere there's no
   // water below.
   local.setIsWater(ocean.isWater, ocean.waterY);
+  // Tell the player which walkable rects are the orbital STATION deck + the world
+  // Y it sits at, so standing on them lifts you to space.stationFloorY (≈260)
+  // instead of pinning y=0 — you walk the station interior after docking.
+  local.setStation(space.stationGround, space.stationFloorY);
   _wasSwimming = false;
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);

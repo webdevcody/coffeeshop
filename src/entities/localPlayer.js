@@ -57,6 +57,12 @@ export class LocalPlayer {
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
     this.bounds = unionBounds(this.ground);
+    // STATION: walkable deck rects that live at altitude (stationFloorY) instead
+    // of y=0. Injected via setStation. While the player stands on one of these
+    // rects _updateVertical pins pos.y to stationFloorY (not 0), so they walk the
+    // orbital station deck high above the city. null/0 until a station is wired.
+    this.stationRects = null;
+    this.stationFloorY = 0;
     this.character = new Character(appearance, name || "me");
     this.character.group.position.set(this.spawn.x, 0, this.spawn.z);
     this.character.group.rotation.y = Math.PI;
@@ -144,6 +150,15 @@ export class LocalPlayer {
   setIsWater(fn, waterY) {
     this.isWater = typeof fn === "function" ? fn : () => false;
     if (Number.isFinite(waterY)) this.waterY = waterY;
+  }
+
+  // Inject the orbital STATION deck rects + their world floor Y. While the player
+  // stands on one of these rects, _updateVertical lifts them to stationFloorY
+  // instead of pinning y=0, so they walk the station interior at altitude (the
+  // rects are ALSO in `this.ground`, so _isGround already treats them as solid).
+  setStation(rects, floorY) {
+    this.stationRects = Array.isArray(rects) && rects.length ? rects : null;
+    if (Number.isFinite(floorY)) this.stationFloorY = floorY;
   }
 
   setAppearance(app) {
@@ -371,6 +386,9 @@ export class LocalPlayer {
     // Float line: the body rides a touch above the sea surface so the head/torso
     // stay clear of the water (waterY = -0.8 + surfaceOffset 0.4 → pos.y ≈ -0.4).
     const swimY = this.waterY + SWIM.surfaceOffset;
+    // Resting height when standing on ground at this XZ: the station deck altitude
+    // inside a station rect, else 0 (the city/ocean). Only meaningful on ground.
+    const floorY = onGround ? this._floorY(this.pos.x, this.pos.z) : 0;
 
     // --- SWIM / FLOAT --------------------------------------------------------
     // Already in the water: stay afloat (NEVER respawn) until we reach solid
@@ -401,7 +419,7 @@ export class LocalPlayer {
     }
 
     if (!this.airborne) {
-      if (onGround) { this.pos.y = 0; this.vy = 0; this.falling = false; return; }
+      if (onGround) { this.pos.y = floorY; this.vy = 0; this.falling = false; return; }
       // Stepped off the edge with no jump: begin a fall from rest.
       this.airborne = true; this.falling = true; this.vy = 0;
     }
@@ -409,9 +427,11 @@ export class LocalPlayer {
     this.vy -= FALL.gravity * dt;
     this.pos.y += this.vy * dt;
     this.falling = this.vy < 0;
-    // Land when descending back to ground level over solid ground.
-    if (this.vy <= 0 && this.pos.y <= 0 && onGround) {
-      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
+    // Land when descending back to the floor over solid ground. The floor is 0 on
+    // the city/ocean and stationFloorY on the orbital station deck, so a hop on the
+    // station settles back onto the deck (≈260) instead of plunging through it.
+    if (this.vy <= 0 && this.pos.y <= floorY && onGround) {
+      this.pos.y = floorY; this.vy = 0; this.airborne = false; this.falling = false;
       return;
     }
     // Descending into OPEN WATER — splash in and start swimming instead of
@@ -471,6 +491,17 @@ export class LocalPlayer {
       if (x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ) return true;
     }
     return false;
+  }
+
+  // World Y the player should rest at when standing on ground at (x,z): the
+  // station deck altitude inside a station rect, else 0 (the city/ocean ground).
+  _floorY(x, z) {
+    if (this.stationRects) {
+      for (const r of this.stationRects) {
+        if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return this.stationFloorY;
+      }
+    }
+    return 0;
   }
 
   _respawn() {

@@ -65,6 +65,21 @@ const goldFoilMat = new THREE.MeshStandardMaterial({ color: "#caa23a", roughness
 const rockMat = new THREE.MeshStandardMaterial({ color: "#6a6058", roughness: 1.0, metalness: 0.05, flatShading: true });
 const moonMat = new THREE.MeshStandardMaterial({ color: "#cdd2d8", roughness: 1.0, metalness: 0.0, emissive: "#262b33", emissiveIntensity: 0.18, flatShading: true, fog: false });
 const moonMareMat = new THREE.MeshStandardMaterial({ color: "#a9afb6", roughness: 1.0, fog: false });
+// Walkable STATION INTERIOR — deck, hull walls, ceiling glow, framed viewport glass,
+// consoles, handrails, airlock, and a big Earth hanging out the window.
+const deckMat       = new THREE.MeshStandardMaterial({ color: "#3a4048", roughness: 0.7, metalness: 0.45 });
+const wallMat       = new THREE.MeshStandardMaterial({ color: "#c8ced6", roughness: 0.55, metalness: 0.3, side: THREE.DoubleSide });
+const wallRibMat    = new THREE.MeshStandardMaterial({ color: "#9aa3ad", roughness: 0.5, metalness: 0.45 });
+const ceilMat       = new THREE.MeshStandardMaterial({ color: "#aab2bb", roughness: 0.6, metalness: 0.3, side: THREE.DoubleSide });
+const ceilStripMat  = new THREE.MeshStandardMaterial({ color: "#eef4ff", roughness: 0.3, emissive: "#bfe0ff", emissiveIntensity: 0.9 });
+const frameMat      = new THREE.MeshStandardMaterial({ color: "#5a626b", roughness: 0.4, metalness: 0.7 });
+const glassMat      = new THREE.MeshStandardMaterial({ color: "#0a1830", roughness: 0.08, metalness: 0.0, transparent: true, opacity: 0.16, side: THREE.DoubleSide, emissive: "#0a1428", emissiveIntensity: 0.2 });
+const consoleMat    = new THREE.MeshStandardMaterial({ color: "#3d444c", roughness: 0.5, metalness: 0.5 });
+const railMat       = new THREE.MeshStandardMaterial({ color: "#d8a23a", roughness: 0.4, metalness: 0.6, emissive: "#3a2a00", emissiveIntensity: 0.2 });
+const airlockMat    = new THREE.MeshStandardMaterial({ color: "#80878f", roughness: 0.5, metalness: 0.6 });
+const earthMat      = new THREE.MeshStandardMaterial({ color: "#2a5a9a", roughness: 0.9, metalness: 0.0, emissive: "#0e2240", emissiveIntensity: 0.35, flatShading: true, fog: false });
+const earthLandMat  = new THREE.MeshStandardMaterial({ color: "#3f8a55", roughness: 1.0, fog: false });
+const earthCloudMat = new THREE.MeshStandardMaterial({ color: "#eef4fb", roughness: 1.0, transparent: true, opacity: 0.6, fog: false });
 
 // ── Shared geometries (created ONCE) ──────────────────────────────────────────
 const G = {
@@ -133,12 +148,19 @@ export function buildSpace(opts = {}) {
   // Returned contract arrays.
   const ground = [];    // EXTRA walkable rect: the launchpad apron
   const colliders = []; // SOLID props: gantry legs, fuel tanks, flood masts
+  // Interior contract (kept SEPARATE from the y=0 `ground`/`colliders`): these rects
+  // live up at the station altitude. Player code lifts you to `stationFloorY` while
+  // you stand on a `stationGround` rect; `stationColliders` block you inside.
+  const stationGround = [];    // walkable interior deck rects (world XZ; lifted to stationFloorY)
+  const stationColliders = []; // interior walls / consoles (world XZ AABBs)
 
   // Animated handles collected at build → mutated allocation-free in update().
   const beacons = [];    // { mat, rate, phase }  blinking nav lights
   const sats = [];       // { group, cx, cy, cz, r, ang, rate, tilt, spin }
   const asteroids = [];  // { group, cx, cy, cz, r, ang, rate, rx, ry, rz }
   const solarPivots = []; // station solar-wing roots (gentle sun-tracking tilt)
+  const screens = [];     // interior console / holo screens { mat, rate, phase }
+  const floatProps = [];  // low-g bobbing props { mesh, baseY, amp, rate, phase, spin }
 
   // ── LAUNCHPAD placement ───────────────────────────────────────────────────
   // The 16 districts fill a 4x4 grid (cols x=-90/-30/30/90, rows z=65/125/185/245,
@@ -468,6 +490,173 @@ export function buildSpace(opts = {}) {
   stars.frustumCulled = false;
   group.add(stars);
 
+  // ── 10) WALKABLE STATION INTERIOR ──────────────────────────────────────────
+  // A self-contained pressurised module you can actually STAND inside: a docking
+  // airlock → corridor → control room with consoles + a big viewport onto Earth.
+  // It sits at the STATION altitude but is OFFSET far EAST of the city footprint
+  // (city is x[-120,120] z[40,275]) to a clear patch at (IX,IZ), so its floor rects
+  // never collide with the y=0 city ground at the same XZ. Deck top is at world
+  // y = stationFloorY; the player code lifts you onto it on the `stationGround`
+  // rects (returned separately from the y=0 `ground`).
+  const IX = 300, IZ = 130;          // interior footprint centre (clear of the city)
+  const stationFloorY = stationY;    // 260 — interior deck sits at station altitude
+  const WALL_H = 5, WALL_T = 0.4;
+
+  const interior = new THREE.Group();
+  interior.position.set(IX, stationFloorY, IZ);
+  group.add(interior);
+
+  // Deck slab + walkable rect (world coords). Top face at interior-local y=0.
+  function addDeck(minX, maxX, minZ, maxZ) {
+    const w = maxX - minX, d = maxZ - minZ;
+    const deck = box(w, 0.3, d, deckMat, false, true);
+    deck.position.set((minX + maxX) / 2, -0.15, (minZ + maxZ) / 2);
+    interior.add(deck);
+    stationGround.push({ minX: IX + minX, maxX: IX + maxX, minZ: IZ + minZ, maxZ: IZ + maxZ });
+  }
+  // Full-height solid wall + its XZ collider (world coords).
+  function addWall(cx, cz, w, d) {
+    const wl = box(w, WALL_H, d, wallMat, false, true);
+    wl.position.set(cx, WALL_H / 2, cz);
+    interior.add(wl);
+    addAABB(stationColliders, IX + cx, IZ + cz, w, d);
+  }
+  // Flat ceiling panel + a glow strip (cosmetic, no collider).
+  function addCeiling(cx, cz, w, d) {
+    const cl = box(w, 0.3, d, ceilMat, false, false);
+    cl.position.set(cx, WALL_H, cz);
+    interior.add(cl);
+    const strip = box(w * 0.5, 0.08, 0.5, ceilStripMat, false, false);
+    strip.position.set(cx, WALL_H - 0.22, cz);
+    interior.add(strip);
+  }
+
+  // Decks: control room (24×18), corridor (12×6), docking airlock (12×10).
+  addDeck(-12, 12, -9, 9);
+  addDeck(-24, -12, -3, 3);
+  addDeck(-36, -24, -5, 5);
+  addCeiling(0, 0, 24, 18);
+  addCeiling(-18, 0, 12, 6);
+  addCeiling(-30, 0, 12, 10);
+
+  // Control-room walls. The +X wall is the big VIEWPORT — collider only here, the
+  // glazing is built below; the -X wall has a doorway through to the corridor.
+  addAABB(stationColliders, IX + 12, IZ + 0, WALL_T, 18);
+  addWall(0, 9, 24, WALL_T);    // +Z
+  addWall(0, -9, 24, WALL_T);   // -Z (console wall)
+  addWall(-12, 6, WALL_T, 6);   // -X upper (doorway gap z[-3,3])
+  addWall(-12, -6, WALL_T, 6);  // -X lower
+  // Corridor walls.
+  addWall(-18, 3, 12, WALL_T);
+  addWall(-18, -3, 12, WALL_T);
+  // Airlock walls (back-wall flanks of the corridor doorway, sides, outer bulkhead).
+  addWall(-24, 4, WALL_T, 2);
+  addWall(-24, -4, WALL_T, 2);
+  addWall(-30, 5, 12, WALL_T);
+  addWall(-30, -5, 12, WALL_T);
+  addWall(-36, 0, WALL_T, 10);  // outer docking bulkhead (hatch is cosmetic)
+
+  // Structural ribs down the control-room +Z wall (cosmetic).
+  for (const rx of [-9, -3, 3, 9]) {
+    const rib = box(0.3, WALL_H, 0.5, wallRibMat, false, false);
+    rib.position.set(rx, WALL_H / 2, 8.7);
+    interior.add(rib);
+  }
+
+  // BIG VIEWPORT on the +X wall — framed glazing onto the starfield + Earth.
+  {
+    const openH = WALL_H - 2.4, openCY = openH / 2 + 1.0;
+    const header = box(WALL_T, 1.4, 18, frameMat, false, false);
+    header.position.set(12, WALL_H - 0.7, 0); interior.add(header);
+    const sill = box(WALL_T, 1.0, 18, frameMat, false, false);
+    sill.position.set(12, 0.5, 0); interior.add(sill);
+    const glass = box(0.12, openH, 17.4, glassMat, false, false);
+    glass.position.set(12, openCY, 0); interior.add(glass);
+    for (const mz of [-6, -2, 2, 6]) {
+      const mull = box(0.22, openH, 0.22, frameMat, false, false);
+      mull.position.set(12, openCY, mz); interior.add(mull);
+    }
+  }
+
+  // CONSOLES along the -Z wall — each a solid collider with an angled glowing screen.
+  for (const cxp of [-7, 0, 7]) {
+    const baseC = box(3.2, 1.0, 1.2, consoleMat, false, false);
+    baseC.position.set(cxp, 0.5, -7.9); interior.add(baseC);
+    const scrMat = new THREE.MeshStandardMaterial({ color: "#0a2740", roughness: 0.3, emissive: "#1fa6ff", emissiveIntensity: 0.7 });
+    const scr = box(2.8, 1.3, 0.1, scrMat, false, false);
+    scr.position.set(cxp, 1.45, -7.35); scr.rotation.x = -0.45; interior.add(scr);
+    addAABB(stationColliders, IX + cxp, IZ - 7.9, 3.2, 1.6);
+    screens.push({ mat: scrMat, rate: 1.4 + Math.random() * 1.6, phase: Math.random() * 6.28 });
+  }
+
+  // Central HOLO-TABLE the crew gathers at (a solid round collider).
+  {
+    const ped = mesh(new THREE.CylinderGeometry(1.6, 1.9, 1.0, 18), consoleMat, false, false);
+    ped.position.set(0, 0.5, 0); interior.add(ped);
+    const holoMat = new THREE.MeshStandardMaterial({ color: "#0c3050", roughness: 0.25, emissive: "#37d0ff", emissiveIntensity: 0.6, transparent: true, opacity: 0.85 });
+    const holo = mesh(new THREE.CylinderGeometry(1.5, 1.5, 0.12, 18), holoMat, false, false);
+    holo.position.set(0, 1.06, 0); interior.add(holo);
+    addAABB(stationColliders, IX + 0, IZ + 0, 3.6, 3.6);
+    screens.push({ mat: holoMat, rate: 0.9, phase: 2.0 });
+  }
+
+  // HANDRAILS lining the corridor (cosmetic — posts + a top bar each side).
+  for (const rz of [-2.5, 2.5]) {
+    const bar = box(11, 0.12, 0.12, railMat, false, false);
+    bar.position.set(-18, 1.0, rz); interior.add(bar);
+    for (let px = -23; px <= -13; px += 2.5) {
+      const post = mesh(G.antennaGeo, railMat, false, false);
+      post.position.set(px, 0.5, rz); interior.add(post);
+    }
+  }
+
+  // DOCKING HATCH detail on the outer bulkhead + a blinking "clear to dock" light.
+  {
+    const hatch = mesh(new THREE.TorusGeometry(1.8, 0.22, 10, 24), airlockMat, false, false);
+    hatch.rotation.y = Math.PI / 2;
+    hatch.position.set(-35.7, 2.2, 0); interior.add(hatch);
+    const dockLightMat = new THREE.MeshStandardMaterial({ color: "#37ff7a", roughness: 0.4, emissive: "#19e85f", emissiveIntensity: 1.0 });
+    for (const lz of [-2.4, 2.4]) {
+      const lt = mesh(G.beaconGeo, dockLightMat, false, false);
+      lt.position.set(-35.6, 2.2, lz); interior.add(lt);
+    }
+    beacons.push({ mat: dockLightMat, rate: 1.4, phase: 0.2 });
+  }
+
+  // LOW-G ambience: a couple of props slowly drifting / tumbling in the cabin.
+  {
+    const crate = box(0.8, 0.8, 0.8, frameMat, false, false);
+    crate.position.set(-5, 1.6, 5); interior.add(crate);
+    floatProps.push({ mesh: crate, baseY: 1.6, amp: 0.22, rate: 0.8, phase: 0, spin: 0.4 });
+    const helm = mesh(new THREE.SphereGeometry(0.4, 12, 8), tankMat, false, false);
+    helm.position.set(6, 1.9, 6); interior.add(helm);
+    floatProps.push({ mesh: helm, baseY: 1.9, amp: 0.3, rate: 1.1, phase: 1.5, spin: -0.6 });
+  }
+
+  // EARTH framed in the viewport — a big blue marble hanging off the +X windows.
+  const earth = mesh(new THREE.SphereGeometry(160, 30, 22), earthMat, false, false);
+  earth.position.set(IX + 430, stationFloorY - 120, IZ + 30);
+  group.add(earth);
+  for (const [ea, eb, es] of [[0.5, 0.3, 60], [-0.6, 0.9, 44], [1.8, -0.4, 52], [2.6, 0.5, 38]]) {
+    const land = mesh(new THREE.SphereGeometry(es, 14, 10), earthLandMat, false, false);
+    const nx = Math.cos(ea) * Math.cos(eb), ny = Math.sin(eb), nz = Math.sin(ea) * Math.cos(eb);
+    land.position.set(nx * 150, ny * 150, nz * 150);
+    land.scale.set(1, 1, 0.25);
+    earth.add(land);
+  }
+  for (const [ca, cb, cs] of [[1.1, 0.7, 40], [-1.4, -0.2, 34], [0.2, 1.3, 30]]) {
+    const cloud = mesh(new THREE.SphereGeometry(cs, 12, 8), earthCloudMat, false, false);
+    const nx = Math.cos(ca) * Math.cos(cb), ny = Math.sin(cb), nz = Math.sin(ca) * Math.cos(cb);
+    cloud.position.set(nx * 156, ny * 156, nz * 156);
+    cloud.scale.set(1, 1, 0.18);
+    earth.add(cloud);
+  }
+
+  // Docking + exit spots (world XZ). The rocket parks just OUTSIDE the airlock
+  // bulkhead; after E the player stands just INSIDE the airlock, on the deck.
+  const dockSpot = { x: IX - 46, z: IZ, heading: Math.PI / 2 };
+  const exitSpot = { x: IX - 30, z: IZ };
+
   // ── Animation — ALLOCATION-FREE. Spin the station, blink beacons, drift sats
   // + asteroids, gently track the solar wings, and twinkle the starfield. Writes
   // cached transforms / scalars only; no `new` per frame. ─────────────────────
@@ -507,6 +696,18 @@ export function buildSpace(opts = {}) {
     }
     // Subtle starfield twinkle (one cheap global scalar).
     starMat.opacity = 0.78 + Math.sin(t * 1.3) * 0.14;
+    // Interior ambience: console / holo glow, low-g props bob + tumble, Earth spin.
+    for (let i = 0; i < screens.length; i++) {
+      const s = screens[i];
+      s.mat.emissiveIntensity = 0.55 + Math.sin(t * s.rate + s.phase) * 0.32;
+    }
+    for (let i = 0; i < floatProps.length; i++) {
+      const f = floatProps[i];
+      f.mesh.position.y = f.baseY + Math.sin(t * f.rate + f.phase) * f.amp;
+      f.mesh.rotation.y += f.spin * dt;
+      f.mesh.rotation.x += f.spin * 0.5 * dt;
+    }
+    earth.rotation.y += dt * 0.008;
   }
 
   return {
@@ -519,5 +720,12 @@ export function buildSpace(opts = {}) {
     // (not part of the required contract, but handy for the rocket/HUD/minimap)
     stationY,
     stationCenter: SC,
+    // ── WALKABLE STATION INTERIOR contract (NEW) ──────────────────────────────
+    stationGround,                       // walkable interior deck rects (world XZ)
+    stationColliders,                    // interior wall / console AABBs (world XZ)
+    stationFloorY,                       // world Y the interior deck sits at (260)
+    dockSpot,                            // { x, z, heading } rocket parks outside the airlock
+    exitSpot,                            // { x, z } player stands here, inside the airlock
+    stationInteriorCenter: { x: IX, z: IZ }, // interior footprint centre (300, 130)
   };
 }
