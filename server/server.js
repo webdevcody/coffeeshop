@@ -86,6 +86,11 @@ function serveStatic(req, res) {
 //     covers both the app's own dist/assets/* and the prebuilt games' assets.
 //   - Everything else gets a short, revalidated cache.
 function cacheControl(ext, urlPath) {
+  // DEV: serve EVERYTHING no-store so a plain refresh always loads the freshest
+  // build (no stale cached index.html or bundle while iterating). Re-enable the
+  // immutable asset caching below for production.
+  return "no-cache, no-store, must-revalidate";
+  // eslint-disable-next-line no-unreachable
   if (ext === ".html") return "no-cache, no-store, must-revalidate";
   if (urlPath.includes("/assets/")) return "public, max-age=31536000, immutable";
   return "public, max-age=3600";
