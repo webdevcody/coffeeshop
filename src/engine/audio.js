@@ -236,14 +236,16 @@ export function createAudio() {
     osc.type = "sawtooth";
     osc.frequency.value = 60;
     const oscGain = ctx.createGain();
-    oscGain.gain.value = 0.4;
+    oscGain.gain.value = 0.3;
     osc.connect(oscGain).connect(lp);
 
     const sub = ctx.createOscillator();
     sub.type = "sine";
     sub.frequency.value = 30;
     const subGain = ctx.createGain();
-    subGain.gain.value = 0.6;
+    // Low sub level: a heavy 0.6 sub-sine read as an annoying constant RUMBLE under
+    // the car/rocket. Keep just a hint of low body.
+    subGain.gain.value = 0.18;
     sub.connect(subGain).connect(lp);
 
     osc.start();
@@ -257,11 +259,13 @@ export function createAudio() {
     buildEngine();
     const sp = Math.max(0, Math.min(1, want.engineSpeed));
     const on = want.engineOn;
-    // Idle ~55Hz rising to ~150Hz; brighten the lowpass and lift level with speed.
-    ramp(engine.osc.frequency, 55 + sp * 95, 0.2);
-    ramp(engine.sub.frequency, 27 + sp * 48, 0.2);
-    ramp(engine.lp.frequency, 500 + sp * 1400, 0.2);
-    ramp(engine.gain, on ? 0.14 + sp * 0.22 : 0, 0.25);
+    // Idle ~70Hz rising to ~190Hz; lift the sub off the deep-rumble range and
+    // brighten the lowpass with speed. Overall level kept LOW (was 0.14+sp*0.22,
+    // which droned/rumbled) so the engine is a subtle hum, not a constant roar.
+    ramp(engine.osc.frequency, 70 + sp * 120, 0.2);
+    ramp(engine.sub.frequency, 40 + sp * 55, 0.2);
+    ramp(engine.lp.frequency, 600 + sp * 1500, 0.2);
+    ramp(engine.gain, on ? 0.05 + sp * 0.09 : 0, 0.25);
   }
 
   // Flight/altitude wind: louder, brighter bandpassed noise than ambient, with
@@ -297,7 +301,8 @@ export function createAudio() {
     buildWind();
     const it = Math.max(0, Math.min(1, want.wind));
     ramp(wind.bp.frequency, 700 + it * 1100, 0.3);
-    ramp(wind.gain, it * 0.5, 0.4);
+    // Quieter wind (was it*0.5 — too loud/roaring); a soft airy rush.
+    ramp(wind.gain, it * 0.16, 0.4);
   }
 
   // ── one-shot plumbing ──────────────────────────────────────────────────────
