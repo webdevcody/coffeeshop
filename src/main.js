@@ -14,6 +14,7 @@ import { buildSpace } from "./world/space.js";
 import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
+import { createWeapons } from "./entities/weapons.js";
 import { RemotePlayers } from "./entities/remotePlayers.js";
 import { Network } from "./net/network.js";
 import { Voice } from "./net/voice.js";
@@ -102,6 +103,17 @@ const hud = new HUD();
 const network = new Network();
 const arcade = new Arcade();
 
+// WEAPONS (a cosmetic combat toy): 1/2/3 equip a pistol / rocket launcher /
+// grenade launcher, 0 holsters, B fires. createWeapons owns the held hand-meshes
+// (`weapons.group`, parented onto the player's handAnchor on equip) AND a private
+// world-space FX group it adds to the scene itself, which holds every tracer /
+// rocket / grenade + explosion so they keep flying after leaving the hand. We add
+// the held group to the scene until it's first equipped. Shots are relayed
+// (network.sendShot) and replayed (network.on("shot")) so the fire + blasts are
+// MULTIPLAYER-VISIBLE. No damage / gameplay — purely visual.
+const weapons = createWeapons(scene);
+scene.add(weapons.group);
+
 // The in-world game engine: mounts a game module onto the real café table mesh,
 // routes pointer clicks, relays moves/snapshots, and pumps real-time sims. It
 // replaces the iframe gameplay stage; arcade keeps only the host picker / guest
@@ -156,6 +168,10 @@ scene.add(flashlight.target);
 let flashlightOn = false;
 const _flashDir = new THREE.Vector3();
 const _flashTgt = new THREE.Vector3();
+// WEAPONS: reused per-shot scratch so firing never allocates. _shotOrigin is the
+// muzzle point (hand world position nudged forward), _shotDir the camera aim.
+const _shotOrigin = new THREE.Vector3();
+const _shotDir = new THREE.Vector3();
 
 let local = null;
 let joined = false;
@@ -242,6 +258,13 @@ network.on("chat", (m) => {
   } else {
     remotes.showChat(m.id, m.text);
   }
+});
+// A remote player fired: replay the IDENTICAL cosmetic shot (tracer / rocket /
+// grenade + explosion) at their world-space origin/aim, so everyone in the room
+// sees everyone's fire and blasts. spawnShot routes local + remote through the
+// same path, so the visuals are byte-identical.
+network.on("shot", (m) => {
+  weapons.spawnRemoteShot(m.weapon, { x: m.ox, y: m.oy, z: m.oz }, { x: m.dx, y: m.dy, z: m.dz });
 });
 
 // --- Game-table wiring -----------------------------------------------------
@@ -575,6 +598,7 @@ function frame() {
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();
     maybeSendState();
+    updateWeapons();
   } else {
     // Gentle interior orbit of the room while the join card is up.
     previewAngle += dt * 0.12;
@@ -589,6 +613,10 @@ function frame() {
   ambient.update(dt);
 
   remotes.update(dt);
+  // Advance every in-flight projectile / muzzle flash / explosion (local AND
+  // relayed). Runs every frame — even on the join-card preview — so nothing
+  // freezes mid-air. Allocation-free per weapons.js.
+  weapons.update(dt);
   voice.updateVolumes();
   voice.updateSpeaking(dt);
   screenShare.update(dt);
@@ -681,8 +709,41 @@ function maybeSendState() {
   lastStateSent = now;
 }
 
+// WEAPONS input (called each frame while joined): swap on 1/2/3, holster on 0,
+// fire on B. Equipping shows the chosen hand-mesh and parents the held group onto
+// the player's handAnchor (THREE.add re-parents from the scene); holstering hides
+// all and detaches the group. A shot originates at the hand (world position,
+// nudged forward so it clears the body) and flies along the camera's aim; it is
+// drawn locally AND relayed (network.sendShot) so every other client replays the
+// same projectile + explosion. Firing is suppressed while seated; controls.js
+// already gates both edges to null/false while a game overlay holds the lock.
+// Allocation-free: origin/aim reuse the _shot* scratch vectors.
+function updateWeapons() {
+  const slot = controls.consumeWeaponSlot();
+  if (slot != null) {
+    const kind = slot === 1 ? "gun" : slot === 2 ? "rocket" : slot === 3 ? "grenade" : null;
+    weapons.equip(kind);
+    if (kind) {
+      if (weapons.group.parent !== local.character.handAnchor) {
+        local.character.handAnchor.add(weapons.group);
+      }
+    } else if (weapons.group.parent) {
+      weapons.group.parent.remove(weapons.group); // holster: drop it out of the hand
+    }
+  }
+  // consumeFire() is called first so the B edge always drains, even when holstered.
+  if (controls.consumeFire() && weapons.current() && !local.sitting) {
+    const kind = weapons.current();
+    camera.getWorldDirection(_shotDir); // aim along the camera forward
+    local.character.handAnchor.getWorldPosition(_shotOrigin); // muzzle at the hand
+    _shotOrigin.addScaledVector(_shotDir, 0.3); // nudge forward past the body
+    weapons.fire(_shotOrigin, _shotDir, kind);
+    network.sendShot(kind, _shotOrigin, _shotDir); // make it multiplayer-visible
+  }
+}
+
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, ocean, space, audio, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, audio, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

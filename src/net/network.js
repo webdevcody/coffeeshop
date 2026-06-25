@@ -89,6 +89,19 @@ export class Network {
     this._send({ type: "chat", text });
   }
 
+  // Relay a (purely cosmetic) weapon shot so everyone sees the same tracer /
+  // rocket / grenade + explosion. `origin` and `dir` are world-space vectors
+  // (anything with x/y/z); the server validates the kind + 6 finite numbers and
+  // rebroadcasts to the OTHER clients, which replay it via spawnRemoteShot.
+  sendShot(weapon, origin, dir) {
+    this._send({
+      type: "shot",
+      weapon,
+      ox: origin.x, oy: origin.y, oz: origin.z,
+      dx: dir.x, dy: dir.y, dz: dir.z,
+    });
+  }
+
   signal(to, data) {
     this._send({ type: "signal", to, data });
   }

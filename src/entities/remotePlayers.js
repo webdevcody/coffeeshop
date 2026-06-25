@@ -2,6 +2,15 @@
 // a name label and a transient chat bubble. Network updates set a *target*
 // transform; we smoothly interpolate toward it each frame so movement looks
 // fluid despite the ~16 updates/sec coming over the wire.
+//
+// WEAPONS: a remote player's FIRE is fully visible — main.js replays every "shot"
+// relay through weapons.spawnRemoteShot, so their tracers / rockets / grenades +
+// explosions spawn in shared world space for everyone. We intentionally do NOT
+// also attach an idle held-weapon mesh to a remote hand here: weapons.js exposes
+// only the LOCAL player's three singleton hand-meshes (no per-remote builder to
+// clone), so mirroring the equipped weapon would need a mesh factory in weapons.js
+// (off-limits) plus an equipped-kind field in the state protocol. The shot relay
+// already satisfies the multiplayer-visible requirement without that.
 
 import { Character } from "./character.js";
 import { makeCar } from "./car.js";

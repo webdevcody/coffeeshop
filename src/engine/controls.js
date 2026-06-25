@@ -23,6 +23,12 @@ export function createControls(domElement) {
   let olliePressed = false; // edge: Space / J -> ollie (pop into the air)
   let flipPressed = false; // edge: K -> kickflip (deck spins about its length)
   let shuvPressed = false; // edge: L -> pop-shuvit (deck spins flat)
+  // Weapon toy (FREE keys): number keys swap the held weapon and B fires it.
+  // weaponSlot latches the LAST slot pressed (1=gun, 2=rocket, 3=grenade,
+  // 0=holster) drained by consumeWeaponSlot(); firePressed latches B for
+  // consumeFire(). Both are cleared in setLocked so a game overlay swallows them.
+  let weaponSlot = null;
+  let firePressed = false;
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -57,6 +63,13 @@ export function createControls(domElement) {
     if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
     if (e.code === "KeyL" && !keys.has("KeyL")) shuvPressed = true;
+    // Weapon swap (1=gun, 2=rocket, 3=grenade, 0=holster) + B to fire. All FREE
+    // keys, edge-triggered so a held key fires once. Drained by main.js.
+    if (e.code === "Digit1" && !keys.has("Digit1")) weaponSlot = 1;
+    if (e.code === "Digit2" && !keys.has("Digit2")) weaponSlot = 2;
+    if (e.code === "Digit3" && !keys.has("Digit3")) weaponSlot = 3;
+    if (e.code === "Digit0" && !keys.has("Digit0")) weaponSlot = 0;
+    if (e.code === "KeyB" && !keys.has("KeyB")) firePressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -261,6 +274,23 @@ export function createControls(domElement) {
     return p;
   }
 
+  // Weapon slot pressed this tick: 1=gun, 2=rocket, 3=grenade, 0=holster, or
+  // null when nothing was pressed. Edge-triggered (drained once), and gated by
+  // `locked` so number keys never swap weapons while a game overlay owns input.
+  function consumeWeaponSlot() {
+    const s = weaponSlot;
+    weaponSlot = null;
+    return locked ? null : s;
+  }
+
+  // True once per B press (fire the equipped weapon), then resets. Gated by
+  // `locked` so you can't fire while a game overlay is open.
+  function consumeFire() {
+    const pressed = firePressed;
+    firePressed = false;
+    return locked ? false : pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -329,10 +359,12 @@ export function createControls(domElement) {
       olliePressed = false;
       flipPressed = false;
       shuvPressed = false;
+      weaponSlot = null;
+      firePressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

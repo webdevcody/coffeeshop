@@ -635,6 +635,19 @@ wss.on("connection", (ws) => {
         broadcast({ type: "chat", id, name: player.name, text });
         break;
       }
+      case "shot": {
+        // Cosmetic weapon shot relay (tracer / rocket / grenade + explosion FX).
+        // The server stores NO state and applies NO damage — it just validates the
+        // weapon kind and the six finite numbers (world-space origin + aim dir),
+        // then rebroadcasts to the OTHER clients so they replay the same visuals.
+        const weapon =
+          msg.weapon === "gun" || msg.weapon === "rocket" || msg.weapon === "grenade" ? msg.weapon : null;
+        if (!weapon) break;
+        const ox = msg.ox, oy = msg.oy, oz = msg.oz, dx = msg.dx, dy = msg.dy, dz = msg.dz;
+        if (![ox, oy, oz, dx, dy, dz].every((n) => typeof n === "number" && Number.isFinite(n))) break;
+        broadcast({ type: "shot", id, weapon, ox, oy, oz, dx, dy, dz }, id);
+        break;
+      }
       case "signal": {
         // WebRTC signaling relay (offer/answer/ice). Forward to target peer.
         const target = clients.get(String(msg.to));
