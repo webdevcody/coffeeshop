@@ -7,6 +7,7 @@ import * as THREE from "three";
 import { createEngine } from "./engine/scene.js";
 import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
+import { createAudio } from "./engine/audio.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
@@ -28,6 +29,10 @@ import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, getTimeOfDay } = createEngine(canvas);
+// Procedural sound engine (WebAudio). Lazily unlocks on the join click (a user
+// gesture) — until then every call is a safe no-op. Drives ambient birds/wind, a
+// vehicle engine hum, and one-shots (splash/whoosh/etc.).
+const audio = createAudio();
 // Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
 // makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
 // glow. Built on the existing renderer/scene/camera; scene.js still owns tone
@@ -401,12 +406,16 @@ function colorFor(id, fallbackName) {
 
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
+  // The join click is the user gesture that unlocks WebAudio — start the ambient
+  // bed (soft wind + birdsong) the moment we enter the world.
+  audio.resume();
+  audio.setAmbient(true);
   local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
     const item = getItem(id);
-    if (item) local.holdItem(item);
+    if (item) { local.holdItem(item); audio.blip(); }
   };
   // Sitting at a game table asks the server for a role; the reply opens the
   // game-picker menu (host) or a waiting screen (guest), then the game itself.
@@ -523,7 +532,10 @@ function frame() {
         : ride.mode === "rocket" ? (rides.rocket?.state?.speed ?? 0)
         : rides.car.state.speed;
       hud.setDriveHud(true, speed); // speedometer + drive/sail/launch hint
+      // Vehicle engine hum, pitch/level rising with speed (top speed ~12 m/s).
+      audio.setEngine(true, Math.min(1, Math.abs(speed) / 12));
     } else {
+      audio.setEngine(false); // on foot — no engine
       const seatedView = syncSeatedCamera();
       local.update(dt, camera, seatedView);
       // True first-person while seated at a board: hide your OWN avatar so your body
@@ -636,5 +648,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, ocean, space, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, ocean, space, audio, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;
