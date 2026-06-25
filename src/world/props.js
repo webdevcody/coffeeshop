@@ -257,8 +257,11 @@ export function makeRug(w = 5, d = 4, color = "#9e3b3b") {
   // (bottom ~0.018, below the rug top at 0.021) so neither face is coincident
   // with the floor or the rug surface — its top alone reads as the lighter band.
   const border = mesh(
+    // Muted oatmeal, kept below the bloom threshold so the rug's centre band
+    // doesn't blow out into a washed-out "glow" under the warm interior light +
+    // bloom (the old near-white #e9dcc3 read as luminance ~0.87, above threshold).
     new THREE.BoxGeometry(w - 0.5, 0.008, d - 0.5),
-    new THREE.MeshStandardMaterial({ color: "#e9dcc3", roughness: 1 }),
+    new THREE.MeshStandardMaterial({ color: "#cdbfa0", roughness: 1 }),
     false
   );
   border.position.y = 0.022;
