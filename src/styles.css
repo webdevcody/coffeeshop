@@ -875,3 +875,39 @@ body {
   box-shadow: 0 6px 24px rgba(0,0,0,0.4);
 }
 .game-banner.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Battleship placement control bar (screen-space, floats above the chat bar). */
+.game-controls {
+  position: absolute;
+  bottom: 92px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(8, 18, 30, 0.78);
+  border: 1px solid rgba(120, 180, 230, 0.4);
+  border-radius: 14px;
+  pointer-events: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  z-index: 31;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+}
+.game-controls.show { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+.game-ctl-btn {
+  font: 600 14px system-ui, sans-serif;
+  color: #eaf3fb;
+  background: #2a3b4d;
+  border: 1px solid rgba(150,190,230,0.35);
+  border-radius: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.06s ease;
+}
+.game-ctl-btn:hover { background: #34506b; }
+.game-ctl-btn:active { transform: translateY(1px); }
+.game-ctl-btn.primary { background: #2f8a5a; border-color: #54a368; color: #eafff1; }
+.game-ctl-btn.primary:hover { background: #36a368; }
+.game-ctl-btn.disabled { background: #39444c; color: #8b97a0; cursor: default; }

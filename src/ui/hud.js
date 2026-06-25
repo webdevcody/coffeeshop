@@ -254,6 +254,40 @@ export class HUD {
     if (this._gameBanner) this._gameBanner.classList.remove("show");
   }
 
+  // Screen-space placement control bar (battleship Rotate/Randomize/Clear/Ready)
+  // so the controls float as a HUD and never overlap the 3D board/ships. `defs` is
+  // [{ id, label, enabled?, primary? }]; clicking a button calls onClick(id). An
+  // empty/falsy defs hides the bar.
+  setGameControls(defs, onClick) {
+    if (!this._gameControls) {
+      const el = document.createElement("div");
+      el.className = "game-controls";
+      this.gameUi.appendChild(el);
+      this._gameControls = el;
+    }
+    const bar = this._gameControls;
+    bar.textContent = "";
+    if (!defs || !defs.length) {
+      bar.classList.remove("show");
+      return;
+    }
+    for (const d of defs) {
+      const b = document.createElement("button");
+      b.className = "game-ctl-btn" + (d.primary ? " primary" : "") + (d.enabled === false ? " disabled" : "");
+      b.textContent = d.label;
+      b.addEventListener("click", (e) => { e.preventDefault(); onClick?.(d.id); });
+      bar.appendChild(b);
+    }
+    bar.classList.add("show");
+  }
+
+  clearGameControls() {
+    if (this._gameControls) {
+      this._gameControls.textContent = "";
+      this._gameControls.classList.remove("show");
+    }
+  }
+
   // Show/hide the contextual "Press Space to sit / stand" prompt. Pass a falsy
   // value to hide it.
   setSitPrompt(text) {

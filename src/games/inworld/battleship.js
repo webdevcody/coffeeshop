@@ -214,6 +214,10 @@ export function createGame(ctx) {
 
   // optional DOM-HUD hook (never required — we always render an in-world HUD too)
   const hudHook = typeof ctx.onHud === "function" ? ctx.onHud : null;
+  // When present, the host app renders the placement controls (Rotate/Randomize/
+  // Clear/Ready) as a screen-space DOM bar instead of 3D pillars on the board — so
+  // they never overlap the ships/grid or interrupt placing.
+  const controlsHook = typeof ctx.onControls === "function" ? ctx.onControls : null;
 
   // ── Phase / turn state ──────────────────────────────────────────────────
   let phase = "placement"; // "placement" | "playing" | "over"
@@ -406,6 +410,7 @@ export function createGame(ctx) {
   // player reads the original's words. Anchored to the local −Z ocean: Fix-A
   // self-orientation renders them in front of whichever seat owns that ocean.
   function buildPlaceButtons() {
+    if (controlsHook) return; // DOM control bar instead of in-world pillars
     const defs = [
       { btn: "rotate", label: "Rotate", mat: M.pillarIdle },
       { btn: "random", label: "Randomize", mat: M.pillarIdle },
@@ -485,6 +490,19 @@ export function createGame(ctx) {
   // Visibility + Ready-disabled tint, matching the original's gated READY control.
   function refreshButtons() {
     const show = phase === "placement" && !!mySide && !ready[mySide];
+    // DOM control bar (host-app rendered): hand it the current buttons + state.
+    if (controlsHook) {
+      const defs = show
+        ? [
+            { id: "rotate", label: "Rotate" },
+            { id: "random", label: "Randomize" },
+            { id: "clear", label: "Clear" },
+            { id: "ready", label: "Ready ▸", primary: true, enabled: isComplete(myPlacements) },
+          ]
+        : [];
+      try { controlsHook(defs, handleControl); } catch { /* ignore */ }
+      return;
+    }
     for (const b of placeButtons) {
       b.mesh.visible = show;
       if (b.btn === "ready") {
@@ -1299,17 +1317,20 @@ export function createGame(ctx) {
   //   placement: click YOUR (near) ocean to place/rotate; click a labelled pillar.
   //   playing  : click ENEMY (far) waters to fire (your turn, un-fired cell).
   // ===========================================================================
+  // Run a placement control — from a 3D pillar click OR the DOM control bar.
+  function handleControl(btn) {
+    if (phase !== "placement" || !mySide || ready[mySide]) return;
+    if (btn === "rotate") { ghostOrient = ghostOrient === "horizontal" ? "vertical" : "horizontal"; refreshGhost(); refreshHud(); }
+    else if (btn === "random") doRandomize();
+    else if (btn === "clear") doClear();
+    else if (btn === "ready") { if (isComplete(myPlacements)) doReady(); else doAutoRemaining(); }
+  }
+
   function onPointer(hit) {
     if (!ctx.isLocalTurnAllowed()) return; // spectators + game-over: inert
 
     const btn = buttonFromHit(hit);
-    if (btn && phase === "placement" && mySide && !ready[mySide]) {
-      if (btn === "rotate") { ghostOrient = ghostOrient === "horizontal" ? "vertical" : "horizontal"; refreshGhost(); refreshHud(); }
-      else if (btn === "random") doRandomize();
-      else if (btn === "clear") doClear();
-      else if (btn === "ready") { if (isComplete(myPlacements)) doReady(); else doAutoRemaining(); }
-      return;
-    }
+    if (btn) { handleControl(btn); return; }
 
     const cell = hit && hit.cell;
     if (!cell || !Number.isInteger(cell.r) || !Number.isInteger(cell.c)) return;
@@ -1652,6 +1673,7 @@ export function createGame(ctx) {
   // dispose — stop the loop, free GPU resources, drop the group.
   // ===========================================================================
   function dispose() {
+    if (controlsHook) { try { controlsHook([], null); } catch { /* ignore */ } }
     if (rafId != null) { caf(rafId); rafId = null; }
     for (const b of blooms) { b.mesh.material?.dispose?.(); b.mesh.geometry?.dispose?.(); }
     shells.length = 0;

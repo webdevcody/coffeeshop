@@ -250,7 +250,10 @@ function mountInWorld(m, seatRy) {
     seatCount: m.seatCount,
     // Screen-space status banner for games that emit HUD text (e.g. battleship) —
     // always readable for both players, never clipped by 3D furniture.
-    ctxExtra: { onHud: (text) => hud.setGameBanner(text) },
+    ctxExtra: {
+      onHud: (text) => hud.setGameBanner(text),
+      onControls: (defs, onClick) => hud.setGameControls(defs, onClick),
+    },
   });
   // We now own this table's mount — shed any ambient passersby mirror on it.
   // Release by id synchronously: inWorld.mount() is async (awaits a module import
@@ -315,6 +318,7 @@ function onLocalStood() {
   if (arcade.open) arcade.hide();
   if (inWorld.open) inWorld.unmount();
   hud.clearGameBanner();
+  hud.clearGameControls();
   controls.setLocked(false);
   currentRole = null;
   network.leaveGame();
