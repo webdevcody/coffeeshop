@@ -25,6 +25,8 @@ const paveSide = new THREE.MeshStandardMaterial({ color: "#8e887d", roughness: 1
 const plazaMat = new THREE.MeshStandardMaterial({ color: "#c8a36b", roughness: 0.9 });
 const galleryWall = new THREE.MeshStandardMaterial({ color: "#efe7d8", roughness: 0.85 });
 const galleryWall2 = new THREE.MeshStandardMaterial({ color: "#e3d4c0", roughness: 0.85 });
+const cafeWall = new THREE.MeshStandardMaterial({ color: "#d9b894", roughness: 0.85 });        // warm terracotta cafe
+const studioWall = new THREE.MeshStandardMaterial({ color: "#c9cdd6", roughness: 0.85 });       // cool grey studio
 const roofMat = new THREE.MeshStandardMaterial({ color: "#3b3640", roughness: 0.8 });
 const plinthMat = new THREE.MeshStandardMaterial({ color: "#4a4750", roughness: 0.9 });
 const planterMat = new THREE.MeshStandardMaterial({ color: "#8a5a36", roughness: 0.9 });
@@ -71,6 +73,27 @@ const cMagenta = new THREE.MeshStandardMaterial({ color: "#d24a96", roughness: 0
 const cPurple = new THREE.MeshStandardMaterial({ color: "#7d54c9", roughness: 0.55, metalness: 0.15, flatShading: true });
 const cWhite = new THREE.MeshStandardMaterial({ color: "#f3efe6", roughness: 0.6, flatShading: true });
 
+// --- Gallery gift-shop interior materials (created ONCE, reused) ------------
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#efe4d2", roughness: 0.9, side: THREE.DoubleSide }); // warm gallery white; DoubleSide so walls read from inside
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#b59b78", roughness: 0.92 });                       // pale wood floor
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#cabfa9", roughness: 0.9, side: THREE.DoubleSide }); // ceiling underside visible
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6b4a2f", roughness: 0.6, flatShading: true });       // wood service counter
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#2e2a26", roughness: 0.4, metalness: 0.2 });       // dark stone top
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#8a6a45", roughness: 0.7, flatShading: true });         // shelving wood
+const caseGlassMat = new THREE.MeshStandardMaterial({ color: "#bfe6e2", roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#c0392b", roughness: 0.7, flatShading: true });     // red stool cushions
+const stoolLegMat = new THREE.MeshStandardMaterial({ color: "#2b2e33", roughness: 0.5, metalness: 0.6 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#3b5f8a", roughness: 0.95 });                             // blue rug
+const rugTrimMat = new THREE.MeshStandardMaterial({ color: "#d8c089", roughness: 0.95 });
+const bulbMat = new THREE.MeshStandardMaterial({                                                                  // glowing pendant bulb
+  color: "#fff3cf", roughness: 0.3,
+  emissive: new THREE.Color("#ffe9b0"), emissiveIntensity: 1.0,
+});
+const cordMat = new THREE.MeshStandardMaterial({ color: "#2a2622", roughness: 0.8 });
+// Small themed "products" on the shelves — reuse the bold sculpture palette as
+// colourful gift goods (mugs / prints / boxes), drawn as one InstancedMesh.
+const goodsMats = [cRed, cYellow, cBlue, cTeal, cMagenta, cPurple];
+
 // --- Shared geometries (created ONCE) --------------------------------------
 const torusGeo = new THREE.TorusGeometry(1.0, 0.34, 10, 20);
 const torusKnotGeo = new THREE.TorusKnotGeometry(0.8, 0.26, 64, 10, 2, 3);
@@ -91,6 +114,7 @@ const bollardGeo = new THREE.CylinderGeometry(0.16, 0.18, 0.9, 10);
 const binGeo = new THREE.CylinderGeometry(0.32, 0.28, 0.9, 12);
 const spotGeo = new THREE.CylinderGeometry(0.12, 0.18, 0.4, 8);
 const spotLensGeo = new THREE.CircleGeometry(0.13, 10);
+const goodGeo = new THREE.BoxGeometry(0.32, 0.4, 0.32);      // ONE shared "gift product" box (instanced)
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -143,7 +167,9 @@ function addWindowGrid(parent, cx, cy, cz, dir, faceW, cols, rows, y0, ystep) {
 
 // Ground-floor storefront on a wall face: display glass + door + awning + framing.
 // dir = outward normal. Visual only (sits flush on the existing footprint).
-function addStorefront(parent, cx, cz, dir, faceW, awning) {
+// doorOffset = tangent offset (m) of the entrance door from the face centre; pass
+// 0 to centre the door (e.g. under a centred entrance porch).
+function addStorefront(parent, cx, cz, dir, faceW, awning, doorOffset = null) {
   const rotY = Math.atan2(dir.x, dir.z);
   const tang = new THREE.Vector3(-dir.z, 0, dir.x);
   const off = (s) => ({ x: cx + dir.x * 0.07 + tang.x * s, z: cz + dir.z * 0.07 + tang.z * s });
@@ -174,10 +200,10 @@ function addStorefront(parent, cx, cz, dir, faceW, awning) {
     parent.add(mull);
   }
 
-  // glass entrance door (offset to one side)
+  // glass entrance door (centred if doorOffset===0, else offset to one side)
   const door = new THREE.Mesh(unitBox, doorMat);
   door.scale.set(1.3, 2.3, 0.14);
-  const dp = off(faceW * 0.32);
+  const dp = off(doorOffset ?? faceW * 0.32);
   door.position.set(dp.x + dir.x * 0.05, 1.15, dp.z + dir.z * 0.05);
   door.rotation.y = rotY;
   parent.add(door);
@@ -189,6 +215,85 @@ function addStorefront(parent, cx, cz, dir, faceW, awning) {
   aw.rotation.set(dir.z * 0.32, rotY, dir.x * 0.32);
   aw.castShadow = true;
   parent.add(aw);
+}
+
+// A full-volume corner building (real width x depth x height) with a cornice,
+// flat roof, rooftop clutter, a storefront on its primary face, a shop sign
+// mounted over the storefront (FRONT faces `dir`, never mirrored), and lit window
+// grids on the upper floor of the two side/back faces. Registers a footprint
+// collider sized to the wall (+ a small skin for the storefront depth).
+//
+//   dir  — outward unit normal of the PRIMARY (storefront) face, toward a lane.
+//   side — outward unit normal of a SECONDARY face that also fronts a lane; gets
+//          its own slim mural-free window band + an accent door. Pass null to skip.
+// Returns nothing; everything is added to `parent`, collider pushed to `colliders`.
+function addShopBuilding(parent, colliders, cfg) {
+  const { cx, cz, w, d, h, wall, trim, awning, dir, side = null, sign } = cfg;
+
+  // main solid mass — substantial on ALL three axes, reads solid from every angle
+  const body = box(w, h, d, wall);
+  body.position.set(cx, h / 2, cz);
+  parent.add(body);
+
+  // flat roof slab + cornice/parapet + rooftop clutter
+  const roof = box(w + 0.5, 0.5, d + 0.5, roofMat);
+  roof.position.set(cx, h + 0.25, cz);
+  parent.add(roof);
+  addCornice(parent, cx, cz, w, d, h, trim);
+  addRoofClutter(parent, cx, cz, h + 0.5, w, d);
+
+  // string-course band between the ground floor and upper floor (depth on facade)
+  const course = box(w + 0.3, 0.4, d + 0.3, trim);
+  course.position.set(cx, 3.3, cz);
+  parent.add(course);
+
+  // Primary storefront face (toward the avenue/plaza). faceW spans the wall edge
+  // perpendicular to `dir`: if dir is along Z the storefront width is `w`, else `d`.
+  const primW = Math.abs(dir.x) > 0.5 ? d : w;
+  const fcx = cx + dir.x * (Math.abs(dir.x) > 0.5 ? w / 2 : 0);
+  const fcz = cz + dir.z * (Math.abs(dir.z) > 0.5 ? d / 2 : 0);
+  addStorefront(parent, fcx, fcz, dir, primW, awning, 0);
+
+  // Shop SIGN mounted on the string-course over the storefront. artPanel("sign")
+  // is double-sided; we orient its FRONT outward along `dir` so text reads
+  // correctly from the street (rotY = atan2(dir.x,dir.z)) — never mirrored.
+  const rotY = Math.atan2(dir.x, dir.z);
+  const signPanel = artPanel(Math.min(primW * 0.7, 6.4), 1.5, "sign", {
+    text: sign.text, bg: sign.bg, fg: sign.fg || "#ffffff",
+    emissiveIntensity: 0.5, file: sign.file,
+  });
+  // Mounted on the facade ABOVE the awning (awning tops ~y3.1), below the cornice.
+  signPanel.position.set(fcx + dir.x * 0.18, 4.15, fcz + dir.z * 0.18);
+  signPanel.rotation.y = rotY;
+  parent.add(signPanel);
+
+  // Secondary lane face: a slim storefront so the building reads "active" on its
+  // other street frontage too (still one coherent mass, sits flush on the wall).
+  if (side) {
+    const secW = Math.abs(side.x) > 0.5 ? d : w;
+    const scx = cx + side.x * (Math.abs(side.x) > 0.5 ? w / 2 : 0);
+    const scz = cz + side.z * (Math.abs(side.z) > 0.5 ? d / 2 : 0);
+    addStorefront(parent, scx, scz, side, secW, awning, secW * 0.3);
+  }
+
+  // Lit instanced window grids on the upper floor of the remaining (back) faces,
+  // so the building has detail from behind too (NOT a one-sided facade).
+  const backDir = new THREE.Vector3(-dir.x, 0, -dir.z);
+  const backW = Math.abs(backDir.x) > 0.5 ? d : w;
+  const bcx = cx + backDir.x * (Math.abs(backDir.x) > 0.5 ? w / 2 : 0);
+  const bcz = cz + backDir.z * (Math.abs(backDir.z) > 0.5 ? d / 2 : 0);
+  addWindowGrid(parent, bcx, 0, bcz, backDir, backW * 0.78, 4, 2, 4.4, 2.2);
+  if (!side) {
+    // if there is no secondary storefront, also dress that side face with windows
+    const sd = new THREE.Vector3(-dir.z, 0, dir.x); // perpendicular to dir
+    const sdW = Math.abs(sd.x) > 0.5 ? d : w;
+    const sdcx = cx + sd.x * (Math.abs(sd.x) > 0.5 ? w / 2 : 0);
+    const sdcz = cz + sd.z * (Math.abs(sd.z) > 0.5 ? d / 2 : 0);
+    addWindowGrid(parent, sdcx, 0, sdcz, sd, sdW * 0.72, 3, 2, 4.4, 2.2);
+  }
+
+  // Footprint collider tight to the wall + a thin storefront skin.
+  addCollider(colliders, cx, cz, w + 0.4, d + 0.4);
 }
 
 // Cornice / parapet trim band wrapping the top of a rectangular footprint.
@@ -360,6 +465,176 @@ function makePlanterTree(x, z) {
   return g;
 }
 
+// ── Enterable gallery GIFT SHOP ─────────────────────────────────────────────
+// A small walk-in room: 4 walls (back + 2 sides + 2 short front segments that
+// flank a 2.2 m doorway gap), a floor, and a flat ceiling. The street-facing
+// (+Z) wall carries the doorway and an exterior shop SIGN. Inside: a service
+// counter, wall shelving stocked with colourful gift "products", a glass display
+// case, two stools, wall signage, two hanging pendant lights and a rug.
+//
+// Footprint: width `W` along X, depth `D` along Z, centred at (cx,cz). The
+// doorway opens on +Z toward the plaza. Wall colliders are pushed individually
+// for the back wall, both side walls and the two front segments — and NOTHING
+// across the doorway gap, so the player walks straight in.
+function buildGiftShop(parent, colliders, cx, cz, W, D) {
+  const t = 0.25;            // wall thickness
+  const h = 3.2;             // interior wall height
+  const door = 2.2;          // doorway gap width (in the +Z front wall)
+  const minX = cx - W / 2, maxX = cx + W / 2;
+  const minZ = cz - D / 2, maxZ = cz + D / 2;   // maxZ = street-facing (+Z) wall
+
+  // Floor (slightly inset wood slab) sitting just above the pavement.
+  const floor = box(W, 0.1, D, shopFloorMat, false);
+  floor.position.set(cx, 0.06, cz);
+  floor.receiveShadow = true;
+  parent.add(floor);
+
+  // Flat roof / ceiling slab.
+  const roof = box(W + 0.2, 0.2, D + 0.2, shopRoofMat);
+  roof.position.set(cx, h + 0.1, cz);
+  parent.add(roof);
+
+  // --- WALLS (each a box; colliders added individually) --------------------
+  // Back wall (-Z) — full width.
+  const backWall = box(W, h, t, shopWallMat);
+  backWall.position.set(cx, h / 2, minZ + t / 2);
+  parent.add(backWall);
+  addCollider(colliders, cx, minZ + t / 2, W, t);
+
+  // Side walls (-X and +X) — full depth.
+  for (const sx of [minX + t / 2, maxX - t / 2]) {
+    const sideWall = box(t, h, D, shopWallMat);
+    sideWall.position.set(sx, h / 2, cz);
+    parent.add(sideWall);
+    addCollider(colliders, sx, cz, t, D);
+  }
+
+  // Front (+Z, street-facing) wall: TWO short segments flanking the doorway gap.
+  // Segment runs from a side wall in toward the door opening (gap = `door`,
+  // centred on cx). NO collider spans the gap → the doorway is walkable.
+  const gapHalf = door / 2;
+  const segLen = (W - door) / 2;                 // length of each front segment
+  for (const dirSign of [-1, 1]) {
+    const segCx = dirSign < 0
+      ? (minX + (cx - gapHalf)) / 2              // centre of low-X segment
+      : ((cx + gapHalf) + maxX) / 2;             // centre of high-X segment
+    const seg = box(segLen, h, t, shopWallMat);
+    seg.position.set(segCx, h / 2, maxZ - t / 2);
+    parent.add(seg);
+    addCollider(colliders, segCx, maxZ - t / 2, segLen, t);
+    // a short lintel header above the doorway side of each segment (visual only)
+  }
+  // Door header lintel spanning the gap up high (visual; well above head height,
+  // no collider so entry stays clear).
+  const lintel = box(door + 0.2, 0.3, t, shopWallMat);
+  lintel.position.set(cx, h - 0.15, maxZ - t / 2);
+  parent.add(lintel);
+
+  // --- Exterior SHOP SIGN above the door, facing the street (+Z) -----------
+  // artPanel('sign') is double-sided; orient FRONT outward (+Z) so it reads
+  // un-mirrored from the plaza (rotY = atan2(dir.x,dir.z) = 0 for +Z).
+  const sign = artPanel(Math.min(W * 0.8, 4.4), 0.95, "sign", {
+    text: "GIFT GALLERY", bg: "#7d54c9", fg: "#fff3cf",
+    emissiveIntensity: 0.5, file: "arts-shop-gift.png",
+  });
+  sign.position.set(cx, h + 0.55, maxZ + 0.08);   // mounted on the outside facade
+  parent.add(sign);
+
+  // === INTERIOR CONTENT =====================================================
+  // Rug centred on the floor.
+  const rug = box(W * 0.6, 0.04, D * 0.55, rugMat, false);
+  rug.position.set(cx, 0.12, cz + 0.2);
+  rug.receiveShadow = true;
+  const rugTrim = box(W * 0.6 + 0.18, 0.03, D * 0.55 + 0.18, rugTrimMat, false);
+  rugTrim.position.set(cx, 0.11, cz + 0.2);
+  parent.add(rugTrim, rug);
+
+  // Service COUNTER along the back-left, with a dark stone top.
+  const counter = box(2.6, 1.0, 0.8, counterMat);
+  counter.position.set(minX + 1.8, 0.55, minZ + 0.9);
+  const counterTop = box(2.8, 0.1, 0.95, counterTopMat);
+  counterTop.position.set(minX + 1.8, 1.08, minZ + 0.9);
+  parent.add(counter, counterTop);
+  // A small register/box on the counter.
+  const register = box(0.5, 0.35, 0.4, counterTopMat);
+  register.position.set(minX + 1.2, 1.3, minZ + 0.9);
+  parent.add(register);
+
+  // SHELVES on the back wall (right of the counter): three stacked planks.
+  const shelfX = maxX - 1.6;
+  for (let s = 0; s < 3; s++) {
+    const plank = box(2.4, 0.08, 0.4, shelfMat);
+    plank.position.set(shelfX, 0.9 + s * 0.7, minZ + 0.35);
+    parent.add(plank);
+  }
+  // Colourful gift PRODUCTS on the shelves — one InstancedMesh (no per-frame alloc).
+  const perShelf = 5, shelfRows = 3;
+  const goods = new THREE.InstancedMesh(goodGeo, goodsMats[0], perShelf * shelfRows);
+  goods.castShadow = true;
+  // Per-instance colour: assign a colour attribute by reusing tinted instances.
+  // (InstancedMesh shares one material, so we vary colour via instanceColor.)
+  goods.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(perShelf * shelfRows * 3), 3);
+  let gi = 0;
+  const _c = new THREE.Color();
+  for (let s = 0; s < shelfRows; s++) {
+    for (let p = 0; p < perShelf; p++) {
+      const u = -1.0 + p * 0.5;
+      _dummy.position.set(shelfX + u, 1.18 + s * 0.7, minZ + 0.35);
+      _dummy.rotation.set(0, (p + s) * 0.4, 0);
+      _dummy.scale.set(1, 0.8 + ((p + s) % 3) * 0.18, 1);
+      _dummy.updateMatrix();
+      goods.setMatrixAt(gi, _dummy.matrix);
+      _c.copy(goodsMats[(p + s) % goodsMats.length].color);
+      goods.setColorAt(gi, _c);
+      gi++;
+    }
+  }
+  goods.instanceMatrix.needsUpdate = true;
+  if (goods.instanceColor) goods.instanceColor.needsUpdate = true;
+  parent.add(goods);
+
+  // Glass DISPLAY CASE near the front-right, with a couple of small prints inside.
+  const caseBase = box(1.4, 0.8, 0.8, counterMat);
+  caseBase.position.set(maxX - 1.3, 0.45, maxZ - 1.3);
+  const caseGlass = box(1.4, 0.7, 0.8, caseGlassMat, false);
+  caseGlass.position.set(maxX - 1.3, 1.2, maxZ - 1.3);
+  parent.add(caseBase, caseGlass);
+  for (const [ix, col] of [[-0.35, cMagenta], [0.35, cTeal]]) {
+    const item = box(0.3, 0.45, 0.06, col);
+    item.position.set(maxX - 1.3 + ix, 1.2, maxZ - 1.3);
+    parent.add(item);
+  }
+
+  // Two STOOLS near the counter for browsing customers.
+  for (const sx of [minX + 1.2, minX + 2.4]) {
+    const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.12, 12), stoolSeatMat);
+    seat.position.set(sx, 0.62, minZ + 1.9);
+    seat.castShadow = true;
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.5, 8), stoolLegMat);
+    leg.position.set(sx, 0.3, minZ + 1.9);
+    parent.add(seat, leg);
+  }
+
+  // Wall SIGNAGE (a framed poster) on the back wall above the counter, facing +Z.
+  const wallSign = artPanel(1.6, 1.0, "poster", {
+    top: "ART", bottom: "GIFTS", foot: "GALLERY SHOP", glyph: "❖",
+    accent: "#c0392b", bg: "#f1e8d4", emissiveIntensity: 0.35, file: "arts-giftshop-poster.png",
+  });
+  wallSign.position.set(minX + 1.8, 2.1, minZ + t + 0.04);
+  parent.add(wallSign);
+
+  // Two hanging PENDANT LIGHTS (cord + glowing bulb) from the ceiling.
+  for (const lx of [cx - 1.6, cx + 1.6]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), cordMat);
+    cord.position.set(lx, h - 0.4, cz + 0.2);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), bulbMat);
+    bulb.position.set(lx, h - 0.85, cz + 0.2);
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.25, 12, 1, true), counterTopMat);
+    shade.position.set(lx, h - 0.72, cz + 0.2);
+    parent.add(cord, bulb, shade);
+  }
+}
+
 export function buildArts() {
   const group = new THREE.Group();
   const colliders = [];
@@ -384,9 +659,11 @@ export function buildArts() {
 
   // --- Gallery buildings (with big exterior murals) ------------------------
   // Two galleries placed in opposite corners so the lanes stay open.
-  // Gallery A — back-left corner. Footprint ~16 x 12, faces +Z and +X lanes.
+  // Gallery A — back-left corner. Footprint 15 x 11, faces +Z and +X lanes.
+  // Pulled inward (gx,gz) so wall edges land at -22 on the tile-edge sides,
+  // clearing the seam road + sidewalk (everything stays within local +-23).
   {
-    const gx = -19, gz = -19, w = 16, d = 12, h = 9;
+    const gx = -14.5, gz = -16.5, w = 15, d = 11, h = 9;
     const b = box(w, h, d, galleryWall);
     b.position.set(gx, h / 2, gz);
     group.add(b);
@@ -440,17 +717,32 @@ export function buildArts() {
       group.add(fr, a);
     }
 
-    // Glass atrium entrance + storefront band on the +Z face.
-    addStorefront(group, gx, gz + d / 2, new THREE.Vector3(0, 0, 1), w, awningMat);
-    // taller glass atrium volume jutting from the entrance
-    const atrium = new THREE.Mesh(unitBox, glassMat);
-    atrium.scale.set(5.5, 4.6, 1.8);
-    atrium.position.set(gx, 2.3, gz + d / 2 + 0.9);
-    group.add(atrium);
-    const atriumFrame = new THREE.Mesh(unitBox, frameMat);
-    atriumFrame.scale.set(5.7, 0.2, 2.0);
-    atriumFrame.position.set(gx, 4.6, gz + d / 2 + 0.9);
-    group.add(atriumFrame);
+    // Glass storefront band on the +Z (plaza) face, with the door centred so the
+    // entrance porch lines up over it.
+    addStorefront(group, gx, gz + d / 2, new THREE.Vector3(0, 0, 1), w, awningMat, 0);
+    // Centred glass entrance porch projecting cleanly from the wall. Kept narrow
+    // (3.6 m) and short (top y≈2.8) so it sits BELOW the awning and does not bury
+    // the flanking display windows — one coherent vestibule, no overlap.
+    const porchW = 3.6, porchDepth = 1.0;
+    const porchFront = gz + d / 2 + porchDepth; // front plane of the porch
+    // two glass side walls of the porch (tucked under the cap at y≈2.5)
+    for (const sx of [-porchW / 2, porchW / 2]) {
+      const side = new THREE.Mesh(unitBox, glassMat);
+      side.scale.set(0.12, 2.4, porchDepth);
+      side.position.set(gx + sx, 1.25, gz + d / 2 + porchDepth / 2);
+      group.add(side);
+    }
+    // glass front of the porch (above the doorway)
+    const porchGlass = new THREE.Mesh(unitBox, glassMat);
+    porchGlass.scale.set(porchW, 1.1, 0.12);
+    porchGlass.position.set(gx, 1.95, porchFront);
+    group.add(porchGlass);
+    // solid framed lintel capping the porch (flat roof of the vestibule)
+    const porchCap = new THREE.Mesh(unitBox, frameMat);
+    porchCap.scale.set(porchW + 0.3, 0.22, porchDepth + 0.2);
+    porchCap.position.set(gx, 2.62, gz + d / 2 + porchDepth / 2);
+    porchCap.castShadow = true;
+    group.add(porchCap);
 
     // Lit instanced window grids on the upper floor of the back faces (-Z, -X)
     // which front no mural — keeps the plaza faces clean for the art.
@@ -462,9 +754,11 @@ export function buildArts() {
     group.add(makeSpotlight(gx + 4.5, 7.6, gz + d / 2 + 0.2, 0));
   }
 
-  // Gallery B — front-right corner. Footprint ~14 x 11, faces -Z and -X lanes.
+  // Gallery B — front-right corner. Footprint 14 x 11, faces -Z and -X lanes.
+  // Pulled inward so wall edges land at +22 on the tile-edge sides, clearing
+  // the seam road + sidewalk (footprint + collider stay within local +-23).
   {
-    const gx = 19, gz = 19, w = 14, d = 11, h = 8;
+    const gx = 15, gz = 16.5, w = 14, d = 11, h = 8;
     const b = box(w, h, d, galleryWall2);
     b.position.set(gx, h / 2, gz);
     group.add(b);
@@ -521,15 +815,53 @@ export function buildArts() {
     group.add(makeSpotlight(gx + 4, 6.8, gz - d / 2 - 0.2, Math.PI));
   }
 
+  // --- Cafe building — front-right corner (+x,-z), a FULL VOLUME (15x12x7.5) ---
+  // Storefront FRONT faces the plaza (+Z, along the E-W lane); a second active
+  // frontage faces the N-S lane (-X). Real depth + height, not a facade card.
+  // Pulled inward (cx 19.5->14.5, cz -19.5->-16) so the +X wall edge lands at
+  // +22 and the -Z wall edge at -22, clearing the seam road (within local +-23).
+  addShopBuilding(group, colliders, {
+    cx: 14.5, cz: -16, w: 15, d: 12, h: 7.5,
+    wall: cafeWall, trim: trimMat2, awning: awningMat2,
+    dir: new THREE.Vector3(0, 0, 1),    // primary face +Z -> E-W lane / plaza
+    side: new THREE.Vector3(-1, 0, 0),  // secondary face -X -> N-S lane / plaza
+    sign: { text: "CAFE CITY", bg: "#2b7a78", fg: "#f6efe0", file: "arts-shop-cafe.png" },
+  });
+
+  // --- Studio / print shop — back-left corner (-x,+z), FULL VOLUME (15x12x7.5) -
+  // Storefront FRONT faces the plaza (-Z); second frontage faces the N-S lane (+X).
+  // Pulled inward (cx -19.5->-14.5, cz 19.5->16) so the -X wall edge lands at -22
+  // and the +Z wall edge at +22, clearing the seam road (within local +-23).
+  addShopBuilding(group, colliders, {
+    cx: -14.5, cz: 16, w: 15, d: 12, h: 7.5,
+    wall: studioWall, trim: trimMat, awning: awningMat,
+    dir: new THREE.Vector3(0, 0, -1),   // primary face -Z -> E-W lane / plaza
+    side: new THREE.Vector3(1, 0, 0),   // secondary face +X -> N-S lane / plaza
+    sign: { text: "ART STUDIO", bg: "#c0392b", fg: "#f6efe0", file: "arts-shop-studio.png" },
+  });
+
+  // --- ENTERABLE gallery GIFT SHOP — walk-in interior ----------------------
+  // Tucked into the open band on the WEST side of the plaza, between Gallery A
+  // (south) and the central lanes, clear of both through-lanes and the plaza
+  // ring. Footprint 7.6 (X) x 6.0 (Z) at centre (-17.6,-7.6) → X[-21.4,-13.8],
+  // Z[-10.6,-4.6] (all within local +-23). The doorway opens on +Z toward the
+  // plaza; the player walks straight in. Wall colliders are added individually,
+  // none across the doorway gap.
+  buildGiftShop(group, colliders, -17.6, -7.6, 7.6, 6.0);
+
   // --- Banner flags on a row of slim poles flanking the plaza approach ------
   // Placed in the open corner quadrants, clear of BOTH through-lanes
   // (|x| and |z| both well over the ~4 m lane half-width). Tiny colliders.
   const flagSwayers = [];
+  // The flags line the plaza-facing frontage of the Cafe / Studio buildings,
+  // clear of BOTH footprints (the pulled-in colliders front at |z|≈9.8) AND the
+  // through-lanes (|x|,|z| > ~4.5). Set at |z|=8.5 so they sit in the open band
+  // between each building's plaza face and the central lanes.
   const flagSpots = [
-    { x: 24, z: -10, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
-    { x: 24, z: -14, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
-    { x: -24, z: 10, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
-    { x: -24, z: 14, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
+    { x: 10, z: -8.5, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
+    { x: 6, z: -8.5, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
+    { x: -10, z: 8.5, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
+    { x: -6, z: 8.5, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
   ];
   for (let i = 0; i < flagSpots.length; i++) {
     const f = flagSpots[i];
@@ -558,8 +890,8 @@ export function buildArts() {
     { x: 7, z: -7, kind: "cone", r: 1.0 },
     { x: -7, z: 7, kind: "stack", r: 1.4 },
     { x: 7, z: 7, kind: "sphere", r: 1.3 },
-    { x: -10.5, z: 0.0, kind: "blob", r: 1.1 },
-    { x: 10.5, z: 0.0, kind: "cone", r: 1.0 },
+    { x: -10, z: 6, kind: "blob", r: 1.1 },   // pulled off the E-W lane (z=0)
+    { x: 10, z: -6, kind: "cone", r: 1.0 },   // pulled off the E-W lane (z=0)
   ];
   for (const s of sculptSpots) {
     const m = makeSculpture(s.kind);
@@ -590,9 +922,10 @@ export function buildArts() {
   addCollider(colliders, 0, 0, 2.2, 2.2);
 
   // --- Welcome billboard + neon (glow) at a plaza edge ---------------------
-  // Billboard on a post near the back-right, off the lanes.
+  // Billboard on a post on the plaza rim (off the lanes AND clear of the corner
+  // buildings' frontages), facing in toward the plaza centre.
   const bbPost = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 4.2, 8), poleMat);
-  bbPost.position.set(13, 2.1, -13);
+  bbPost.position.set(13, 2.1, -7);
   bbPost.castShadow = true;
   group.add(bbPost);
   const billboard = artPanel(6, 3.2, "billboard", {
@@ -600,21 +933,21 @@ export function buildArts() {
     a: "#3a1f5d", b: "#0c1830", accent: "#f4c93b", glyph: "✺",
     emissiveIntensity: 0.5, file: "arts-billboard.png",
   });
-  billboard.position.set(13, 5.4, -13);
-  billboard.rotation.y = -Math.PI * 0.75;
+  billboard.position.set(13, 5.4, -7);
+  billboard.rotation.y = -Math.PI * 0.62; // front faces the plaza centre
   group.add(billboard);
 
-  // Flickering neon "GALLERY" sign near the front-left.
+  // Flickering neon "GALLERY" sign on the opposite plaza rim.
   const neonPost = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3.4, 8), poleMat);
-  neonPost.position.set(-13, 1.7, 13);
+  neonPost.position.set(-13, 1.7, 7);
   neonPost.castShadow = true;
   group.add(neonPost);
   const neon = artPanel(3.2, 3.2, "neon", {
     lines: ["OPEN", "GALLERY"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arts-neon.png",
   });
-  neon.position.set(-13, 4.4, 13);
-  neon.rotation.y = Math.PI * 0.25;
+  neon.position.set(-13, 4.4, 7);
+  neon.rotation.y = Math.PI * 0.38; // front faces the plaza centre
   group.add(neon);
 
   // Swaying banner near plaza entrance (animated, no collider — thin/high).
@@ -630,8 +963,11 @@ export function buildArts() {
   group.add(banner);
 
   // --- Planter trees softening the corners (decorative, small colliders) ---
+  // Placed to FLANK the lane mouths (not block them): pulled off both the N-S
+  // (x=0) and E-W (z=0) centrelines, and clear of every building footprint.
   const treeSpots = [
-    [-25, 0], [25, 0], [0, -25], [0, 25],
+    [5.5, 27], [-5.5, -27],   // flank the N-S lane mouths
+    [27, 5.5], [-27, -5.5],   // flank the E-W lane mouths
   ];
   for (const [tx, tz] of treeSpots) {
     const t = makePlanterTree(tx, tz);

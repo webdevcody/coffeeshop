@@ -30,22 +30,21 @@ const ROAD_FAR = ROAD_NEAR + 7; // road is 7 wide: z [22, 29]
 const ROAD_MID = (ROAD_NEAR + ROAD_FAR) / 2; // z 25.5
 const LANE_NEAR = ROAD_NEAR + 1.75; // cars heading +x
 const LANE_FAR = ROAD_FAR - 1.75; // cars heading -x
-const FAR_WALK_START = ROAD_FAR + 1; // far sidewalk: z [30, 35]
+// (Road geometry is no longer drawn by this module — the city street grid owns
+// it now — but LANE_NEAR/LANE_FAR still position the ambient cars driving past
+// the cafe front, so the road-band constants above are retained.)
 
 // --- Materials (created once) ----------------------------------------------
+// The original sidewalk/road/curb/paint slabs were removed in favour of the
+// city's unified pavement, so only the materials still used by the entrance
+// apron + retained props remain here.
 const sidewalk = new THREE.MeshStandardMaterial({ color: "#9b968c", roughness: 0.95 });
-const asphalt = new THREE.MeshStandardMaterial({ color: "#33333a", roughness: 0.98 });
-const slabSide = new THREE.MeshStandardMaterial({ color: "#6c6760", roughness: 1 });
 const curbMat = new THREE.MeshStandardMaterial({ color: "#c7c2b8", roughness: 0.9 });
-const paint = new THREE.MeshStandardMaterial({ color: "#e7d98c", roughness: 0.6 });
-const paintWhite = new THREE.MeshStandardMaterial({ color: "#e9e9e4", roughness: 0.6 });
 const poleMat = new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness: 0.5, metalness: 0.7 });
 const lampGlass = new THREE.MeshStandardMaterial({
   color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 0.9, roughness: 0.4,
 });
 const benchWood = new THREE.MeshStandardMaterial({ color: "#6b4326", roughness: 0.7 });
-const hydrantMat = new THREE.MeshStandardMaterial({ color: "#c23b39", roughness: 0.6 });
-const binMat = new THREE.MeshStandardMaterial({ color: "#3c5a45", roughness: 0.6, metalness: 0.3 });
 const trunkMat = new THREE.MeshStandardMaterial({ color: "#5a3d28", roughness: 0.9 });
 const foliage = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.9, flatShading: true });
 const planterMat = new THREE.MeshStandardMaterial({ color: "#7c5234", roughness: 0.85 });
@@ -95,33 +94,8 @@ function makeBench() {
   return g;
 }
 
-function makeHydrant() {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.55, 12), hydrantMat);
-  body.position.y = 0.32;
-  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), hydrantMat);
-  cap.position.y = 0.62;
-  const sideGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.18, 8);
-  const left = new THREE.Mesh(sideGeo, hydrantMat);
-  left.rotation.z = Math.PI / 2;
-  left.position.set(-0.2, 0.38, 0);
-  const right = left.clone();
-  right.position.x = 0.2;
-  body.castShadow = cap.castShadow = true;
-  g.add(body, cap, left, right);
-  return g;
-}
-
-function makeTrashCan() {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.8, 14), binMat);
-  body.position.y = 0.4;
-  body.castShadow = body.receiveShadow = true;
-  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.29, 0.08, 14), binMat);
-  lid.position.y = 0.84;
-  g.add(body, lid);
-  return g;
-}
+// (makeHydrant / makeTrashCan were removed — the city street grid now places its
+// own hydrants and bins along the avenues, so the originals only doubled up.)
 
 function makeTree(scale = 1) {
   const g = new THREE.Group();
@@ -203,98 +177,66 @@ export function buildOutside(scene) {
   scene.add(group);
   const colliders = [];
 
-  // --- The block slab (gives the edges visible thickness so it reads as a
-  // city block you can fall off of) -----------------------------------------
+  // --- The cafe entrance apron ---------------------------------------------
+  // RECONCILED WITH THE CITY: the new city now lays its OWN unified pavement
+  // (cityStreets base at y=-0.12) + asphalt road grid + painted lines + dense
+  // street furniture over this whole z[11,35] strip. The original block used to
+  // paint its own sidewalk/road/curb/centre-line/crosswalk slabs here, which
+  // z-fought the city pavement and doubled up the props. Those redundant ground
+  // surfaces are GONE — the city pavement is now the single ground from the door
+  // outward. All we keep here is a small raised sidewalk APRON right at the
+  // entrance so the doorway reads as a tidy kerb-side stoop, plus a few tasteful
+  // props that don't clash with the city's furniture.
   const w = BLOCK.maxX - BLOCK.minX;
-  const d = BLOCK.maxZ - BLOCK.minZ;
   const cx = (BLOCK.minX + BLOCK.maxX) / 2;
-  const cz = (BLOCK.minZ + BLOCK.maxZ) / 2;
-  const slab = box(w, 0.8, d, slabSide);
-  slab.position.set(cx, -0.4, cz); // top at y = 0, flush with the interior floor
-  slab.castShadow = false;
-  group.add(slab);
 
-  // Sidewalk surfaces (near + far) and the road, as thin top plates.
-  const nearWalk = new THREE.Mesh(new THREE.PlaneGeometry(w, NEAR_WALK_END - BLOCK.minZ), sidewalk);
-  nearWalk.rotation.x = -Math.PI / 2;
-  nearWalk.position.set(cx, 0.01, (BLOCK.minZ + NEAR_WALK_END) / 2);
-  nearWalk.receiveShadow = true;
-  group.add(nearWalk);
+  // Entrance apron: a shallow slab hugging the front wall (z [11, ~17]). Its top
+  // sits a clear 6 cm above the city pavement (city base y=-0.12, road y=0.02) so
+  // it never z-fights, giving the door a defined kerb you step down from. It is a
+  // solid box (not a thin plane) so the front edge reads with thickness.
+  const APRON_DEPTH = 6; // z [11, 17]
+  const apron = box(w, 0.22, APRON_DEPTH, sidewalk);
+  apron.position.set(cx, 0.05, FRONT + APRON_DEPTH / 2); // top at y = 0.16
+  apron.castShadow = false;
+  apron.receiveShadow = true;
+  group.add(apron);
+  // A thin kerb lip along the apron's far edge so it reads as a stepped stoop.
+  const kerb = box(w, 0.16, 0.3, curbMat);
+  kerb.position.set(cx, 0.06, FRONT + APRON_DEPTH);
+  kerb.castShadow = false;
+  group.add(kerb);
 
-  const farWalk = new THREE.Mesh(new THREE.PlaneGeometry(w, BLOCK.maxZ - FAR_WALK_START), sidewalk);
-  farWalk.rotation.x = -Math.PI / 2;
-  farWalk.position.set(cx, 0.01, (FAR_WALK_START + BLOCK.maxZ) / 2);
-  farWalk.receiveShadow = true;
-  group.add(farWalk);
-
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(w, ROAD_FAR - ROAD_NEAR + 2), asphalt);
-  road.rotation.x = -Math.PI / 2;
-  road.position.set(cx, 0.005, ROAD_MID);
-  road.receiveShadow = true;
-  group.add(road);
-
-  // Curbs along both sides of the road.
-  for (const z of [ROAD_NEAR - 0.5, ROAD_FAR + 0.5]) {
-    const curb = box(w, 0.16, 0.3, curbMat);
-    curb.position.set(cx, 0.08, z);
-    curb.castShadow = false;
-    group.add(curb);
-  }
-
-  // Dashed centre line.
-  for (let x = BLOCK.minX + 1; x < BLOCK.maxX; x += 3) {
-    const dash = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.18), paint);
-    dash.rotation.x = -Math.PI / 2;
-    dash.position.set(x + 0.7, 0.02, ROAD_MID);
-    group.add(dash);
-  }
-  // Crosswalk stripes lined up with the entrance.
-  for (let i = -3; i <= 3; i++) {
-    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.45, ROAD_FAR - ROAD_NEAR), paintWhite);
-    stripe.rotation.x = -Math.PI / 2;
-    stripe.position.set(i * 0.75, 0.02, ROAD_MID);
-    group.add(stripe);
-  }
-
-  // --- Static street props (with colliders) --------------------------------
-  // Kept clear of the entrance lane (x ≈ 0, z 11–14) so you can walk straight out.
+  // --- A few tasteful original props (kept clear of the entrance lane x≈0) ---
+  // The city already lines its avenues with lamps, trees, hydrants and bins, so
+  // we drop the original's far-side lamps/trees/hydrant/bin (they doubled up) and
+  // keep only a couple of entrance-framing pieces sitting on the apron.
   const lampSpots = [
-    [-12, FRONT + 2.5], [12, FRONT + 2.5], [-4, FRONT + 8.5], [8, FRONT + 8.5],
-    [-12, FAR_WALK_START + 3], [6, FAR_WALK_START + 3],
+    [-13, FRONT + 2.5], [13, FRONT + 2.5],
   ];
   for (const [x, z] of lampSpots) {
     const lamp = makeStreetLamp();
-    lamp.position.set(x, 0, z);
+    lamp.position.set(x, 0.16, z); // stand on the apron top
     group.add(lamp);
     addCollider(colliders, x, z, 0.4, 0.4);
   }
 
-  const benchSpots = [[-7, FRONT + 2.2, 0], [4, FRONT + 2.2, 0]];
+  const benchSpots = [[-7, FRONT + 2.2, 0], [5, FRONT + 2.2, 0]];
   for (const [x, z, ry] of benchSpots) {
     const bench = makeBench();
-    bench.position.set(x, 0, z);
+    bench.position.set(x, 0.16, z); // on the apron
     bench.rotation.y = ry;
     group.add(bench);
     addCollider(colliders, x, z, 1.9, 0.7);
   }
 
-  const trees = [[-16, FRONT + 4, 1.1], [16, FRONT + 6, 1.0], [-16, FAR_WALK_START + 2.5, 1.0], [15, FAR_WALK_START + 2.5, 1.1]];
+  // Two planter trees flanking the door, well clear of the walk-out lane.
+  const trees = [[-17, FRONT + 3, 1.1], [17, FRONT + 3, 1.1]];
   for (const [x, z, s] of trees) {
     const tree = makeTree(s);
     tree.position.set(x, 0, z);
     group.add(tree);
     addCollider(colliders, x, z, 0.9 * s, 0.9 * s);
   }
-
-  const hydrant = makeHydrant();
-  hydrant.position.set(10, 0, FRONT + 5.5);
-  group.add(hydrant);
-  addCollider(colliders, 10, FRONT + 5.5, 0.4, 0.4);
-
-  const bin = makeTrashCan();
-  bin.position.set(-9.5, 0, FRONT + 5.5);
-  group.add(bin);
-  addCollider(colliders, -9.5, FRONT + 5.5, 0.55, 0.55);
 
   // --- Ambient cars ----------------------------------------------------------
   const cars = [];
@@ -381,7 +323,11 @@ export function buildOutside(scene) {
     }
   }
 
-  // The whole top of the block is walkable; stepping off any edge drops you.
+  // Walkable ground in front of the entrance. The city's connector apron
+  // (city.js) already spans z[10,35] full-width over this same strip, so this
+  // rect is now mostly redundant — but it's retained so buildOutside remains
+  // self-contained (its ground covers the door area even if the city fails to
+  // build) and the union of walkable rects reads identically either way.
   const ground = [{ minX: BLOCK.minX, maxX: BLOCK.maxX, minZ: BLOCK.minZ, maxZ: BLOCK.maxZ }];
 
   return { group, colliders, ground, update };

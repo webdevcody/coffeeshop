@@ -70,6 +70,23 @@ const ropeMat = new THREE.MeshStandardMaterial({ color: "#5a0f24", emissive: "#a
 const brassMat = new THREE.MeshStandardMaterial({ color: "#caa24a", roughness: 0.35, metalness: 0.85, flatShading: true });
 const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#3a0f1f", emissive: "#ff2f8e", emissiveIntensity: 0.2, roughness: 0.6 });
 const terraceMat = new THREE.MeshStandardMaterial({ color: "#19161f", roughness: 0.85, flatShading: true });
+// --- ENTERABLE SHOP materials (record store / late-night bar) ---------------
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#241a2c", roughness: 0.9 });
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#1a1320", roughness: 0.95 });
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#15101c", roughness: 0.95 });
+const shopWoodMat = new THREE.MeshStandardMaterial({ color: "#3a2418", roughness: 0.7 });
+const shopCounterTopMat = new THREE.MeshStandardMaterial({ color: "#1d1a24", roughness: 0.45, metalness: 0.3 });
+const shopShelfMat = new THREE.MeshStandardMaterial({ color: "#2c2030", roughness: 0.85 });
+const shopRugMat = new THREE.MeshStandardMaterial({ color: "#3a0f24", roughness: 0.95 });
+const shopGlassMat = new THREE.MeshStandardMaterial({
+  color: "#1a2630", emissive: "#2fc6ff", emissiveIntensity: 0.4, roughness: 0.3, metalness: 0.2,
+  transparent: true, opacity: 0.55,
+});
+const shopBulbMat = new THREE.MeshStandardMaterial({
+  color: "#fff0d0", emissive: "#ffd98a", emissiveIntensity: 1.0, roughness: 0.4,
+});
+// Vinyl-record spine colours for shelf goods (instanced; per-instance colour).
+const recordMat = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.6 });
 // Lit window — shared emissive material reused by ALL instanced windows.
 const winLitMat = new THREE.MeshStandardMaterial({
   color: "#2a1c10", emissive: "#ffcf73", emissiveIntensity: 0.85, roughness: 0.5, flatShading: true,
@@ -98,6 +115,12 @@ const stoolSeatGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.12, 12);
 const ropePostGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.95, 10);
 const ropeKnobGeo = new THREE.SphereGeometry(0.1, 10, 8);
 const ropeSpanGeo = new THREE.CylinderGeometry(0.045, 0.045, 1, 6); // scaled per span
+// Shop interior shared geometries (reused / instanced — no per-prop mint)
+const recordGeo = new THREE.BoxGeometry(0.04, 0.5, 0.5); // a single vinyl spine (instanced)
+const shopStoolPoleGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.7, 8);
+const shopStoolSeatGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 12);
+const shopBulbGeo = new THREE.SphereGeometry(0.12, 10, 8);
+const shopCordGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 4); // scaled per drop
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -183,12 +206,25 @@ export function buildNightlife() {
   }
 
   // North side (Z negative, facing +Z lane) and South side (Z positive).
-  // Lane stays clear: buildings sit at |Z| >= ~9.
-  makeBuilding(-19, -15, 13, 7.5, 11, buildingDarkMat, trimMat, 1, winLitMat);    // NEON LOUNGE bar
-  makeBuilding(-2, -16, 14, 9.5, 12, buildingPlumMat, trimTealMat, 1, winTealMat); // THE CLUB (tall hero)
-  makeBuilding(17, -14.5, 12, 6.5, 10, buildingTealMat, trimMat, 1, winLitMat);   // OPEN 24/7 diner
-  makeBuilding(-15, 16, 14, 6.5, 11, buildingTealMat, trimTealMat, -1, winTealMat); // south bar
-  makeBuilding(13, 16.5, 16, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);      // south lounge
+  // Lane stays clear: buildings sit at |Z| >= ~9. Every building below is a
+  // FULL 3-D volume (w & d both >= 6 m) and the streetwall is kept continuous
+  // (footprints abut with no card-like gaps) so the block reads solid from the
+  // front, the sides AND the back. The pedestrian cross-lanes at X ≈ ±9 stay
+  // open at ground level (only overhead bulb strings span them).
+  // -- NORTH STREETWALL (front faces +Z) --
+  // Setback: every footprint kept within LOCAL X,Z ∈ [-23,23] to clear the seam
+  // road grid (roads on tile edges at ±30) + kerb + sidewalk. Corner blocks were
+  // pulled inward (and modestly narrowed) so nothing reaches the street.
+  makeBuilding(-16, -15.5, 14, 7.5, 12, buildingDarkMat, trimMat, 1, winLitMat);    // NEON LOUNGE bar  X[-23,-9]
+  makeBuilding(-2, -16, 14, 9.5, 12, buildingPlumMat, trimTealMat, 1, winTealMat);  // THE CLUB (tall hero) X[-9,5]
+  makeBuilding(8.5, -15.5, 7, 6.0, 9, buildingTealMat, trimTealMat, 1, winTealMat); // CLUB box-office kiosk X[5,12]
+  makeBuilding(16.5, -15, 12, 6.5, 11, buildingTealMat, trimMat, 1, winLitMat);     // OPEN 24/7 diner  X[10.5,22.5]
+  // -- SOUTH STREETWALL (front faces -Z) --
+  makeBuilding(-17.5, 16, 11, 7.0, 11, buildingPlumMat, trimMat, -1, winLitMat);    // south corner bar X[-23,-12]
+  makeBuilding(-7, 16, 11, 6.5, 11, buildingTealMat, trimTealMat, -1, winTealMat);  // south bar (terrace) X[-12.5,-1.5]
+  makeBuilding(3, 16.5, 10, 7.5, 11, buildingDarkMat, trimTealMat, -1, winTealMat); // south music hall X[-2,8]
+  makeBuilding(13, 16.5, 13, 8, 12, buildingPlumMat, trimMat, -1, winLitMat);       // south lounge X[6.5,19.5]
+  makeBuilding(18.5, 16, 9, 6.5, 11, buildingTealMat, trimMat, -1, winLitMat);      // south corner diner X[14,23]
 
   // ── LIT WINDOW BAYS — one InstancedMesh per material, shared geometry ──
   // Build window-bay grids on each lane-facing façade above the storefront.
@@ -255,7 +291,7 @@ export function buildNightlife() {
   addNeonPanel(6, 4, {
     lines: ["NEON", "LOUNGE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.95, file: "neon-lounge.png",
-  }, -19, 5.6, -9.3, 0);
+  }, -16, 5.6, -9.3, 0); // follows NEON LOUNGE bar (cx -16)
 
   // "CLUB" — huge sign on the hero club, facing +Z
   addNeonPanel(7, 5, {
@@ -267,18 +303,18 @@ export function buildNightlife() {
   addNeonPanel(5, 4, {
     lines: ["OPEN", "24/7"], color: "#4fffa0", color2: "#ffe24f",
     emissiveIntensity: 0.95, file: "neon-open247.png",
-  }, 17, 4.9, -9.2, 0);
+  }, 16.5, 4.9, -9.2, 0); // follows OPEN 24/7 diner (cx 16.5)
 
   // South-side signs face -Z (toward the lane from the other side)
   addNeonPanel(6, 4, {
     lines: ["NEON", "BAR"], color: "#ff7a2f", color2: "#4fd2ff",
     emissiveIntensity: 0.95, file: "neon-bar.png",
-  }, -15, 4.7, 10.2, Math.PI);
+  }, -17.5, 4.7, 10.2, Math.PI); // follows south corner bar (cx -17.5)
 
   addNeonPanel(6.5, 4.5, {
     lines: ["LATE", "LOUNGE"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.95, file: "neon-late.png",
-  }, 13, 5.8, 10.2, Math.PI);
+  }, 13, 5.8, 10.2, Math.PI); // follows south lounge (cx 13)
 
   // A vertical blade sign on a pole at a corner (rotated, faces the lane)
   const blade = addNeonPanel(2.4, 6, {
@@ -438,14 +474,14 @@ export function buildNightlife() {
   addRopeSwag(postTops[2], postTops[3]);
 
   // ── BAR TERRACE with stools (small raised deck + stools by the south bar) ──
-  // South bar is cx=-15, cz=16, front face at z=10.5 (faces -Z). Terrace sits
+  // South bar is cx=-7, cz=16, front face at z=10.5 (faces -Z). Terrace sits
   // just in front, well outside the lane.
   const terrace = box(6.0, 0.18, 3.0, terraceMat, false);
-  terrace.position.set(-15, 0.12, 9.0);
+  terrace.position.set(-7, 0.12, 9.0);
   terrace.receiveShadow = true;
   group.add(terrace);
   // low terrace rail (decorative, thin)
-  for (const [rw, rd, rx, rz] of [[6.0, 0.1, -15, 7.55], [0.1, 3.0, -12.05, 9.0], [0.1, 3.0, -17.95, 9.0]]) {
+  for (const [rw, rd, rx, rz] of [[6.0, 0.1, -7, 7.55], [0.1, 3.0, -4.05, 9.0], [0.1, 3.0, -9.95, 9.0]]) {
     const rail = box(rw, 0.5, rd, terraceMat, false);
     rail.position.set(rx, 0.45, rz);
     group.add(rail);
@@ -459,7 +495,7 @@ export function buildNightlife() {
     seat.castShadow = true;
     group.add(pole, seat);
   }
-  for (const sx of [-16.8, -15, -13.2]) makeStool(sx, 9.6);
+  for (const sx of [-8.8, -7, -5.2]) makeStool(sx, 9.6);
 
   // ── ROOFTOP CLUTTER — AC ducts, vent stacks, a water tank, antennas ──
   // Reuses shared geometries; small visual-only props sitting on each roof.
@@ -487,21 +523,22 @@ export function buildNightlife() {
     ant.position.set(cx + w * 0.34, h + 1.6, cz + d * 0.3);
     group.add(ant);
   }
-  addRoofClutter(-19, -15, 13, 11, 7.5);
-  addRoofClutter(17, -14.5, 12, 10, 6.5);
-  addRoofClutter(-15, 16, 14, 11, 6.5);
-  addRoofClutter(13, 16.5, 16, 12, 8);
+  addRoofClutter(-16, -15.5, 14, 12, 7.5);  // NEON LOUNGE roof
+  addRoofClutter(16.5, -15, 12, 11, 6.5);    // diner roof
+  addRoofClutter(-17.5, 16, 11, 11, 7.0);    // south corner bar roof
+  addRoofClutter(-7, 16, 11, 11, 6.5);       // south bar roof
+  addRoofClutter(13, 16.5, 13, 12, 8);       // south lounge roof
 
   // ── EXTRA NEON + GIG POSTERS (more signage density) ──
   // A second blade sign on the south side + extra wall neons.
   addNeonPanel(2.2, 5, {
     lines: ["B", "A", "R"], color: "#4fffa0", color2: "#ffe24f",
     emissiveIntensity: 1.0, file: "neon-blade2.png",
-  }, -22.5, 4.6, 9.6, Math.PI);
+  }, -21, 4.6, 9.6, Math.PI); // corner of south corner bar (kept within setback)
   addNeonPanel(4.5, 2.2, {
     lines: ["COCKTAILS"], color: "#ff7a2f", color2: "#4fd2ff",
     emissiveIntensity: 0.95, file: "neon-cocktails.png",
-  }, 17, 5.3, -9.0, 0);
+  }, 16.5, 5.3, -9.0, 0); // follows OPEN 24/7 diner (cx 16.5)
   // extra gig posters by the canopy / south lounge
   addPoster({ top: "LIVE TONIGHT", bottom: "VELVET", foot: "DOORS 10PM", glyph: "♫", accent: "#b14fff", bg: "#160a22", file: "poster-velvet.png" }, -5.4, 2.6, -8.85, 0);
   addPoster({ top: "THIS FRIDAY", bottom: "PULSE", foot: "18+", glyph: "◆", accent: "#2fe6ff", bg: "#0f1626", file: "poster-pulse.png" }, 18.5, 2.6, 9.4, Math.PI);
@@ -581,6 +618,202 @@ export function buildNightlife() {
   }
   makePalm(-9.5, -8);
   makePalm(9.5, -8);
+
+  // ── ENTERABLE SHOP: "VINYL & TONIC" record store / late-night bar ──────────
+  // A real walk-in room tucked into the open south-east quadrant, footprint
+  // X∈[9,17], Z∈[3,9] (8 m wide × 6 m deep). Back wall abuts the south lounge
+  // front; the DOORWAY faces the lane (−Z). Four walls (0.25 m thick, 2.8 m
+  // tall) get individual AABB colliders EXCEPT across the 2.2 m doorway gap, so
+  // the player walks straight in. Inside: a bar/record counter, record-bin
+  // shelves with vinyl, a glowing display case, stools, signage, hanging
+  // pendant lights and a rug. The shop sits clear of all buildings/props and
+  // leaves the central drive-lane (Z<3) open.
+  {
+    const SX0 = 9, SX1 = 17;   // X extents
+    const SZ0 = 3, SZ1 = 9;    // Z extents (SZ0 = street-facing front)
+    const wh = 2.8;            // wall height
+    const wt = 0.25;           // wall thickness
+    const cz = (SZ0 + SZ1) / 2; // 6 (depth centre)
+    const cx = (SX0 + SX1) / 2; // 13 (width centre)
+    const sw = SX1 - SX0;       // 8 (interior+wall span in X)
+    const sd = SZ1 - SZ0;       // 6 (span in Z)
+    const doorW = 2.2;          // doorway gap width
+    const shop = new THREE.Group();
+
+    // FLOOR (thin slab, just proud of the pavement so it reads as a room floor)
+    const floor = box(sw, 0.08, sd, shopFloorMat, false);
+    floor.position.set(cx, 0.04, cz);
+    floor.receiveShadow = true;
+    shop.add(floor);
+
+    // FLAT ROOF / ceiling
+    const roof = box(sw + 0.1, 0.2, sd + 0.1, shopRoofMat, false);
+    roof.position.set(cx, wh + 0.1, cz);
+    shop.add(roof);
+
+    // --- WALLS + their individual colliders -----------------------------
+    // Helper: a wall box centred at (wx,wz) of given footprint, plus a matching
+    // AABB collider. The doorway segment is added WITHOUT a collider.
+    function addWall(wx, wz, w, d, collide) {
+      const m = box(w, wh, d, shopWallMat, true);
+      m.position.set(wx, wh / 2, wz);
+      m.receiveShadow = true;
+      shop.add(m);
+      if (collide) addCollider(colliders, wx, wz, w, d);
+    }
+    // BACK wall (z = SZ1), full width, with collider
+    addWall(cx, SZ1 - wt / 2, sw, wt, true);
+    // LEFT side wall (x = SX0), full depth, with collider
+    addWall(SX0 + wt / 2, cz, wt, sd, true);
+    // RIGHT side wall (x = SX1), full depth, with collider
+    addWall(SX1 - wt / 2, cz, wt, sd, true);
+    // FRONT wall (z = SZ0) — split into two short segments flanking the door.
+    const frontZ = SZ0 + wt / 2;
+    const segW = (sw - doorW) / 2;              // each front segment width (2.9)
+    const segLcx = SX0 + segW / 2;              // left segment centre x
+    const segRcx = SX1 - segW / 2;              // right segment centre x
+    addWall(segLcx, frontZ, segW, wt, true);    // left front segment + collider
+    addWall(segRcx, frontZ, segW, wt, true);    // right front segment + collider
+    // NB: doorway gap x∈[cx-doorW/2, cx+doorW/2] has NO wall and NO collider.
+
+    // Door lintel (header over the doorway, above head height — no collider)
+    const lintel = box(doorW + 0.1, 0.45, wt, shopWoodMat, false);
+    lintel.position.set(cx, wh - 0.225, frontZ);
+    shop.add(lintel);
+
+    // --- RUG (warm floor accent, centred in the room) -------------------
+    const rug = box(3.6, 0.03, 2.6, shopRugMat, false);
+    rug.position.set(cx - 0.6, 0.09, cz + 0.2);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // --- SERVICE / RECORD COUNTER (an L of cabinetry along the back-right) --
+    // Long run parallel to the back wall + a short return toward the front.
+    const counterTopY = 1.02;
+    function addCounter(wx, wz, w, d) {
+      const base = box(w, 1.0, d, shopWoodMat, true);
+      base.position.set(wx, 0.5, wz);
+      base.castShadow = true; base.receiveShadow = true;
+      const top = box(w + 0.08, 0.08, d + 0.08, shopCounterTopMat, false);
+      top.position.set(wx, counterTopY, wz);
+      shop.add(base, top);
+    }
+    addCounter(cx + 1.4, SZ1 - 1.1, 3.6, 0.8);   // main run along back
+    addCounter(SX1 - 1.1, cz + 1.1, 0.8, 2.2);   // short return down the right
+
+    // --- SHELVES with little products (record bins) along the left wall ---
+    // Three stacked shelf boards on uprights; vinyl spines instanced on top.
+    const shelfX = SX0 + 0.55;
+    const recordXforms = [];
+    const recordColors = ["#ff4fa3", "#4fd2ff", "#ffe24f", "#b14fff", "#4fffa0", "#ff7a2f", "#f2f2f2", "#ff3030"];
+    const recordColorList = [];
+    const tmpM = new THREE.Matrix4();
+    for (let s = 0; s < 3; s++) {
+      const sy = 0.7 + s * 0.7;
+      const board = box(0.5, 0.06, 4.4, shopShelfMat, true);
+      board.position.set(shelfX, sy, cz);
+      board.castShadow = true; board.receiveShadow = true;
+      shop.add(board);
+      // a back panel behind the shelf (against the wall)
+      // vinyl records standing on the board (instanced spines)
+      for (let i = 0; i < 18; i++) {
+        const rz = cz - 2.0 + i * 0.235;
+        // tiny lean so the row looks browsed-through
+        const lean = (Math.sin(i * 1.7) * 0.06);
+        tmpM.makeRotationZ(lean);
+        tmpM.setPosition(shelfX + 0.05, sy + 0.31, rz);
+        recordXforms.push(tmpM.clone());
+        recordColorList.push(recordColors[(i + s) % recordColors.length]);
+      }
+    }
+    // shelf uprights (two ends)
+    for (const ez of [cz - 2.2, cz + 2.2]) {
+      const up = box(0.5, 2.1, 0.08, shopShelfMat, true);
+      up.position.set(shelfX, 1.05, ez);
+      shop.add(up);
+    }
+    // commit the vinyl as ONE InstancedMesh (per-instance colour)
+    const recInst = new THREE.InstancedMesh(recordGeo, recordMat, recordXforms.length);
+    const _rc = new THREE.Color();
+    for (let i = 0; i < recordXforms.length; i++) {
+      recInst.setMatrixAt(i, recordXforms[i]);
+      recInst.setColorAt(i, _rc.set(recordColorList[i]));
+    }
+    recInst.instanceMatrix.needsUpdate = true;
+    if (recInst.instanceColor) recInst.instanceColor.needsUpdate = true;
+    recInst.castShadow = false; recInst.receiveShadow = false;
+    shop.add(recInst);
+
+    // --- DISPLAY CASE (glowing glass cabinet — featured records / bottles) --
+    const caseBase = box(1.8, 0.9, 0.7, shopWoodMat, true);
+    caseBase.position.set(cx - 1.6, 0.45, SZ1 - 0.7);
+    caseBase.castShadow = true; caseBase.receiveShadow = true;
+    const caseGlass = box(1.7, 0.7, 0.6, shopGlassMat, false);
+    caseGlass.position.set(cx - 1.6, 1.25, SZ1 - 0.7);
+    shop.add(caseBase, caseGlass);
+
+    // --- STOOLS at the counter (a couple of bar seats) ------------------
+    function addShopStool(x, z) {
+      const pole = new THREE.Mesh(shopStoolPoleGeo, metalMat);
+      pole.position.set(x, 0.35, z);
+      pole.castShadow = true;
+      const seat = new THREE.Mesh(shopStoolSeatGeo, stoolSeatMat);
+      seat.position.set(x, 0.72, z);
+      seat.castShadow = true;
+      shop.add(pole, seat);
+    }
+    addShopStool(cx + 0.4, SZ1 - 2.2);
+    addShopStool(cx + 1.5, SZ1 - 2.2);
+    addShopStool(cx + 2.6, SZ1 - 2.2);
+
+    // --- HANGING PENDANT LIGHTS (two glowing bulbs on cords from the roof) --
+    const shopBulbs = [];
+    for (const [bx, bz] of [[cx - 0.6, cz - 0.4], [cx + 1.4, cz + 1.0]]) {
+      const cord = new THREE.Mesh(shopCordGeo, frameMat);
+      cord.scale.y = 0.9;
+      cord.position.set(bx, wh - 0.45, bz);
+      const bulb = new THREE.Mesh(shopBulbGeo, shopBulbMat);
+      bulb.position.set(bx, wh - 0.95, bz);
+      shop.add(cord, bulb);
+      shopBulbs.push(bulb);
+    }
+
+    // --- WALL SIGNAGE (interior) — a neon strip behind the counter --------
+    const innerSign = artPanel(2.8, 0.7, "neon", {
+      lines: ["NOW SPINNING"], color: "#4fd2ff", color2: "#ff4fa3",
+      emissiveIntensity: 0.9, file: "neon-nowspinning.png",
+    });
+    innerSign.position.set(cx + 1.4, 1.9, SZ1 - 0.18);
+    innerSign.rotation.y = Math.PI; // faces into the room (toward −Z / the door)
+    shop.add(innerSign);
+    neonMats.push({ mat: innerSign.material, base: 0.9, phase: 2.2, speed: 3.0 });
+    // a small interior price/menu sign on the left wall
+    const wallMenu = artPanel(1.6, 1.0, "sign", {
+      text: "VINYL BAR", bg: "#2a0f1f", fg: "#ffd27a", file: "sign-vinylbar-inner.png",
+    });
+    wallMenu.position.set(SX0 + 0.16, 2.0, cz + 1.6);
+    wallMenu.rotation.y = Math.PI / 2; // faces +X into the room from the left wall
+    shop.add(wallMenu);
+
+    // --- OUTSIDE SHOP SIGN above the door, facing the street (−Z) ----------
+    // artPanel faces +Z by default; rotate π so the text reads correctly toward
+    // the lane (matches the district's other south-facing signs).
+    const shopSign = artPanel(4.4, 1.1, "sign", {
+      text: "VINYL & TONIC", bg: "#2a0f1f", fg: "#ffd27a", file: "sign-vinyl-tonic.png",
+    });
+    shopSign.position.set(cx, wh + 0.55, SZ0 - 0.06);
+    shopSign.rotation.y = Math.PI;
+    shopSign.material.emissiveIntensity = 0.7;
+    shop.add(shopSign);
+    // a little signboard frame behind it
+    const signFrame = box(4.7, 1.35, 0.1, frameMat, false);
+    signFrame.position.set(cx, wh + 0.55, SZ0 - 0.12);
+    shop.add(signFrame);
+
+    group.add(shop);
+    // register the two pendant bulbs so they twinkle with the rest
+    for (const b of shopBulbs) bulbStrings.push(b);
+  }
 
   // ── UPDATE: flicker neon, cycle hues, spin marquee, pulse dance floor ──
   let t = 0;

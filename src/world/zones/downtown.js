@@ -1,8 +1,11 @@
 // DOWNTOWN TOWERS — one 60×60 m district tile for the expanded city.
 //
-// A dense corporate block: 5 tall glass skyscrapers (up to ~40 m) with emissive
-// window-grid facades, two huge wall billboards mounted high on building sides,
-// and wide avenues between tight footprints so a car can drive straight through.
+// A dense corporate block: 4 tall glass skyscrapers (up to ~40 m) ringing a
+// central plaza, plus 4 secondary mid-rise blocks at the outer quadrant corners
+// — every building a SOLID 3D volume (min 7×7 m footprint, no flat facades) —
+// with emissive window-grid facades, two huge wall billboards mounted high on
+// building sides, and wide (11 m) avenues kept fully clear so a car can drive
+// straight through the cross from any edge.
 //
 // buildDowntown() returns { group, colliders, ground, update }:
 //   group     — THREE.Group of all meshes, LOCAL coords centered on origin.
@@ -66,6 +69,31 @@ const bollardMat = new THREE.MeshStandardMaterial({ color: "#2a2c34", roughness:
 const benchMat = new THREE.MeshStandardMaterial({ color: "#5b4632", roughness: 0.85, flatShading: true });
 // Lit canopy underside / accent strip — warm emissive, animated by update().
 const accentLitMat = new THREE.MeshStandardMaterial({ color: "#ffdfa0", emissive: "#ffcf6f", emissiveIntensity: 0.8, roughness: 0.5 });
+
+// --- Enterable coffee/tech kiosk shop materials (created ONCE, reused) -------
+// Warm exterior render for the little kiosk's walls (reads cozy vs the glass towers).
+const shopWallMat = new THREE.MeshStandardMaterial({ color: "#3a2f28", roughness: 0.92 });
+// Lighter interior plaster so the inside reads bright once you walk in.
+const shopInnerMat = new THREE.MeshStandardMaterial({ color: "#cdbfa8", roughness: 0.88 });
+// Warm timber floor.
+const shopFloorMat = new THREE.MeshStandardMaterial({ color: "#5b4127", roughness: 0.85 });
+// Flat dark-tech roof/ceiling slab.
+const shopRoofMat = new THREE.MeshStandardMaterial({ color: "#23252e", roughness: 0.8, metalness: 0.2 });
+// Espresso-bar counter (warm wood front, steel top reuses metalMat).
+const counterMat = new THREE.MeshStandardMaterial({ color: "#6e4a2a", roughness: 0.7 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#9aa0aa", roughness: 0.35, metalness: 0.7 });
+// Shelving + product/goods accents.
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#7a5a38", roughness: 0.75 });
+const productMatA = new THREE.MeshStandardMaterial({ color: "#c0552f", roughness: 0.6 });   // roast bags / mugs
+const productMatB = new THREE.MeshStandardMaterial({ color: "#2f7d6b", roughness: 0.6 });   // tins
+const productMatC = new THREE.MeshStandardMaterial({ color: "#d9b46a", roughness: 0.55 });  // boxed gear / cups
+// Display case glass (reuse the bright lobby glass look) handled via lobbyGlassMat.
+// Stools.
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#1f2329", roughness: 0.6, metalness: 0.3 });
+// Cozy rug.
+const rugMat = new THREE.MeshStandardMaterial({ color: "#7a2f3a", roughness: 0.95 });
+// Warm hanging interior light bulbs — emissive, gently pulsed by update().
+const shopLightMat = new THREE.MeshStandardMaterial({ color: "#fff2c8", emissive: "#ffd27a", emissiveIntensity: 0.9, roughness: 0.4 });
 
 // Window-grid facade: an emissive CanvasTexture of lit windows, reused for all
 // tower faces (we tile it per-face via texture.repeat clones below).
@@ -249,54 +277,72 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
   const topY = tierY; // flat usable rooftop of the stack (above tiers)
 
   // --- Ground-floor glass lobby + canopy + revolving-door front -------------
-  // Glass lobby band wraps the base; faces the same side the podium opens to.
-  const front = opts.frontZ ?? 1; // +1 → lobby opens toward +Z, -1 → -Z
-  // Concrete plinth/sill the lobby glazing sits on (reads as a real base).
+  // The whole entrance assembly is built once along the LOCAL +Z face, then the
+  // sub-group is rotated so its detailed storefront faces the real street: a
+  // tower beside the N-S avenue wants its front on ±X (use opts.frontX), one
+  // beside the E-W avenue wants ±Z (use opts.frontZ). Exactly one is chosen.
+  // This guarantees the lobby/canopy/door never point at an interior/back face.
+  const entranceG = new THREE.Group();
+  // entranceYaw maps the assembly's local +Z to the requested world direction.
+  // +Z→0, -Z→π, +X→π/2, -X→-π/2.   fz/fd = facade width / building depth seen
+  // by the entrance (so an X-facing front uses w as its outward depth, d as width).
+  let entranceYaw = 0;
+  let fw = w, fd = d; // facade width, building depth in the entrance's local frame
+  if (opts.frontX !== undefined) {
+    entranceYaw = opts.frontX >= 0 ? Math.PI / 2 : -Math.PI / 2;
+    fw = d; fd = w; // facing along X: the visible facade spans the depth (d)
+  } else {
+    const fz = opts.frontZ ?? 1; // +1 → toward +Z, -1 → toward -Z
+    entranceYaw = fz >= 0 ? 0 : Math.PI;
+  }
+  // Concrete plinth/sill the lobby glazing sits on (shared base, not rotated).
   const plinth = box(w + 0.3, 0.6, d + 0.3, concreteMat);
   plinth.position.y = 0.3;
   g.add(plinth);
   // Lobby glazing on the front face (bright, slightly transparent).
-  const lobbyGlass = box(w * 0.92, lobbyH, 0.12, lobbyGlassMat, false);
-  lobbyGlass.position.set(0, lobbyH / 2, front * (d / 2 + 0.08));
-  g.add(lobbyGlass);
+  const lobbyGlass = box(fw * 0.92, lobbyH, 0.12, lobbyGlassMat, false);
+  lobbyGlass.position.set(0, lobbyH / 2, fd / 2 + 0.08);
+  entranceG.add(lobbyGlass);
   // Dark interior backing behind the glass.
-  const lobbyBack = box(w * 0.9, lobbyH - 0.3, 0.1, lobbyBackMat, false);
-  lobbyBack.position.set(0, lobbyH / 2, front * (d / 2 - 0.2));
-  g.add(lobbyBack);
+  const lobbyBack = box(fw * 0.9, lobbyH - 0.3, 0.1, lobbyBackMat, false);
+  lobbyBack.position.set(0, lobbyH / 2, fd / 2 - 0.2);
+  entranceG.add(lobbyBack);
   // Side returns so the lobby reads as wrapping the corner a little.
   for (const sx of [-1, 1]) {
-    const sideGlass = box(0.12, lobbyH, d * 0.5, lobbyGlassMat, false);
-    sideGlass.position.set(sx * (w / 2 + 0.06), lobbyH / 2, front * d * 0.2);
-    g.add(sideGlass);
+    const sideGlass = box(0.12, lobbyH, fw * 0.5, lobbyGlassMat, false);
+    sideGlass.position.set(sx * (fw / 2 + 0.06), lobbyH / 2, fd * 0.2);
+    entranceG.add(sideGlass);
   }
   // Stone entrance canopy projecting over the door.
-  const canopy = box(w * 0.5, 0.45, 2.4, trimMat);
-  canopy.position.set(0, lobbyH - 0.4, front * (d / 2 + 1.1));
-  g.add(canopy);
+  const canopy = box(fw * 0.5, 0.45, 2.4, trimMat);
+  canopy.position.set(0, lobbyH - 0.4, fd / 2 + 1.1);
+  entranceG.add(canopy);
   // Lit canopy underside strip.
-  const canopyLit = box(w * 0.46, 0.1, 2.0, accentLitMat, false);
-  canopyLit.position.set(0, lobbyH - 0.66, front * (d / 2 + 1.1));
-  g.add(canopyLit);
+  const canopyLit = box(fw * 0.46, 0.1, 2.0, accentLitMat, false);
+  canopyLit.position.set(0, lobbyH - 0.66, fd / 2 + 1.1);
+  entranceG.add(canopyLit);
   // Two canopy support posts.
   for (const sx of [-1, 1]) {
     const post = cyl(0.12, 2.2, doorMat);
-    post.position.set(sx * w * 0.22, 1.1, front * (d / 2 + 2.1));
-    g.add(post);
+    post.position.set(sx * fw * 0.22, 1.1, fd / 2 + 2.1);
+    entranceG.add(post);
   }
   // Brass revolving-door drum at the entrance.
   const drum = cyl(1.05, 2.6, lobbyGlassMat, false);
-  drum.position.set(0, 1.3, front * (d / 2 + 0.6));
-  g.add(drum);
+  drum.position.set(0, 1.3, fd / 2 + 0.6);
+  entranceG.add(drum);
   const drumFrame = cyl(1.12, 0.18, doorMat, false);
-  drumFrame.position.set(0, 2.55, front * (d / 2 + 0.6));
-  g.add(drumFrame);
+  drumFrame.position.set(0, 2.55, fd / 2 + 0.6);
+  entranceG.add(drumFrame);
   // Door wings (cross of 4 panels) inside the drum.
   for (let k = 0; k < 4; k++) {
     const wing = box(1.9, 2.4, 0.06, doorMat, false);
-    wing.position.set(0, 1.3, front * (d / 2 + 0.6));
+    wing.position.set(0, 1.3, fd / 2 + 0.6);
     wing.rotation.y = k * (Math.PI / 2);
-    g.add(wing);
+    entranceG.add(wing);
   }
+  entranceG.rotation.y = entranceYaw;
+  g.add(entranceG);
 
   // --- Rooftop clutter on the flat stack top --------------------------------
   // Parapet rail around the topmost tier.
@@ -373,6 +419,173 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
   return g;
 }
 
+// --- Enterable coffee/tech kiosk -------------------------------------------
+// Builds a small walk-in shop centered on the LOCAL origin: a room W (X) wide ×
+// D (Z) deep with 4 walls (~0.25 m thick), a timber FLOOR and a flat tech ROOF,
+// and a 2.2 m DOORWAY GAP in the +Z (street-facing) wall. The street wall is
+// therefore split into TWO short segments flanking the door, and the doorway
+// itself gets NO wall and NO collider so the interior is walkable through it.
+//
+// Returns { group, colliders, lights } where:
+//   group    — THREE.Group of all shop meshes, shop-local coords (caller offsets).
+//   colliders— 5 wall AABBs in SHOP-LOCAL space (back + 2 sides + 2 front
+//              segments); the caller translates them by the shop's world center.
+//   lights   — emissive bulb materials for update() to pulse (warm flicker).
+function makeCoffeeShop(W, D, signText, signFile) {
+  const g = new THREE.Group();
+  const wallT = 0.25;          // wall thickness
+  const wallH = 3.2;           // interior wall height
+  const door = 2.2;            // doorway gap width (in the +Z street wall)
+  const localColliders = [];   // wall AABBs in shop-local space
+
+  // FLOOR — timber slab filling the footprint, top flush at y=0.
+  const floor = box(W, 0.2, D, shopFloorMat, false);
+  floor.position.y = -0.1;
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  // ROOF / flat ceiling slab capping the room.
+  const roof = box(W + wallT, 0.3, D + wallT, shopRoofMat);
+  roof.position.y = wallH + 0.15;
+  g.add(roof);
+
+  // Helper: a wall segment box + its matching AABB collider (shop-local).
+  // Outer face uses the warm exterior mat; a thin inner liner reads bright.
+  const addWall = (cx, cz, w, d) => {
+    const wm = box(w, wallH, d, shopWallMat);
+    wm.position.set(cx, wallH / 2, cz);
+    g.add(wm);
+    localColliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
+  };
+
+  // BACK wall (-Z), full width.
+  addWall(0, -D / 2 + wallT / 2, W, wallT);
+  // SIDE walls (±X), spanning the inner depth between the front/back faces.
+  const sideD = D - wallT;
+  addWall(-W / 2 + wallT / 2, 0, wallT, sideD);
+  addWall(W / 2 - wallT / 2, 0, wallT, sideD);
+  // FRONT wall (+Z, street-facing) split into TWO segments flanking the doorway.
+  // Doorway is centered at x=0; each segment runs from the side wall to the gap.
+  const frontZ = D / 2 - wallT / 2;
+  const segW = (W - door) / 2;                 // width of each front segment
+  const segCx = door / 2 + segW / 2;           // |x| center of each segment
+  addWall(-segCx, frontZ, segW, wallT);
+  addWall(segCx, frontZ, segW, wallT);
+  // NOTE: NO wall and NO collider span the doorway gap (x ∈ [-1.1, 1.1]) — the
+  // player walks straight in through the +Z opening.
+
+  // Bright inner liners on the back + side walls (reads as a finished interior,
+  // not the dark exterior, once inside). Thin planes, no collider, no shadow.
+  const linerBack = box(W - 2 * wallT, wallH - 0.2, 0.04, shopInnerMat, false);
+  linerBack.position.set(0, wallH / 2, -D / 2 + wallT + 0.03);
+  g.add(linerBack);
+  for (const sx of [-1, 1]) {
+    const liner = box(0.04, wallH - 0.2, sideD - 0.1, shopInnerMat, false);
+    liner.position.set(sx * (W / 2 - wallT - 0.03), wallH / 2, 0);
+    g.add(liner);
+  }
+
+  // COZY RUG on the floor (just inside the door).
+  const rug = new THREE.Mesh(planeGeo, rugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.scale.set(W * 0.42, D * 0.34, 1);
+  rug.position.set(0, 0.012, D * 0.06);
+  rug.receiveShadow = true;
+  g.add(rug);
+
+  // SERVICE COUNTER — an L of espresso bar along the back-left, steel top.
+  const cBody = box(W * 0.5, 1.1, 0.85, counterMat);
+  cBody.position.set(-W * 0.16, 0.55, -D / 2 + wallT + 0.6);
+  g.add(cBody);
+  const cTop = box(W * 0.5 + 0.12, 0.1, 0.97, counterTopMat);
+  cTop.position.set(-W * 0.16, 1.12, -D / 2 + wallT + 0.6);
+  g.add(cTop);
+  // Espresso machine + a couple of canisters on the bar (steel + warm caps).
+  const espresso = box(0.7, 0.55, 0.5, counterTopMat);
+  espresso.position.set(-W * 0.28, 1.45, -D / 2 + wallT + 0.6);
+  g.add(espresso);
+  for (const dx of [-0.05, 0.18]) {
+    const can = cyl(0.1, 0.32, productMatA);
+    can.position.set(-W * 0.16 + dx, 1.33, -D / 2 + wallT + 0.55);
+    g.add(can);
+  }
+
+  // SHELVES along the back-right with little instanced products/goods.
+  const shelfX = W * 0.22;
+  const shelfZ = -D / 2 + wallT + 0.18;
+  for (const sy of [0.9, 1.55, 2.2]) {
+    const shelf = box(W * 0.4, 0.06, 0.32, shelfMat, false);
+    shelf.position.set(shelfX, sy, shelfZ);
+    g.add(shelf);
+  }
+  // Instanced little boxes/bags/tins on the shelves (one InstancedMesh, reused
+  // boxGeo) — coffee roast bags, tins and boxed tech/cups for the kiosk vibe.
+  const prodMats = [productMatA, productMatB, productMatC];
+  for (let pm = 0; pm < 3; pm++) {
+    const im = new THREE.InstancedMesh(boxGeo, prodMats[pm], 6);
+    im.castShadow = false; im.receiveShadow = false;
+    let i = 0;
+    for (const sy of [0.9, 1.55, 2.2]) {
+      for (let k = 0; k < 2; k++) {
+        const px = shelfX - W * 0.16 + (pm * 2 + k) * (W * 0.4 / 6);
+        _q.identity();
+        _v.set(px, sy + 0.18, shelfZ);
+        _s.set(0.18, 0.3, 0.18);
+        _mtx.compose(_v, _q, _s);
+        im.setMatrixAt(i++, _mtx);
+      }
+    }
+    im.instanceMatrix.needsUpdate = true;
+    g.add(im);
+  }
+
+  // DISPLAY CASE (glass pastry/gear cabinet) at the front-right, by the window.
+  const caseBody = box(1.8, 0.95, 0.7, counterMat);
+  caseBody.position.set(W * 0.28, 0.48, D * 0.18);
+  g.add(caseBody);
+  const caseGlass = box(1.8, 0.6, 0.72, lobbyGlassMat, false);
+  caseGlass.position.set(W * 0.28, 1.25, D * 0.18);
+  g.add(caseGlass);
+  for (const dx of [-0.5, 0, 0.5]) {
+    const goodie = box(0.3, 0.18, 0.3, productMatC, false);
+    goodie.position.set(W * 0.28 + dx, 1.05, D * 0.18);
+    g.add(goodie);
+  }
+
+  // A COUPLE OF STOOLS at the bar (cylinder seat + leg).
+  for (const sx of [-W * 0.04, W * 0.1]) {
+    const seat = cyl(0.24, 0.1, stoolSeatMat);
+    seat.position.set(sx, 0.78, -D / 2 + wallT + 1.5);
+    g.add(seat);
+    const leg = cyl(0.05, 0.74, metalMat, false);
+    leg.position.set(sx, 0.4, -D / 2 + wallT + 1.5);
+    g.add(leg);
+  }
+
+  // WALL SIGNAGE inside — a little menu board on the back wall above the bar.
+  const menu = artPanel(2.2, 1.1, "sign", {
+    text: "MENU", bg: "#1c2430", fg: "#ffd27a",
+    emissive: "#caa64f", emissiveIntensity: 0.7, file: "sign-shop-menu.png",
+  });
+  menu.position.set(-W * 0.16, 2.2, -D / 2 + wallT + 0.06);
+  g.add(menu);
+
+  // HANGING INTERIOR LIGHTS — two warm bulbs on short cords from the ceiling.
+  const bulbMats = [];
+  for (const lx of [-W * 0.18, W * 0.18]) {
+    const cord = box(0.03, 0.5, 0.03, antennaMat, false);
+    cord.position.set(lx, wallH - 0.25, D * 0.02);
+    g.add(cord);
+    const bm = shopLightMat.clone();
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), bm);
+    bulb.position.set(lx, wallH - 0.55, D * 0.02);
+    g.add(bulb);
+    bulbMats.push(bm);
+  }
+
+  return { group: g, colliders: localColliders, lights: bulbMats };
+}
+
 export function buildDowntown() {
   const group = new THREE.Group();
   const colliders = [];
@@ -405,10 +618,12 @@ export function buildDowntown() {
   aveEW.position.set(0, 0.031, 0);
   aveEW.receiveShadow = true;
   group.add(aveEW);
-  // Dashed centre lines down both avenues (shared geometries, reused).
+  // Dashed centre lines down both avenues (shared geometries, reused). Kept
+  // within ±21 (dash half-length 1.1 → reaches ±22.1) so even the lane paint
+  // stays inside the ±23 setback and never bleeds onto a tile-seam road.
   const dashNSGeo = new THREE.PlaneGeometry(0.4, 2.2);
   const dashEWGeo = new THREE.PlaneGeometry(2.2, 0.4);
-  for (let s = -24; s <= 24; s += 9) {
+  for (let s = -21; s <= 21; s += 7) {
     const dN = new THREE.Mesh(dashNSGeo, laneMat);
     dN.rotation.x = -Math.PI / 2;
     dN.position.set(0, 0.05, s);
@@ -419,24 +634,54 @@ export function buildDowntown() {
     group.add(dE);
   }
 
-  // --- Skyscrapers — tight footprints in the 4 quadrants, off the avenues. --
-  // [cx, cz, w, d, height, glassMat, antenna, helipad]
+  // --- Buildings — full 3D volumes, one per quadrant, all off the avenues. ---
+  // Every building below is a SOLID box shaft (real width AND depth AND height),
+  // never a flat facade: the smallest footprint here is 7×7 m, the towers 10×10 m.
+  //
+  // ROAD-GRID SETBACK: a 12 m road runs on every tile seam (avenues at world
+  // X=-60,0,60 and cross-streets at world Z=35,95,155,215), so the outer ~6 m of
+  // each tile edge plus a kerb+sidewalk is street, NOT plot. EVERY footprint here
+  // (and its collider) is therefore kept inside LOCAL X,Z ∈ [-23, 23] — a ~7 m
+  // setback from each of the 4 tile edges — so no building sits in the road.
+  // The composition was re-centred toward the plaza to honour that. The corner
+  // pocket between an avenue and a tile edge is small, so each quadrant holds a
+  // tall flagship near the plaza plus a mid-rise block in the outer corner, and
+  // both had to be sized to nest within the setback without overlapping:
+  //   • the four flagship towers were pulled in from ±15.5 to ±10.5 and trimmed
+  //     to 9×9 (still 30–40 m tall — very substantial volumes), so each footprint
+  //     reaches only ±15 (collider ±15.2) and the inner face clears the avenue
+  //     band (inner face at ±6, lanes at |coord|<5.5).
+  //   • the four secondary blocks — which used to STRADDLE the tile edge at ±26
+  //     (footprint reaching ±29.5, deep in the street) — were pulled into the
+  //     outer corners at ±19.2 (footprint ±22.7, collider ±22.9), just inside the
+  //     ±23 setback and clear of the flagship colliders (~0.3 m gap).
+  //
+  // [cx, cz, w, d, height, glassMat, antenna, helipad, frontZ]
+  // frontZ chooses which Z face carries the lobby/canopy/door so the detailed
+  // FRONT always faces the central avenue cross (the street), never a back lot.
   const towers = [
-    [-17, -17, 11, 11, 40, glassA, true, true],   // NW flagship (tallest, beacon + helipad)
-    [16, -18, 10, 10, 33, glassB, false, false],  // NE
-    [-18, 17, 10, 12, 30, glassC, true, false],   // SW (beacon)
-    [17, 16, 12, 10, 36, glassA, false, true],    // SE (helipad)
-    [-19, 0, 8, 7, 24, glassB, false, false],     // W mid-block infill (set back off EW ave)
+    // Four flagship corner towers (tall glass, ringing the plaza), at ±10.5 / 9×9
+    // → footprint ±15, collider ±15.2, inside the ±23 setback and off the avenues.
+    [-10.5, -10.5, 9, 9, 40, glassA, true,  true,   1], // NW flagship (beacon + helipad)
+    [ 10.5, -10.5, 9, 9, 33, glassB, false, false,  1], // NE
+    [-10.5,  10.5, 9, 9, 30, glassC, true,  false, -1], // SW (beacon)
+    [ 10.5,  10.5, 9, 9, 36, glassA, false, true,  -1], // SE (helipad)
+    // Four secondary mid-rise blocks at the OUTER corner of each quadrant. Full
+    // volumes (7×7 footprint) so they read solid from every side, pulled in to
+    // ±19.2 → footprint reaches ±22.7, collider ±22.9, just inside the ±23
+    // setback and clear of the corner towers + both avenues.
+    [-19.2, -19.2, 7, 7, 20, glassB, false, false,  1], // NW outer block
+    [ 19.2, -19.2, 7, 7, 18, glassC, false, false,  1], // NE outer block
+    [-19.2,  19.2, 7, 7, 22, glassA, false, false, -1], // SW outer block
+    [ 19.2,  19.2, 7, 7, 19, glassB, false, false, -1], // SE outer block
   ];
   const litList = []; // lobby/canopy accent mats animated by update (shared mat)
   litList.push(accentLitMat, lobbyGlassMat); // pulse the shared lit accents once
-  // NOTE: W infill sits at x=-19; its +X face is x=-15, leaving the EW avenue
-  // (z∈[-5.5,5.5]) and NS avenue clear. Footprint padded slightly in collider.
-  // Lobby/canopy projects toward tile centre (away from edges), never into a
-  // lane: towers sit at |cx|,|cz| ≈ 16-19 so a ~2.6m canopy stays clear of the
-  // central cross (|x|,|z| < 5.5).
-  for (const [cx, cz, w, d, h, gm, ant, heli] of towers) {
-    const frontZ = cz < 0 ? 1 : -1; // entrance faces toward the avenue cross
+  // The lobby/canopy is a thin overhead element ~3.8 m up that projects off the
+  // chosen front face toward the tile centre; with the towers set in to ±10.5 it
+  // overhangs the outer edge of the wide (11 m) central avenue but leaves the
+  // drivable centre lane (|x|,|z| ≲ 2) fully clear, and never touches a seam road.
+  for (const [cx, cz, w, d, h, gm, ant, heli, frontZ] of towers) {
     const t = makeTower(w, h, d, gm, flickerList, ant, litList, { frontZ, helipad: heli });
     t.position.set(cx, 0, cz);
     group.add(t);
@@ -444,50 +689,54 @@ export function buildDowntown() {
   }
 
   // --- Two HUGE wall billboards mounted high on tower sides. ----------------
+  // Each billboard's lit FRONT faces an avenue; it is offset just proud of the
+  // host face so it never sinks into (or floats off) the building.
   // Billboard 1: "SKYLINE TOWERS" on the SE tower's -X face, facing the NS ave.
-  const bb1 = artPanel(12, 7, "billboard", {
+  // SE tower is cx10.5,cz10.5,w9 → -X face at x=10.5-4.5=6.0.
+  const bb1 = artPanel(8, 6.5, "billboard", {
     title: "SKYLINE TOWERS", sub: "LIVE ABOVE THE CITY",
     a: "#16335f", b: "#0a1428", accent: "#ffcf3f", glyph: "▲",
     emissiveIntensity: 0.5, file: "billboard-skyline.png",
   });
-  bb1.position.set(11.5, 24, 16);     // hugs SE tower (cx17,cz16,w12) -X face
-  bb1.rotation.y = -Math.PI / 2;       // normal faces -X toward the avenue
+  bb1.position.set(5.9, 24, 10.5);     // just proud of the SE tower -X face
+  bb1.rotation.y = -Math.PI / 2;        // normal faces -X toward the NS avenue
   group.add(bb1);
 
   // Billboard 2: "FIZZ POP COLA" on the NW flagship's +Z face, facing EW ave.
-  const bb2 = artPanel(13, 7.5, "billboard", {
+  // NW tower is cx-10.5,cz-10.5,d9 → +Z face at z=-10.5+4.5=-6.0.
+  const bb2 = artPanel(8, 7, "billboard", {
     title: "FIZZ POP COLA", sub: "ICE-COLD & FIZZY",
     a: "#6b1130", b: "#1a0410", accent: "#ff5fa0", glyph: "✦",
     emissiveIntensity: 0.5, file: "billboard-cola.png",
   });
-  bb2.position.set(-17, 27, -11.4);    // hugs NW tower (cx-17,cz-17,d11) +Z face
-  group.add(bb2);                       // PlaneGeometry default normal +Z
+  bb2.position.set(-10.5, 27, -5.9);   // just proud of the NW tower +Z face
+  group.add(bb2);                       // PlaneGeometry default normal +Z (toward EW ave)
 
   // --- A rooftop rotating beacon sign (neon) on the SE tower. ---------------
   const rooftopSign = artPanel(4.5, 4.5, "neon", {
     lines: ["DT", "TOWER"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "neon-dt.png",
   });
-  // mount it on a small post above the SE tower (height 36 + crown).
-  rooftopSign.position.set(17, 40.5, 16);
+  // mount it above the SE tower roof (height 36 + crown stack).
+  rooftopSign.position.set(10.5, 41, 10.5);
   group.add(rooftopSign);
   spinners.push(rooftopSign);
 
   // --- A couple of lit CROWN SIGNS near tower tops (vertical wall signs) -----
-  // "NOVA" up the NE tower's -X face (cx16,cz-18,w10 → -X at x=11), high up.
+  // "NOVA" up the NE tower's -X face (cx10.5,cz-10.5,w9 → -X at x=6), high up.
   const crownSign1 = artPanel(3.2, 8, "sign", {
     text: "NOVA", bg: "#0b2c4a", fg: "#7fe0ff",
     emissive: "#1c6fb0", emissiveIntensity: 0.9, file: "sign-nova.png",
   });
-  crownSign1.position.set(11.05, 28, -18);
+  crownSign1.position.set(5.9, 24, -10.5);
   crownSign1.rotation.y = -Math.PI / 2; // normal faces -X toward NS avenue
   group.add(crownSign1);
-  // "VERTEX" up the SW tower's +X face (cx-18,cz17,w10 → +X at x=-13), high up.
+  // "VERTEX" up the SW tower's +X face (cx-10.5,cz10.5,w9 → +X at x=-6), high up.
   const crownSign2 = artPanel(3.0, 7, "sign", {
     text: "VERTEX", bg: "#3a0b2c", fg: "#ff9fe0",
     emissive: "#b01c7f", emissiveIntensity: 0.9, file: "sign-vertex.png",
   });
-  crownSign2.position.set(-12.95, 23, 17);
+  crownSign2.position.set(-5.9, 23, 10.5);
   crownSign2.rotation.y = Math.PI / 2; // normal faces +X toward NS avenue
   group.add(crownSign2);
 
@@ -540,6 +789,38 @@ export function buildDowntown() {
     group.add(curb);
   }
 
+  // --- ENTERABLE COFFEE / TECH KIOSK ----------------------------------------
+  // A small walk-in shop tucked into the open pocket of the NE quadrant, between
+  // the flagship tower (collider Zmin -15.2) and the outer block (collider Xmin
+  // 15.5), along the north inner edge. Footprint X[7,15] Z[-22.25,-15.75] — all
+  // inside the ±23 setback, no overlap with buildings/lanes/props. The DOORWAY
+  // faces +Z (south), toward the plaza/avenue cross — the street side.
+  const SHOP_W = 8, SHOP_D = 6.5;
+  const shopX = 11, shopZ = -19; // world center of the shop within this tile
+  const shop = makeCoffeeShop(SHOP_W, SHOP_D, "BYTE BREW", "sign-bytebrew.png");
+  shop.group.position.set(shopX, 0, shopZ);
+  group.add(shop.group);
+  // Translate the shop's LOCAL wall AABBs into tile-local space and add them as
+  // real colliders. The doorway gap carries NO collider, so the player can walk
+  // in through the +Z opening.
+  for (const c of shop.colliders) {
+    colliders.push({
+      minX: c.minX + shopX, maxX: c.maxX + shopX,
+      minZ: c.minZ + shopZ, maxZ: c.maxZ + shopZ,
+    });
+  }
+  // OUTSIDE shop SIGN above the door, facing the street (+Z). artPanel faces +Z
+  // by default and signCanvas draws text left-to-right, so it reads un-mirrored
+  // on the street-facing normal — no rotation that would flip it.
+  const shopSign = artPanel(3.0, 1.0, "sign", {
+    text: "BYTE BREW", bg: "#241a12", fg: "#ffd27a",
+    emissive: "#caa64f", emissiveIntensity: 0.85, file: "sign-bytebrew.png",
+  });
+  shopSign.position.set(shopX, 3.55, shopZ + SHOP_D / 2 + 0.08);
+  group.add(shopSign);
+  // Hook the shop's hanging bulbs into the ambient animation (warm flicker).
+  const shopLights = shop.lights;
+
   // --- Ambient animation ----------------------------------------------------
   let t = 0;
   function update(dt) {
@@ -555,6 +836,10 @@ export function buildDowntown() {
     for (let i = 0; i < litList.length; i++) litList[i].emissiveIntensity = lit;
     // Slowly rotate the rooftop neon beacon sign.
     for (const s of spinners) s.rotation.y += dt * 0.6;
+    // Warm flicker on the kiosk's hanging interior bulbs (each on its own phase).
+    for (let i = 0; i < shopLights.length; i++) {
+      shopLights[i].emissiveIntensity = 0.85 + 0.15 * Math.sin(t * 3.1 + i * 2.4);
+    }
   }
 
   // Whole tile is walkable; towers block via colliders.

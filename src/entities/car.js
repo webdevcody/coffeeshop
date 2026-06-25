@@ -42,187 +42,252 @@ function shade(hex, amt) {
 
 // Build the car group. Forward is +Z local (heading 0 faces +Z, matching the
 // player's facing convention: forward = (sin(h), 0, cos(h))). Footprint ~1.9 x 3.9.
+//
+// Construction notes (read before tweaking numbers):
+//  - The body is a stack of slabs (sill -> body -> shoulder) that each TUCK IN
+//    above the one below: every slab's bottom face sits a hair INSIDE the slab
+//    below it (never coincident), so there are no flickering shared faces and the
+//    silhouette steps inward as it rises. Half-widths shrink monotonically.
+//  - Detail pieces (stripes, seams, glass, lights) are pushed a small epsilon
+//    PROUD of the surface they decorate so nothing z-fights with the panel.
+//  - Footprint envelope: width 1.9 (±0.95), length 3.9 (±1.95). Nothing sticks
+//    out past that except the mirrors, which are meant to.
 function buildCarGroup(color) {
   const g = new THREE.Group();
 
   const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.28, metalness: 0.6 });
-  const accentColor = shade(color, -0.22); // darker two-tone band
-  const accent = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.32, metalness: 0.55 });
-  const trim = new THREE.MeshStandardMaterial({ color: "#101014", roughness: 0.5, metalness: 0.4 });
+  const accentColor = shade(color, -0.24); // darker two-tone (lower body + bumpers)
+  const accent = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.34, metalness: 0.5 });
+  const trim = new THREE.MeshStandardMaterial({ color: "#101014", roughness: 0.55, metalness: 0.35 });
   const chrome = new THREE.MeshStandardMaterial({ color: "#d7dadf", roughness: 0.2, metalness: 0.9 });
+  const EP = 0.012; // proud-of-surface epsilon to kill z-fighting on appliqué detail
 
-  // --- Body: stacked tapered slabs to fake a curved, sleek silhouette ---
-  // Lower rocker / chassis sill.
-  const sill = box(1.82, 0.3, 3.86, accentColor, { rough: 0.55, metal: 0.4 });
-  sill.position.y = 0.4;
+  // --- Body: three stacked slabs, each tucked inside the one below ---
+  // Half-widths step inward (0.95 -> 0.87 -> 0.79) and the vertical spans abut
+  // with a small overlap so faces never coincide.
+  //
+  // Lower rocker / chassis sill (darker two-tone, full footprint width).
+  // span y: 0.26 .. 0.56
+  const sill = box(1.9, 0.3, 3.86, accentColor, { rough: 0.5, metal: 0.45 });
+  sill.position.y = 0.41;
   g.add(sill);
 
-  // Main body (full beam).
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.46, 3.9), paint);
+  // Main body beam — overlaps into the sill from above. span y: 0.50 .. 0.96
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.46, 3.86), paint);
   body.castShadow = true; body.receiveShadow = true;
-  body.position.y = 0.7;
+  body.position.y = 0.73;
   g.add(body);
 
-  // Tapered shoulder slab — narrower + shorter, sits on top to round the profile.
-  const shoulder = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.26, 3.6), paint);
+  // Tapered shoulder slab — narrower + a touch shorter, rounds the upper profile.
+  // span y: 0.90 .. 1.16, sunk into the body so the seam isn't a coincident face.
+  const shoulder = new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.26, 3.56), paint);
   shoulder.castShadow = true;
-  shoulder.position.y = 1.0;
+  shoulder.position.y = 1.03;
   g.add(shoulder);
 
-  // Sculpted nose wedge (front) and tail wedge — tapered for an aero look.
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.34, 0.7), paint);
+  // Sculpted nose + tail wedges — tapered for an aero look, tucked into the body
+  // ends (their inner faces are buried inside `body`, outer faces are the slope).
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.4, 0.62), paint);
   nose.castShadow = true;
-  nose.position.set(0, 0.66, 1.96);
-  nose.rotation.x = 0.12;
+  nose.position.set(0, 0.66, 1.78);
+  nose.rotation.x = 0.16; // dips toward the front
   g.add(nose);
-  const tailDeck = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.3, 0.7), paint);
+  const tailDeck = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.36, 0.6), paint);
   tailDeck.castShadow = true;
-  tailDeck.position.set(0, 0.74, -1.92);
-  tailDeck.rotation.x = -0.1;
+  tailDeck.position.set(0, 0.74, -1.8);
+  tailDeck.rotation.x = -0.12;
   g.add(tailDeck);
 
-  // Two-tone side accent stripe running the length of the body.
-  for (const sx of [-0.96, 0.96]) {
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 3.4), accent);
-    stripe.position.set(sx, 0.78, 0);
+  // Two-tone side accent stripe running the body flanks. Sits just proud of the
+  // body face (half-width 0.87) so it reads as paint, not a clipping sliver.
+  for (const sx of [-1, 1]) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 3.5), accent);
+    stripe.position.set(sx * (0.87 + EP), 0.84, 0);
     g.add(stripe);
   }
 
-  // --- Cabin: tapered greenhouse (narrower roof than base) ---
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.5, 1.95), paint);
+  // --- Cabin: tapered greenhouse, set into the shoulder so its base is hidden ---
+  // Cabin base half-width 0.74 < shoulder 0.79, so it reads as a stepped-in roof.
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.5, 1.9), paint);
   cabin.castShadow = true;
-  cabin.position.set(0, 1.2, -0.18);
+  cabin.position.set(0, 1.32, -0.2);
   g.add(cabin);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.16, 1.6), paint);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.14, 1.5), paint);
   roof.castShadow = true;
-  roof.position.set(0, 1.48, -0.22);
+  roof.position.set(0, 1.6, -0.24); // sits on top of the cabin, slight overlap
   g.add(roof);
 
-  // --- Glass: windshield, rear, side windows ---
-  const glass = new THREE.MeshStandardMaterial({ color: "#16242e", roughness: 0.08, metalness: 0.8, transparent: true, opacity: 0.78 });
-  const wind = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.52, 0.06), glass);
-  wind.position.set(0, 1.24, 0.86);
-  wind.rotation.x = -0.42;
+  // --- Glass: windshield, rear, side windows — inset into the cabin opening ---
+  // Each pane is recessed just inside the cabin half-width (0.74) for a clean
+  // window reveal, and the front/rear panes are pulled in from the cabin ends.
+  const glass = new THREE.MeshStandardMaterial({ color: "#16242e", roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.72 });
+  const wind = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.5, 0.05), glass);
+  wind.position.set(0, 1.34, 0.72); // raked windshield
+  wind.rotation.x = -0.46;
   g.add(wind);
-  const rear = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.06), glass);
-  rear.position.set(0, 1.26, -1.18);
-  rear.rotation.x = 0.4;
+  const rear = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.46, 0.05), glass);
+  rear.position.set(0, 1.36, -1.14);
+  rear.rotation.x = 0.44;
   g.add(rear);
-  for (const sx of [-0.8, 0.8]) {
-    const side = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, 1.5), glass);
-    side.position.set(sx, 1.24, -0.2);
+  for (const sx of [-1, 1]) {
+    const side = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.34, 1.36), glass);
+    side.position.set(sx * (0.74 - 0.03), 1.34, -0.2); // recessed into the cabin flank
     g.add(side);
   }
 
-  // --- Door seams (thin dark insets on each flank) ---
-  for (const sx of [-0.96, 0.96]) {
-    for (const dz of [0.35, -0.55]) {
-      const seam = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.4, 0.02), trim);
-      seam.position.set(sx, 0.74, dz);
+  // --- Door seams + handle (thin dark insets just proud of the body flank) ---
+  for (const sx of [-1, 1]) {
+    for (const dz of [0.42, -0.5]) {
+      const seam = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.34, 0.025), trim);
+      seam.position.set(sx * (0.87 + EP), 0.8, dz);
       g.add(seam);
     }
-    // door handle
-    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.22), chrome);
-    handle.position.set(sx, 0.92, -0.1);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.05, 0.22), chrome);
+    handle.position.set(sx * (0.87 + EP + 0.015), 0.96, -0.04);
     g.add(handle);
   }
 
-  // --- Front grille + bumpers ---
-  const grille = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.2, 0.06), trim);
-  grille.position.set(0, 0.6, 2.32);
+  // --- Front grille + chrome slats + bumpers ---
+  // Grille recessed slightly into the nose; slats float a hair in front of it.
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.22, 0.05), trim);
+  grille.position.set(0, 0.62, 1.95);
   g.add(grille);
   for (let i = -2; i <= 2; i++) {
-    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.02, 0.02), chrome);
-    slat.position.set(0, 0.6 + i * 0.045, 2.35);
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.02, 0.03), chrome);
+    slat.position.set(0, 0.62 + i * 0.045, 1.99);
     g.add(slat);
   }
-  const fBumper = box(1.84, 0.22, 0.28, accentColor, { rough: 0.45, metal: 0.5 });
-  fBumper.position.set(0, 0.42, 2.18);
+  // Bumpers — kept inside the ±1.95 length envelope, two-tone with the lower body.
+  const fBumper = box(1.86, 0.24, 0.26, accentColor, { rough: 0.45, metal: 0.5 });
+  fBumper.position.set(0, 0.42, 1.82);
   g.add(fBumper);
-  const rBumper = box(1.84, 0.22, 0.28, accentColor, { rough: 0.45, metal: 0.5 });
-  rBumper.position.set(0, 0.42, -2.18);
+  const rBumper = box(1.86, 0.24, 0.26, accentColor, { rough: 0.45, metal: 0.5 });
+  rBumper.position.set(0, 0.42, -1.82);
   g.add(rBumper);
 
-  // --- Side mirrors ---
-  for (const sx of [-1.02, 1.02]) {
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.05), trim);
-    arm.position.set(sx, 1.05, 0.6);
+  // --- Side mirrors (allowed to extend past the body for that classic stance) ---
+  for (const sx of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.045, 0.05), trim);
+    arm.position.set(sx * 0.86, 1.06, 0.62);
     g.add(arm);
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 0.2), paint);
-    cap.position.set(sx + Math.sign(sx) * 0.12, 1.06, 0.58);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.18), paint);
+    cap.position.set(sx * 1.0, 1.08, 0.62);
     g.add(cap);
   }
 
-  // --- Low rear spoiler ---
-  for (const sx of [-0.7, 0.7]) {
-    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.06), trim);
-    stand.position.set(sx, 0.98, -1.78);
+  // --- Low rear spoiler (twin stands + wing, floats above the tail deck) ---
+  for (const sx of [-0.62, 0.62]) {
+    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.06), trim);
+    stand.position.set(sx, 1.06, -1.72);
     g.add(stand);
   }
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.05, 0.34), trim);
-  wing.position.set(0, 1.08, -1.84);
-  wing.rotation.x = -0.12;
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 0.32), trim);
+  wing.position.set(0, 1.17, -1.76);
+  wing.rotation.x = -0.14;
   g.add(wing);
 
   // --- Wheels with alloy rim + spoke detail (cylinders rotated around Z) ---
-  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 18);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: "#0c0c10", roughness: 0.9 });
+  // Tyre OD 0.84 sits in arches; rim disc proud of the tyre's outer face so the
+  // alloy face shows; hub + spokes parented so they spin with the wheel.
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 20);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: "#0c0c10", roughness: 0.92, metalness: 0.05 });
   const rimMat = new THREE.MeshStandardMaterial({ color: "#cdd2d8", roughness: 0.3, metalness: 0.85 });
-  const spokeGeo = new THREE.BoxGeometry(0.62, 0.04, 0.05);
+  const rimGeo = new THREE.CylinderGeometry(0.27, 0.27, 0.06, 16);
+  const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.07, 10);
+  const spokeGeo = new THREE.BoxGeometry(0.5, 0.05, 0.05);
   const wheels = [];
   for (const [wx, wz] of [[-0.92, 1.25], [0.92, 1.25], [-0.92, -1.25], [0.92, -1.25]]) {
     const w = new THREE.Mesh(wheelGeo, wheelMat);
-    w.rotation.z = Math.PI / 2;
+    w.rotation.z = Math.PI / 2; // lay the cylinder on its side (axle along X)
     w.position.set(wx, 0.42, wz);
     w.castShadow = true;
-    // Alloy rim disc + hub + spokes, parented to the wheel so they spin with it.
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.32, 16), rimMat);
-    w.add(rim); // wheel already rotated; rim shares the wheel's axis
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.34, 10), chrome);
+    // Outboard side of the wheel (local +Y after the Z rotation faces away from car).
+    const outY = Math.sign(wx) * 0.13; // just proud of the 0.30-wide tyre face
+    const rim = new THREE.Mesh(rimGeo, rimMat);
+    rim.position.y = outY;
+    w.add(rim);
+    const hub = new THREE.Mesh(hubGeo, chrome);
+    hub.position.y = outY + 0.02;
     w.add(hub);
     for (let s = 0; s < 5; s++) {
       const spoke = new THREE.Mesh(spokeGeo, rimMat);
-      spoke.rotation.x = (s / 5) * Math.PI; // around the wheel's spin axis (local X after wheel rotation)
+      spoke.position.y = outY - 0.005;
+      spoke.rotation.y = (s / 5) * Math.PI; // fan the spokes across the rim face
       w.add(spoke);
     }
     g.add(w);
     wheels.push(w);
   }
 
-  // --- Headlights (front, +Z): bright emissive + forward spotlight glow ---
-  const head = new THREE.MeshStandardMaterial({ color: "#fffdf2", emissive: "#fff4c4", emissiveIntensity: 2.4, roughness: 0.2 });
-  const tail = new THREE.MeshStandardMaterial({ color: "#ff6a58", emissive: "#ff2412", emissiveIntensity: 1.8, roughness: 0.35 });
-  for (const hx of [-0.66, 0.66]) {
-    const h = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.16, 0.1), head);
-    h.position.set(hx, 0.68, 2.0);
+  // --- Headlights (front, +Z): soft always-on glow + forward spotlight ---
+  // headMat is a shared, dimmable emissive: it idles at a soft glow and the
+  // horn() honk flashes it up briefly (see drive()'s honk ticker). Stored on
+  // userData so drive() can reuse the same material ref every frame (no alloc).
+  const head = new THREE.MeshStandardMaterial({ color: "#fffdf2", emissive: "#fff4c4", emissiveIntensity: 0.85, roughness: 0.2 });
+  // tailMat idles dim and BRIGHTENS while braking (driven each frame in drive()).
+  const tail = new THREE.MeshStandardMaterial({ color: "#ff6a58", emissive: "#ff2412", emissiveIntensity: 0.7, roughness: 0.35 });
+  // reverseMat: white, only lit while the car is moving backwards.
+  const reverse = new THREE.MeshStandardMaterial({ color: "#f6f6ff", emissive: "#ffffff", emissiveIntensity: 0, roughness: 0.3 });
+  for (const hx of [-0.62, 0.62]) {
+    const h = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.08), head);
+    h.position.set(hx, 0.72, 1.96); // proud of the nose face, above the bumper
     g.add(h);
-    const t = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.08), tail);
-    t.position.set(hx, 0.72, -2.0);
+    const t = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.06), tail);
+    t.position.set(hx, 0.78, -1.94);
     g.add(t);
   }
   // Light-bar style tail strip joining the two taillights.
-  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.06), tail);
-  tailBar.position.set(0, 0.72, -2.0);
+  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.06, 0.05), tail);
+  tailBar.position.set(0, 0.78, -1.945);
   g.add(tailBar);
+  // Reverse lights — small white lenses inboard of the taillights, just proud
+  // of the tail face. Dark until the car rolls backwards.
+  for (const rx of [-0.34, 0.34]) {
+    const rv = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.05), reverse);
+    rv.position.set(rx, 0.7, -1.945);
+    g.add(rv);
+  }
 
   // Subtle forward beam so the headlights actually throw light at night.
   const beam = new THREE.SpotLight("#fff3cf", 6, 22, Math.PI / 6, 0.5, 1.4);
-  beam.position.set(0, 0.7, 2.0);
+  beam.position.set(0, 0.72, 1.96);
   beam.target.position.set(0, 0.1, 9);
   beam.castShadow = false;
   g.add(beam);
   g.add(beam.target);
 
-  // license plate (GTA gag)
+  // license plate (GTA gag) — sat just proud of the rear bumper, facing back.
   const plate = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.7, 0.22),
+    new THREE.PlaneGeometry(0.66, 0.2),
     new THREE.MeshStandardMaterial({ color: "#f4e9c8", roughness: 0.6, emissive: "#2a2510", emissiveIntensity: 0.3 })
   );
-  plate.position.set(0, 0.48, -2.33);
+  plate.position.set(0, 0.46, -1.96);
   plate.rotation.y = Math.PI;
   g.add(plate);
 
+  // --- Horn honk effect: a reusable expanding ring that flashes on horn() ---
+  // Built once, hidden, with its own material so the honk animation never
+  // touches the headlight/taillight materials' base state. drive() advances it.
+  const ringMat = new THREE.MeshBasicMaterial({ color: "#fff6c0", transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.62, 28), ringMat);
+  ring.position.set(0, 0.72, 2.02); // just ahead of the headlights
+  ring.visible = false;
+  g.add(ring);
+
+  // Stash material/mesh refs + idle baselines so drive() can mutate emissive
+  // intensity in place each frame with zero per-frame allocation.
   g.userData.wheels = wheels;
+  g.userData.lights = {
+    head,
+    headBase: head.emissiveIntensity, // soft idle glow
+    tail,
+    tailBase: tail.emissiveIntensity, // dim idle
+    tailBrake: 2.6, // bright when braking
+    reverse,
+    reverseLit: 2.2, // white reverse glow
+    ring,
+    ringMat,
+  };
   return g;
 }
 
@@ -242,6 +307,12 @@ export function makeCar(opts = {}) {
   const _camLook = new THREE.Vector3();
   let _camInit = false;
 
+  // Horn honk state: countdown timer (seconds remaining) ticked down in drive().
+  // Self-contained + visual-only (no audio) so horn() can be called anywhere.
+  const HONK_TIME = 0.45;
+  let _honk = 0;
+  const _lights = group.userData.lights;
+
   function syncGroup() {
     group.position.x = state.x;
     group.position.z = state.z;
@@ -252,6 +323,7 @@ export function makeCar(opts = {}) {
   // colliders: world AABBs; isGround(x,z): bool. Returns nothing.
   function drive(dt, input, colliders, isGround) {
     const { throttle, steer } = input;
+    const prevSpeed = state.speed; // for "speed dropping" brake-light detection
     // Longitudinal
     if (throttle > 0) {
       state.speed += CAR.accel * throttle * dt;
@@ -301,6 +373,43 @@ export function makeCar(opts = {}) {
     // spin wheels for feel
     const ws = group.userData.wheels;
     if (ws) for (const w of ws) w.rotation.x += state.speed * dt * 2.2;
+
+    // --- Lights (mutate shared material refs in place; no per-frame alloc) ---
+    if (_lights) {
+      // Brake lights: lit when braking while moving forward (throttle<0 and
+      // still rolling forward) OR whenever forward speed is actively dropping.
+      const movingFwd = state.speed > 0.1;
+      const slowingFwd = movingFwd && state.speed < prevSpeed - 1e-4;
+      const braking = (throttle < 0 && movingFwd) || slowingFwd;
+      _lights.tail.emissiveIntensity = braking ? _lights.tailBrake : _lights.tailBase;
+
+      // Reverse lights: white, lit only while the car is actually moving backward.
+      _lights.reverse.emissiveIntensity = state.speed < -0.05 ? _lights.reverseLit : 0;
+
+      // Horn honk: flash the headlights up + expand/fade the ring while active.
+      if (_honk > 0) {
+        _honk = Math.max(0, _honk - dt);
+        const t = _honk / HONK_TIME; // 1 -> 0 over the honk
+        // Headlight flash: pulse above the soft idle glow, settle back to base.
+        _lights.head.emissiveIntensity = _lights.headBase + 2.4 * t;
+        // Ring: grow from the headlights outward and fade as the honk ends.
+        const ring = _lights.ring;
+        ring.visible = true;
+        const s = 1 + (1 - t) * 2.2; // expand outward
+        ring.scale.set(s, s, s);
+        _lights.ringMat.opacity = 0.55 * t;
+        if (_honk === 0) ring.visible = false;
+      } else {
+        _lights.head.emissiveIntensity = _lights.headBase;
+      }
+    }
+  }
+
+  // Visual horn honk — flashes the headlights + an expanding ring for ~0.45s.
+  // Self-contained and audio-free by default; safe to call from anywhere (the
+  // animation is advanced inside drive() each frame). Returns nothing.
+  function horn() {
+    _honk = HONK_TIME;
   }
 
   // Trailing chase camera behind the car.
@@ -340,5 +449,5 @@ export function makeCar(opts = {}) {
     return Math.hypot(state.x - x, state.z - z);
   }
 
-  return { group, state, drive, updateCamera, resetCamera, footprint, exitSpot, distanceTo, syncGroup };
+  return { group, state, drive, updateCamera, resetCamera, footprint, exitSpot, distanceTo, syncGroup, horn };
 }

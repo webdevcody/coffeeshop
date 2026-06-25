@@ -60,17 +60,21 @@ function sow(board, pit, side) {
     seeds--;
   }
   let captured = 0;
+  let capturedPit = -1; // opposite pit emptied by a capture (for cosmetic cue only)
   // Capture: last seed landed in one of MY own pits that was EMPTY before this
   // move (never the origin pit, which a full lap re-fills), and the opposite pit
   // has seeds.
   if (i !== pit && pits.includes(i) && wasEmpty[i] && b[opposite(i)] > 0) {
     captured = b[opposite(i)] + 1;
+    capturedPit = opposite(i);
     b[store] += captured;
     b[i] = 0;
     b[opposite(i)] = 0;
   }
   const freeTurn = i === store;
-  return { board: b, freeTurn, captured };
+  // `from`/`landed` drive cosmetic last-move cues; `landed` is the pit the final
+  // seed dropped into (the store on a free turn).
+  return { board: b, freeTurn, captured, from: pit, landed: i, capturedPit };
 }
 
 function sideEmpty(board, side) {
@@ -100,6 +104,12 @@ export function createGame(ctx) {
   let phase = "play";
   let winner = null;
   let disposed = false;
+  // Idempotent end-of-game report guard. The host ends via commit()→onGameOver,
+  // but a guest/spectator that only ever reaches phase==="over" via an
+  // authoritative snapshot (applyState) must ALSO fire onGameOver so the
+  // framework's `over` flag + winner banner appear for them. Mirrors connect4's
+  // overAnnounced guard so the report fires exactly once per game (A1).
+  let overReported = false;
 
   // Side identity colours. Host = warm red, guest = cool blue (clearly distinct
   // hues). Local identity is ROLE-derived and never read from the wire, so host
@@ -136,6 +146,16 @@ export function createGame(ctx) {
     glow: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.5, transparent: true, opacity: 0.5, depthWrite: false })),
     // Brighter hover ring for the pit the local player is pointing at (I4).
     hover: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 1.1, transparent: true, opacity: 0.85, depthWrite: false })),
+    // Cool-white last-move ring: pulses on the pit just sown so a watcher/opponent
+    // can see WHERE the (instantly-rendered) move happened (F5). Distinct hue from
+    // the warm accent glow so it never reads as "your legal move".
+    lastMove: keep(standard(THREE, "#f6fbf7", { emissive: "#f6fbf7", emissiveIntensity: 1.0, transparent: true, opacity: 0.0, depthWrite: false })),
+    // A second, warmer ring on the landing pit (F5).
+    landMove: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 1.0, transparent: true, opacity: 0.0, depthWrite: false })),
+    // Red "stolen-from" flash on the pit a capture emptied across the board (F9).
+    steal: keep(standard(THREE, PALETTE.red, { emissive: PALETTE.red, emissiveIntensity: 1.2, transparent: true, opacity: 0.0, depthWrite: false })),
+    // Golden win-burst ring that rises + fades from the winning store (F8).
+    burst: keep(standard(THREE, PALETTE.gold, { emissive: PALETTE.gold, emissiveIntensity: 1.4, transparent: true, opacity: 0.0, depthWrite: false })),
   };
 
   // ---- board body ----------------------------------------------------------
@@ -179,9 +199,23 @@ export function createGame(ctx) {
   // extra tiny mesh per seed, pooled exactly like the seeds.
   const seedEdgeGeo = keep(new THREE.IcosahedronGeometry(pitR * 0.24, 0));
   const hitGeo = keep(new THREE.CylinderGeometry(pitR * 1.15, pitR * 1.15, 0.05, 12));
-  const glowGeo = keep(new THREE.TorusGeometry(pitR * 1.12, pitR * 0.1, 8, 22));
-  const hoverGeo = keep(new THREE.TorusGeometry(pitR * 1.25, pitR * 0.13, 10, 26));
+  // Legal-move glow ring. Column step is W*0.60/5 = 0.084 m → half-step 0.042 m.
+  // The old torus (major 1.12·pitR, tube 0.1·pitR) had outer radius 1.22·pitR ≈
+  // 0.0439 m, so two adjacent lit pits' rings overlapped by ~0.004 m at the same Y
+  // and z-fought along the seam (visible whenever the whole home row is legal).
+  // Tighten to major 1.02·pitR, tube 0.07·pitR → outer 1.09·pitR ≈ 0.0392 m < the
+  // 0.042 m half-step, so neighbouring rings clear each other (A3).
+  const glowGeo = keep(new THREE.TorusGeometry(pitR * 1.02, pitR * 0.07, 8, 22));
+  // The hover ring is a SINGLE instance (only the pointed-at pit), so it can stay
+  // a touch larger without overlapping a sibling, but pull it in from 1.38·pitR to
+  // 1.18·pitR outer so it no longer visually reaches over a neighbour's centre.
+  const hoverGeo = keep(new THREE.TorusGeometry(pitR * 1.1, pitR * 0.08, 10, 26));
   const lampGeo = keep(new THREE.SphereGeometry(pitR * 0.5, 16, 12));
+  // Thin flat ring reused for the last-move / land / steal pit cues (F5/F9). Sized
+  // like the tightened glow so it nestles on a pit without reaching a neighbour.
+  const cueGeo = keep(new THREE.TorusGeometry(pitR * 1.0, pitR * 0.06, 8, 22));
+  // A larger ring for the rising win-burst over the winning store (F8).
+  const burstGeo = keep(new THREE.TorusGeometry(pitR * 1.4, pitR * 0.09, 10, 28));
   const invis = keep(new THREE.MeshBasicMaterial({ visible: false }));
 
   const seedGroups = {}; // pit -> THREE.Group of seed meshes
@@ -196,8 +230,22 @@ export function createGame(ctx) {
     clock: 0,        // accumulating time for lamp / store pulses
     capture: 0,      // capture flourish timer (s remaining), 0 = idle
     captureSide: null,
+    lastMove: 0,     // last-move highlight timer (s remaining), 0 = idle (F5)
+    steal: 0,        // capture "steal" flash on the emptied opposite pit (F9)
+    freeTurn: 0,     // free-turn lamp cue timer (F10)
+    win: 0,          // one-shot win-burst timer (F8), counts UP from 0
   };
   function ensureRunning() { anim.active = true; }
+
+  // ---- cosmetic last-move bookkeeping (NEVER gates rules/sync) --------------
+  // These describe the most recent LOCAL/relayed sow purely for visual cues. They
+  // are set in commit() and intentionally NOT derived from snapshots (a snapshot
+  // simply shows no highlight, which is acceptable and can never desync). The
+  // freeTurn/win/draw timers in `anim` are likewise re-derivable cosmetics.
+  let lastSowPit = -1;     // pit the seeds were lifted FROM
+  let lastLandPit = -1;    // pit the final seed landed IN
+  let lastCapturePit = -1; // opposite pit emptied by a capture, or -1
+  let freeTurnSide = null; // side that just earned a free turn, or null
 
   for (let i = 0; i < 14; i++) {
     const isStore = i === HOST_STORE || i === GUEST_STORE;
@@ -246,6 +294,23 @@ export function createGame(ctx) {
   group.add(hoverRing);
   let hoverPit = -1;
 
+  // ---- cosmetic cue rings (last move, landing, steal, win burst) -----------
+  // All flat rings laid over pits/stores, hidden by default (opacity 0). They are
+  // shown + animated entirely by update() off the `anim` timers, so a snapshot
+  // landing mid-pulse just stops re-arming them — never a sync concern (F5/F8/F9).
+  function makeCueRing(mat, geo, order) {
+    const r = meshOf(THREE, geo || cueGeo, mat, false);
+    r.rotation.x = Math.PI / 2;
+    r.renderOrder = order;
+    r.visible = false;
+    group.add(r);
+    return r;
+  }
+  const lastMoveRing = makeCueRing(M.lastMove, cueGeo, 7);
+  const landMoveRing = makeCueRing(M.landMove, cueGeo, 7);
+  const stealRing = makeCueRing(M.steal, cueGeo, 7);
+  const burstRing = makeCueRing(M.burst, burstGeo, 8);
+
   // ---- at-a-glance identity + turn placard ---------------------------------
   // A small placard laid flat just outside the LOCAL player's near home edge.
   // HOST home is authored along -Z, GUEST along +Z; after facing both land near
@@ -293,17 +358,21 @@ export function createGame(ctx) {
     let text;
     let color = "#f0e4cf";
     if (!mySide) {
-      const lead = board[HOST_STORE] === board[GUEST_STORE] ? "Even"
-        : board[HOST_STORE] > board[GUEST_STORE] ? "Red leads" : "Blue leads";
+      const score = `${board[HOST_STORE]}–${board[GUEST_STORE]}`;
       text = phase === "over"
-        ? (winner ? `${winner === "host" ? "Red" : "Blue"} wins` : "Draw")
-        : `Spectating — ${lead}`;
+        ? (winner ? `${winner === "host" ? "Red" : "Blue"} wins ${score}` : `Draw ${score}`)
+        : `Spectating — Red ${score} Blue`;
     } else {
       const sideName = mySide === "host" ? "Red" : "Blue";
       const yours = phase === "over"
         ? (winner === mySide ? "You win" : winner ? "You lose" : "Draw")
         : (turn === mySide ? "Your turn" : "Opponent's turn");
-      text = `You are ${sideName} — ${yours}`;
+      // Surface the numeric store counts (mine–theirs) so a seated player never has
+      // to count beads to know the score (I6). The auto-fit below shrinks the font
+      // if this longer string would clip the placard.
+      const myStore = mySide === "host" ? HOST_STORE : GUEST_STORE;
+      const oppStore = mySide === "host" ? GUEST_STORE : HOST_STORE;
+      text = `You are ${sideName} ${board[myStore]}–${board[oppStore]} — ${yours}`;
       color = SIDE_HEX[mySide];
     }
     g.fillStyle = "rgba(28,20,12,0.82)";
@@ -379,13 +448,36 @@ export function createGame(ctx) {
   // positions and only the new slot k=n appears, so existing seeds never teleport.
   // A small per-pit phase offset keeps neighbouring pits from looking identical.
   function seedSlot(i, k, isStore) {
-    const spread = isStore ? pitR * 1.0 : pitR * 0.62;
     const ang = k * 2.39996 + i * 1.3; // golden-angle scatter, stable per slot
-    const ring = isStore ? (0.18 + 0.82 * ((k % 7) / 7)) : (0.3 + 0.7 * ((k % 5) / 5));
+    if (isStore) {
+      // Stores hold up to ~48 seeds at endgame. The old 7-ring × 3-height layout
+      // packed them into a thin band (min inter-seed dist 0.00087 m vs a 0.013 m
+      // diameter), so dozens were near-coincident and visibly merged/z-fought
+      // (A2). Spread across 11 rings AND a real vertical stack that grows with k:
+      // every 11 seeds start a new layer lifted ~0.10·pitR, so density never
+      // forces overlap. The store top radius is pitR*1.3 (≈0.0468); seed centres
+      // now reach pitR*1.0*1.0 (≈0.036), leaving a clear margin to the store wall.
+      const spread = pitR * 1.0;
+      const ring = 0.18 + 0.82 * ((k % 11) / 11);
+      const rad = spread * ring;
+      const layer = Math.floor(k / 11);
+      return {
+        x: Math.cos(ang) * rad,
+        y: pitR * 0.16 + layer * pitR * 0.1,
+        z: Math.sin(ang) * rad,
+      };
+    }
+    // Pits hold 4 to start but lap scenarios push past ~10, where the old 5-ring ×
+    // 3-height layout began to intersect. Widen to 7 rings and stack every 7
+    // seeds into a new layer so high counts stay legible without clipping. The pit
+    // top radius is pitR (≈0.036); seed centres reach pitR*0.66*1.0 (≈0.0238).
+    const spread = pitR * 0.66;
+    const ring = 0.28 + 0.72 * ((k % 7) / 7);
     const rad = spread * ring;
+    const layer = Math.floor(k / 7);
     return {
       x: Math.cos(ang) * rad,
-      y: pitR * 0.18 + (k % 3) * pitR * 0.12,
+      y: pitR * 0.14 + (k % 3) * pitR * 0.1 + layer * pitR * 0.08,
       z: Math.sin(ang) * rad,
     };
   }
@@ -482,6 +574,15 @@ export function createGame(ctx) {
     ensureRunning(); // animate the seed lift / ring pulse
   }
 
+  // Fire the framework's onGameOver exactly once for THIS game, regardless of
+  // whether we reached "over" through a local/relayed commit or an authoritative
+  // snapshot (A1). Idempotent via overReported; reset in applyState(null).
+  function reportOver() {
+    if (phase !== "over" || overReported) return;
+    overReported = true;
+    try { ctx.onGameOver({ winner, reason: "empty" }); } catch { /* */ }
+  }
+
   // ---- end-of-game check + commit ------------------------------------------
   function maybeEnd() {
     if (sideEmpty(board, "host") || sideEmpty(board, "guest")) {
@@ -494,11 +595,32 @@ export function createGame(ctx) {
     return false;
   }
 
-  // Trigger a brief golden pulse on the capturing side's store (I2). Purely
-  // cosmetic — the logical seeds have already moved into the store.
-  function startCapture(side) {
+  // Trigger a brief golden pulse on the capturing side's store (I2), plus a red
+  // "stolen-from" flash on the emptied opposite pit so the steal reads in-world
+  // (F9). Purely cosmetic — the logical seeds have already moved into the store.
+  function startCapture(side, capturedPit) {
     anim.capture = 0.5;
     anim.captureSide = side;
+    if (Number.isInteger(capturedPit) && capturedPit >= 0 && pitPos[capturedPit]) {
+      lastCapturePit = capturedPit;
+      anim.steal = 0.55;
+    }
+    ensureRunning();
+  }
+
+  // Arm the cosmetic last-move highlight off a freshly committed sow (F5/F6/F10).
+  // Records the from/landing pits and (re)starts the highlight/free-turn timers.
+  function markLastMove(res, side) {
+    lastSowPit = pitPos[res.from] ? res.from : -1;
+    lastLandPit = pitPos[res.landed] ? res.landed : -1;
+    anim.lastMove = 0.85;
+    if (res.freeTurn && phase === "play") {
+      freeTurnSide = side;
+      anim.freeTurn = 0.9;
+    } else {
+      freeTurnSide = null;
+      anim.freeTurn = 0;
+    }
     ensureRunning();
   }
 
@@ -506,18 +628,23 @@ export function createGame(ctx) {
   // fire onGameOver once at the end. Returns true.
   function commit(res, side) {
     board = res.board;
-    if (res.captured > 0) startCapture(side);
+    if (res.captured > 0) startCapture(side, res.capturedPit);
     if (maybeEnd()) {
+      markLastMove(res, side); // record the closing move's pits (freeTurn ignored — over)
+      // Kick off the win burst (F8). The draw double-pulse (F7) needs no one-shot
+      // timer — it runs continuously off `drawLive` (phase/winner) while over.
+      if (winner) anim.win = 0.001;
       renderSeeds(true);
       clearGlows();
       clearHover();
       refreshLamps();
       refreshLabel();
       ensureRunning(); // drive the win lamp heartbeat
-      try { ctx.onGameOver({ winner, reason: "empty" }); } catch { /* */ }
+      reportOver();
       return true;
     }
     if (!res.freeTurn) turn = side === "host" ? "guest" : "host";
+    markLastMove(res, side);
     renderSeeds(true);
     refreshLamps();
     refreshGlows();
@@ -539,11 +666,14 @@ export function createGame(ctx) {
   function update(dt) {
     const myTurnLive = phase === "play" && mySide && turn === mySide;
     const winLive = phase === "over" && winner;
+    const drawLive = phase === "over" && !winner;
+    const cueLive = anim.lastMove > 0 || anim.steal > 0 || anim.freeTurn > 0;
     // Cheap idle early-out: nothing to animate ⇒ skip the whole pump.
-    if (!anim.active && anim.capture <= 0 && !myTurnLive && !winLive && !hoverRing.visible) return;
+    if (!anim.active && anim.capture <= 0 && !cueLive && !anim.win
+        && !myTurnLive && !winLive && !drawLive && !hoverRing.visible) return;
     if (!(dt > 0)) dt = 0.016;
     if (dt > 0.05) dt = 0.05;
-    let busy = anim.capture > 0 || myTurnLive || winLive || hoverRing.visible;
+    let busy = anim.capture > 0 || cueLive || myTurnLive || winLive || hoverRing.visible;
 
     anim.clock += dt;
 
@@ -616,6 +746,114 @@ export function createGame(ctx) {
       hoverRing.scale.setScalar(1 + 0.06 * s);
     }
 
+    // 6) Last-move highlight (F5): the relayed move renders instantly, so without
+    //    a cue a watcher/opponent can't tell WHICH pit was sown or where the last
+    //    seed landed. Pulse a cool ring on the source pit + a warm ring on the
+    //    landing pit, both decaying over ~0.85 s. Purely cosmetic / re-derivable.
+    if (anim.lastMove > 0) {
+      anim.lastMove = Math.max(0, anim.lastMove - dt);
+      const f = anim.lastMove / 0.85;        // 1 → 0
+      const fade = Math.sin(f * Math.PI);    // up then down
+      if (lastSowPit >= 0 && pitPos[lastSowPit]) {
+        const p = pitPos[lastSowPit];
+        lastMoveRing.position.set(p.x, TOP + 0.037, p.z);
+        lastMoveRing.visible = true;
+        M.lastMove.opacity = 0.85 * fade;
+        lastMoveRing.scale.setScalar(1 + 0.18 * (1 - f));
+      }
+      // Only show a distinct landing ring when the seed landed in a DIFFERENT pit
+      // (a non-store, on-board pit). A free-turn store landing is cued by the lamp.
+      if (lastLandPit >= 0 && lastLandPit !== lastSowPit && pitPos[lastLandPit]
+          && lastLandPit !== HOST_STORE && lastLandPit !== GUEST_STORE) {
+        const p = pitPos[lastLandPit];
+        landMoveRing.position.set(p.x, TOP + 0.037, p.z);
+        landMoveRing.visible = true;
+        M.landMove.opacity = 0.9 * fade;
+        landMoveRing.scale.setScalar(1 + 0.22 * (1 - f));
+      } else {
+        landMoveRing.visible = false;
+      }
+      if (anim.lastMove === 0) {
+        lastMoveRing.visible = false;
+        landMoveRing.visible = false;
+        lastSowPit = -1;
+        lastLandPit = -1;
+      }
+    }
+
+    // 7) Capture "steal" flash (F9): a quick red flash on the opposite pit a
+    //    capture emptied, timed with the capturing store's golden pulse, so the
+    //    theft (not just the score change) reads in-world.
+    if (anim.steal > 0) {
+      anim.steal = Math.max(0, anim.steal - dt);
+      const f = anim.steal / 0.55;
+      const fade = Math.sin(f * Math.PI);
+      if (lastCapturePit >= 0 && pitPos[lastCapturePit]) {
+        const p = pitPos[lastCapturePit];
+        stealRing.position.set(p.x, TOP + 0.038, p.z);
+        stealRing.visible = true;
+        M.steal.opacity = 0.95 * fade;
+        stealRing.scale.setScalar(1 + 0.3 * (1 - f));
+      }
+      if (anim.steal === 0) { stealRing.visible = false; lastCapturePit = -1; }
+    }
+
+    // 8) Free-turn cue (F10): landing your last seed in your own store grants
+    //    another move. A short, distinct double-flutter on the local side's lamp
+    //    (faster than the steady my-turn bob) makes "go again" legible. Only the
+    //    LOCAL player's lamp flutters, layered over the my-turn heartbeat.
+    if (anim.freeTurn > 0) {
+      anim.freeTurn = Math.max(0, anim.freeTurn - dt);
+      if (freeTurnSide && freeTurnSide === mySide) {
+        const f = anim.freeTurn / 0.9;       // 1 → 0
+        const flutter = Math.abs(Math.sin((1 - f) * Math.PI * 3.0)); // 3 quick beats
+        const lamp = mySide === "host" ? lampHost : lampGuest;
+        const mat = mySide === "host" ? M.lampHost : M.lampGuest;
+        lamp.position.y = LAMP_Y + 0.03 * flutter;
+        mat.emissiveIntensity = 0.9 + 0.7 * flutter;
+      }
+      if (anim.freeTurn === 0) freeTurnSide = null;
+    }
+
+    // 9) Win burst (F8): a golden ring rising from the winning store, fading over
+    //    ~1 s, plus a one-shot emissive flash sweeping the winner's pit row. The
+    //    steady win heartbeat (block 3) continues underneath. Re-derivable: a
+    //    snapshot landing in "over" simply re-arms it (see applyState).
+    if (anim.win > 0) {
+      anim.win += dt;
+      const T = 1.0;
+      if (anim.win <= T && winner) {
+        const t = anim.win / T;              // 0 → 1
+        const store = winner === "host" ? wells[HOST_STORE] : wells[GUEST_STORE];
+        burstRing.position.set(store.position.x, TOP + 0.04 + 0.12 * t, store.position.z);
+        burstRing.visible = true;
+        M.burst.opacity = 0.85 * (1 - t);
+        burstRing.scale.setScalar(0.6 + 1.4 * t);
+        // One-shot emissive sweep across the winner's six pits (early in the burst).
+        const rowMat = winner === "host" ? M.pitHost : M.pitGuest;
+        const base = winner === mySide ? 0.34 : 0.0;
+        rowMat.emissiveIntensity = base + 0.6 * Math.max(0, 1 - t * 1.6);
+      } else {
+        burstRing.visible = false;
+        const rowMat = winner === "host" ? M.pitHost : M.pitGuest;
+        rowMat.emissiveIntensity = winner === mySide ? 0.34 : 0.0;
+        anim.win = 0;
+      }
+    }
+
+    // 10) Draw celebration (F7): a draw gives no heartbeat (block 3 is win-only),
+    //     so the end-state only read on the placard. Give BOTH stores + lamps a
+    //     gentle synchronized double-pulse so the draw reads in-world too.
+    if (drawLive) {
+      const s = 0.5 + 0.5 * Math.sin(anim.clock * 3.2);
+      const e = 0.2 + 0.35 * s;
+      M.storeHost.emissiveIntensity = (mySide === "host" ? 0.28 : 0.0) + 0.3 * s;
+      M.storeGuest.emissiveIntensity = (mySide === "guest" ? 0.28 : 0.0) + 0.3 * s;
+      M.lampHost.emissiveIntensity = e;
+      M.lampGuest.emissiveIntensity = e;
+      busy = true;
+    }
+
     anim.active = anySpawn;
     return busy;
   }
@@ -673,6 +911,11 @@ export function createGame(ctx) {
       turn = "host";
       phase = "play";
       winner = null;
+      overReported = false; // fresh game: allow the next end to report again (A1)
+      lastSowPit = -1;
+      lastLandPit = -1;
+      lastCapturePit = -1;
+      freeTurnSide = null;
     } else {
       const b = Array(14).fill(0);
       if (Array.isArray(state.board)) for (let i = 0; i < 14; i++) b[i] = state.board[i] | 0;
@@ -683,9 +926,20 @@ export function createGame(ctx) {
     }
     // NOTE: mySide / role are NOT touched here — identity stays ROLE-derived.
     // Cancel any in-flight cosmetic FX: this is an authoritative re-base, so the
-    // capture/hover state from a now-superseded local view must not linger.
+    // capture/hover/last-move state from a now-superseded local view must not
+    // linger. (The end-state celebration is re-armed below if phase==="over".)
     anim.capture = 0;
     anim.captureSide = null;
+    anim.steal = 0;
+    anim.lastMove = 0;
+    anim.freeTurn = 0;
+    lastSowPit = -1;
+    lastLandPit = -1;
+    lastCapturePit = -1;
+    freeTurnSide = null;
+    lastMoveRing.visible = false;
+    landMoveRing.visible = false;
+    stealRing.visible = false;
     clearHover();
     M.storeHost.emissiveIntensity = mySide === "host" ? 0.28 : 0.0;
     M.storeGuest.emissiveIntensity = mySide === "guest" ? 0.28 : 0.0;
@@ -696,6 +950,13 @@ export function createGame(ctx) {
     // A win lamp/store heartbeat must keep ticking after a snapshot that lands the
     // game in "over"; an active board similarly drives the my-turn lamp pulse.
     if (phase === "over" || (phase === "play" && mySide && turn === mySide)) ensureRunning();
+    // Arm the end-state celebration once for a guest/spectator that learns the
+    // game ended only via this snapshot (the !overReported edge — reportOver below
+    // flips the flag). Re-derivable cosmetic: win burst (F8) or draw pulse (F7).
+    if (phase === "over" && !overReported && winner) anim.win = 0.001;
+    // If this snapshot is the FIRST time we learn the game ended (guest/spectator
+    // path), fire the framework over-report so their banner/over-flag appear (A1).
+    reportOver();
   }
 
   // ---- role / seat changes (in-place promotion) ----------------------------

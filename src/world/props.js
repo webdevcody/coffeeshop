@@ -44,9 +44,22 @@ export function makeChair() {
   const g = new THREE.Group();
   const seat = mesh(new THREE.BoxGeometry(0.42, 0.06, 0.42), wood);
   seat.position.y = 0.46;
-  const back = mesh(new THREE.BoxGeometry(0.42, 0.5, 0.06), wood);
-  back.position.set(0, 0.72, -0.18);
-  g.add(seat, back);
+  // Backrest: two uprights plus a couple of horizontal slats instead of one
+  // solid slab — reads as a proper café chair. The uprights overlap into the
+  // seat (bottom at 0.43, below the seat top 0.49) so no coincident faces.
+  const uprightGeo = new THREE.BoxGeometry(0.05, 0.52, 0.05);
+  for (const ux of [-0.17, 0.17]) {
+    const up = mesh(uprightGeo, darkWood);
+    up.position.set(ux, 0.72, -0.18);
+    g.add(up);
+  }
+  const slatGeo = new THREE.BoxGeometry(0.34, 0.07, 0.045);
+  for (const sy of [0.66, 0.84]) {
+    const slat = mesh(slatGeo, wood);
+    slat.position.set(0, sy, -0.18);
+    g.add(slat);
+  }
+  g.add(seat);
   const legGeo = new THREE.BoxGeometry(0.05, 0.46, 0.05);
   for (const [x, z] of [[-0.17, -0.17], [0.17, -0.17], [-0.17, 0.17], [0.17, 0.17]]) {
     const leg = mesh(legGeo, darkWood);
@@ -62,8 +75,10 @@ export function makeCounter(length = 6) {
   const g = new THREE.Group();
   const body = mesh(new THREE.BoxGeometry(length, 1.05, 0.85), darkWood);
   body.position.y = 0.525;
+  // Overlap the worktop slightly into the body (bottom at 1.02 vs body top
+  // 1.05) so the seam is buried rather than two coincident faces z-fighting.
   const top = mesh(new THREE.BoxGeometry(length + 0.18, 0.08, 1.02), wood);
-  top.position.y = 1.09;
+  top.position.y = 1.06;
   // front panel accent
   const panel = mesh(new THREE.BoxGeometry(length - 0.2, 0.7, 0.04), wood);
   panel.position.set(0, 0.5, 0.43);
@@ -76,8 +91,11 @@ export function makeStool() {
   const g = new THREE.Group();
   const seat = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 18), wood);
   seat.position.y = 0.78;
+  // Lift the post so its base is buried inside the foot (bottom at ~0.013)
+  // instead of sharing the floor plane with the foot's underside; top still
+  // penetrates the seat disc.
   const post = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.78, 12), chrome);
-  post.position.y = 0.39;
+  post.position.y = 0.4;
   const foot = mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.04, 18), chrome);
   foot.position.y = 0.02;
   g.add(seat, post, foot);
@@ -86,6 +104,9 @@ export function makeStool() {
 }
 
 // --- Espresso machine ------------------------------------------------------
+// The world parks an animated steam puff above this machine's left group head;
+// userData.steamAnchor records that local offset (relative to the machine
+// origin) so the caller doesn't have to hard-code it.
 export function makeEspressoMachine() {
   const g = new THREE.Group();
   const body = mesh(new THREE.BoxGeometry(1.1, 0.55, 0.6), chrome);
@@ -93,31 +114,87 @@ export function makeEspressoMachine() {
   const dome = mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.0, 16), chrome);
   dome.rotation.z = Math.PI / 2;
   dome.position.y = 0.6;
-  const head1 = mesh(new THREE.BoxGeometry(0.16, 0.18, 0.16), metal);
-  head1.position.set(-0.28, 0.18, 0.34);
-  const head2 = head1.clone();
-  head2.position.x = 0.28;
+  // Two brew groups, each a chrome collar with a portafilter handle jutting
+  // forward. The collar overlaps the body (back at z=0.26 vs body front 0.30)
+  // so there's no coincident face to z-fight.
+  const headPos = [-0.28, 0.28];
+  const collarGeo = new THREE.CylinderGeometry(0.075, 0.075, 0.14, 14);
+  const handleGeo = new THREE.CylinderGeometry(0.022, 0.022, 0.16, 8);
+  const knobGeo = new THREE.SphereGeometry(0.03, 8, 8);
+  for (const hx of headPos) {
+    const collar = mesh(collarGeo, metal);
+    collar.position.set(hx, 0.2, 0.32);
+    const handle = mesh(handleGeo, darkWood);
+    handle.rotation.x = Math.PI / 2;
+    handle.position.set(hx, 0.16, 0.46);
+    const knob = mesh(knobGeo, darkWood);
+    knob.position.set(hx, 0.16, 0.55);
+    g.add(collar, handle, knob);
+  }
+  // Cup grate / drip tray beneath the heads (sits on the counter just in front
+  // of the body, not coincident with it).
+  const tray = mesh(new THREE.BoxGeometry(0.78, 0.03, 0.18), metal);
+  tray.position.set(0, 0.025, 0.36);
+  // Two warm-up cups resting on top of the dome.
+  const warmCupGeo = new THREE.CylinderGeometry(0.05, 0.04, 0.07, 12);
+  for (const cx of [-0.18, 0.18]) {
+    const c = mesh(warmCupGeo, ceramic);
+    c.position.set(cx, 0.755, 0);
+    g.add(c);
+  }
+  // Steam wand on the right side: a thin angled pipe with a tip.
+  const wand = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.34, 8), chrome);
+  wand.position.set(0.5, 0.4, 0.2);
+  wand.rotation.x = 0.5;
+  const wandTip = mesh(new THREE.CylinderGeometry(0.02, 0.012, 0.05, 8), metal);
+  wandTip.position.set(0.5, 0.26, 0.27);
+  wandTip.rotation.x = 0.5;
   const lamp = mesh(new THREE.SphereGeometry(0.05, 10, 10), new THREE.MeshStandardMaterial({ color: "#ff5a3c", emissive: "#ff3b1f", emissiveIntensity: 1.5 }));
   lamp.position.set(0, 0.62, 0.18);
-  g.add(body, dome, head1, head2, lamp);
+  g.add(body, dome, tray, wand, wandTip, lamp);
+  // Local offset where steam should rise (just above the left brew group).
+  g.userData.steamAnchor = { x: -0.28, y: 0.5, z: 0.3 };
   return g;
 }
 
 // --- Pastry display case ---------------------------------------------------
+const pastryDough = new THREE.MeshStandardMaterial({ color: "#d9a066", roughness: 0.8 });
+const pastryDark = new THREE.MeshStandardMaterial({ color: "#a86a38", roughness: 0.8 });
+const pastryGlaze = new THREE.MeshStandardMaterial({ color: "#7a4a2a", roughness: 0.45 });
 export function makePastryCase() {
   const g = new THREE.Group();
-  const glass = new THREE.MeshStandardMaterial({ color: "#cfe8ef", roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.35 });
+  const glass = new THREE.MeshStandardMaterial({ color: "#cfe8ef", roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.3 });
+  // A wooden tray under the glass so the case reads as a real display, not a
+  // floating cube. The tray top (y=0.04) sits below the glass box bottom (y=0)
+  // — the glass overlaps down into the tray, so no coincident faces.
+  const tray = mesh(new THREE.BoxGeometry(1.26, 0.08, 0.66), darkWood);
+  tray.position.y = -0.02;
   const box = mesh(new THREE.BoxGeometry(1.2, 0.5, 0.6), glass, false);
   box.position.y = 0.25;
-  g.add(box);
-  // a couple of pastries inside
-  const pastryMat = new THREE.MeshStandardMaterial({ color: "#d9a066", roughness: 0.8 });
+  // A glass shelf splitting the case so pastries occupy two tiers.
+  const shelf = mesh(new THREE.BoxGeometry(1.16, 0.012, 0.56), glass, false);
+  shelf.position.y = 0.25;
+  g.add(tray, box, shelf);
+  // Lower tier: round buns / muffins resting on the tray.
   for (let i = -1; i <= 1; i++) {
-    const p = mesh(new THREE.SphereGeometry(0.1, 10, 8), pastryMat);
-    p.scale.y = 0.6;
-    p.position.set(i * 0.32, 0.08, 0);
+    const p = mesh(new THREE.SphereGeometry(0.1, 10, 8), i === 0 ? pastryDark : pastryDough);
+    p.scale.y = 0.62;
+    p.position.set(i * 0.34, 0.085, 0.12);
     g.add(p);
   }
+  // Upper tier: a couple of croissant-ish crescents (squashed torus) plus a
+  // glazed loaf, sitting on the glass shelf.
+  for (const cx of [-0.32, 0.32]) {
+    const cr = mesh(new THREE.TorusGeometry(0.08, 0.035, 8, 12, Math.PI * 1.3), pastryDough);
+    cr.rotation.x = Math.PI / 2;
+    cr.scale.set(1, 1, 0.7);
+    cr.position.set(cx, 0.3, -0.1);
+    g.add(cr);
+  }
+  const loaf = mesh(new THREE.CapsuleGeometry(0.06, 0.16, 4, 8), pastryGlaze);
+  loaf.rotation.z = Math.PI / 2;
+  loaf.position.set(0, 0.3, -0.1);
+  g.add(loaf);
   return g;
 }
 
@@ -176,12 +253,16 @@ export function makeRug(w = 5, d = 4, color = "#9e3b3b") {
   const rug = mesh(new THREE.BoxGeometry(w, 0.02, d), new THREE.MeshStandardMaterial({ color, roughness: 1 }), false);
   rug.position.y = 0.011;
   rug.receiveShadow = true;
+  // Inset field as a thin slab whose underside is buried just inside the rug
+  // (bottom ~0.018, below the rug top at 0.021) so neither face is coincident
+  // with the floor or the rug surface — its top alone reads as the lighter band.
   const border = mesh(
-    new THREE.BoxGeometry(w - 0.5, 0.022, d - 0.5),
+    new THREE.BoxGeometry(w - 0.5, 0.008, d - 0.5),
     new THREE.MeshStandardMaterial({ color: "#e9dcc3", roughness: 1 }),
     false
   );
-  border.position.y = 0.012;
+  border.position.y = 0.022;
+  border.receiveShadow = true;
   g.add(rug, border);
   return g;
 }
@@ -192,7 +273,9 @@ export function makeMug(color = "#f4efe6") {
   const cup = mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.09, 14), new THREE.MeshStandardMaterial({ color, roughness: 0.4 }));
   cup.position.y = 0.045;
   const coffee = mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.01, 14), new THREE.MeshStandardMaterial({ color: "#3a2415", roughness: 0.5 }), false);
-  coffee.position.y = 0.088;
+  // Coffee surface just below the rim (cup top is at 0.09) so it doesn't poke
+  // through and the dark disc reads as liquid inside the cup.
+  coffee.position.y = 0.082;
   const handle = mesh(new THREE.TorusGeometry(0.03, 0.01, 8, 14), new THREE.MeshStandardMaterial({ color, roughness: 0.4 }));
   handle.position.set(0.055, 0.045, 0);
   handle.rotation.y = Math.PI / 2;
@@ -206,7 +289,13 @@ export function makeChalkboard(texture) {
   const frame = mesh(new THREE.BoxGeometry(2.0, 2.6, 0.08), darkWood, false);
   const board = mesh(new THREE.PlaneGeometry(1.8, 2.4), new THREE.MeshStandardMaterial({ map: texture, roughness: 0.9 }), false);
   board.position.z = 0.05;
-  g.add(frame, board);
+  // A chalk ledge across the bottom with a stub of chalk on it.
+  const ledge = mesh(new THREE.BoxGeometry(2.0, 0.05, 0.12), wood, false);
+  ledge.position.set(0, -1.32, 0.08);
+  const chalk = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.1, 8), ceramic, false);
+  chalk.rotation.z = Math.PI / 2;
+  chalk.position.set(0.5, -1.29, 0.12);
+  g.add(frame, board, ledge, chalk);
   return g;
 }
 

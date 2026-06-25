@@ -401,6 +401,16 @@ function cellX(c) { return -HALF + (c + 0.5) * STEP; }
 function cellZ(r) { return -HALF + (r + 0.5) * STEP; }
 const isDarkSq = (r, c) => (r + c) % 2 === 1;
 
+// Capture-tray geometry. The lane sits just outside the +X / -X frame, and parked
+// prisoners stand upright at TRAY_TOP scaled to ~0.6 so up to 15 of one colour fit
+// in an 8-row x 2-col grid that stays inside the tray's BOARD_SIZE*0.92 Z extent.
+const TRAY_LANE_X = HALF + FRAME_W + STEP * 0.55;
+const TRAY_TOP = PLANK_TOP + FRAME_H;        // tray shelf top (flush with frame)
+const TRAY_SCALE = 0.6;                       // prisoners shrink to read as "taken"
+const TRAY_COLS = 2;                          // columns per tray
+const TRAY_COL_DX = STEP * 0.30;              // half-spacing between the two columns
+const TRAY_ROW_DZ = STEP * 0.42;              // spacing down the tray
+
 // ===========================================================================
 // THE MODULE
 // ===========================================================================
@@ -461,11 +471,31 @@ export function createGame(ctx) {
   let liftedPiece = null;          // the selected piece given the I1 emissive lift
   let hoverCell = null;            // {r,c} | null — cursor cell on the local turn
   let hoverRingMesh = null;        // faint ring affordance on a hoverable square
+  const hoverGhosts = [];          // faint preview tokens of a hovered piece's targets
+
+  // Win flourish: a one-shot "victory breathe" on every surviving piece of the
+  // winning army, driven from stepWinFlourish. Re-derivable in applyState so a
+  // late-join/spectator sees the celebratory styling without the topple context.
+  let winFlourishT = 0;            // >0 while the win breathe is animating
+  const winGlowMeshes = [];        // surviving winning-army meshes being pulsed
 
   // Last-move trace: two fading tinted quads marking the previous from/to.
   let traceFromMesh = null, traceToMesh = null;
   let traceT = 0;                  // seconds since the trace was armed
   const TRACE_DUR = 1.2;
+  // Last move {from,to} stashed into the snapshot so a converged spectator /
+  // late-join can re-arm the trace in applyState (cosmetic, derived data).
+  let lastMove = null;
+
+  // Capture trays: a captured piece is parked (shrunk + stood upright) on the
+  // side tray for the colour that took it, exactly like checkers' rails. White
+  // captures park on +X, black captures on -X. A per-colour slot counter lays
+  // them out in a tidy grid so the full 15 prisoners fit. Populated meshes are
+  // owned by `prisoners` (not the pieceMeshes ledger) so paint()/applyState never
+  // touch them; applyState recomputes the prisoner roster by diffing the board
+  // against a full 16-piece army so spectators/late-joiners see filled trays too.
+  const prisoners = [];            // { mesh, color, type } parked off-board
+  const trayCount = { white: 0, black: 0 };
 
   // Transient cosmetic animations driven by stepAnim (capture sink/fade, piece
   // scale-pop, king check pulse / mate topple). All purely visual — never touch
@@ -502,12 +532,18 @@ export function createGame(ctx) {
     // Hover ring on a hoverable own-piece / ghost target (cool gold, fainter than
     // the firm selection ring so the two never read the same).
     hover: new THREE.MeshStandardMaterial({ color: "#9fd4ff", roughness: 0.4, metalness: 0.3, emissive: "#7fb8ee", emissiveIntensity: 0.45, transparent: true, opacity: 0.55, depthWrite: false }),
+    // Ghost preview of a HOVERED (not yet selected) piece's legal destinations —
+    // dimmer + cooler than the firm selection targets so "scout" reads as distinct
+    // from "committed". Shared (no per-instance tint), depthWrite off like targets.
+    ghost: new THREE.MeshBasicMaterial({ color: "#7fb8ee", transparent: true, opacity: 0.26, depthWrite: false }),
     // Last-move trace quads (from = cool, to = warm) that fade out over ~1.2 s.
     traceFrom: new THREE.MeshBasicMaterial({ color: "#7fb8ee", transparent: true, opacity: 0.0, depthWrite: false }),
     traceTo: new THREE.MeshBasicMaterial({ color: "#e0a23a", transparent: true, opacity: 0.0, depthWrite: false }),
     // Dark rounded backing the promotion choices float over so they read as a
-    // deliberate menu rather than four disconnected pieces.
-    promoBack: new THREE.MeshBasicMaterial({ color: "#1a120b", transparent: true, opacity: 0.78, depthWrite: false }),
+    // deliberate menu rather than four disconnected pieces. depthTest:false (like the
+    // cue placard) so it never z-fights the trace/target overlay quads sharing the
+    // cell, and always reads as a clean overlay under the floating choices.
+    promoBack: new THREE.MeshBasicMaterial({ color: "#1a120b", transparent: true, opacity: 0.78, depthWrite: false, depthTest: false }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
   };
 
@@ -517,6 +553,7 @@ export function createGame(ctx) {
     target: new THREE.CylinderGeometry(STEP * 0.16, STEP * 0.16, STEP * 0.04, 22),
     capRing: new THREE.TorusGeometry(STEP * 0.40, STEP * 0.045, 8, 28),
     hoverRing: new THREE.TorusGeometry(STEP * 0.44, STEP * 0.035, 8, 28),
+    ghost: new THREE.CylinderGeometry(STEP * 0.13, STEP * 0.13, STEP * 0.02, 18),
     trace: new THREE.PlaneGeometry(STEP * 0.94, STEP * 0.94),
     // Flat slab (like checkers): a thin per-cell collider sitting just above the
     // tiles. A tall collider would occlude the square BEHIND it at an oblique
@@ -790,10 +827,15 @@ export function createGame(ctx) {
       }
     }
 
+    // Two capture trays, one per side. Raise the tray top FLUSH with the frame top
+    // (PLANK_TOP + FRAME_H) like checkers' rail so parked prisoners read as seated
+    // on a shelf rather than sunk under the plank (the old PLANK_TOP - 0.001 left
+    // the tray a dead sliver below the surface). White prisoners rack on +X, black
+    // on -X — see railDest().
     G._trayGeo = new THREE.BoxGeometry(STEP * 0.9, 0.006, BOARD_SIZE * 0.92);
     for (const sx of [-1, 1]) {
       const tray = new THREE.Mesh(G._trayGeo, M.tray);
-      tray.position.set(sx * (HALF + FRAME_W + STEP * 0.55), PLANK_TOP - 0.001, 0);
+      tray.position.set(sx * TRAY_LANE_X, PLANK_TOP + FRAME_H - 0.003, 0);
       tray.receiveShadow = true;
       group.add(tray);
     }
@@ -829,7 +871,7 @@ export function createGame(ctx) {
     const done = () => {
       remaining -= 1;
       if (remaining > 0) return;
-      if (anyOk && !disposed) { modelsReady = true; paint(); }
+      if (anyOk && !disposed) { modelsReady = true; repaintForModels(); }
     };
     for (const type of types) {
       const url = MODEL_BASE + MODEL_FILES[type];
@@ -857,6 +899,30 @@ export function createGame(ctx) {
         finish(null);
       }
     }
+  }
+
+  // B6: models resolved. Rebuild the procedural pieces into model pieces, but DEFER
+  // while a move animates — repainting mid-glide would orphan the in-flight mover
+  // (paint() now skips gliding cells, but the OTHER cells would still swap under a
+  // running animation, and the mover itself would stay procedural). Once the board
+  // is idle (no glides, not busy), repaint once so the whole army upgrades cleanly.
+  let modelRepaintPending = false;
+  function repaintForModels() {
+    if (disposed) return;
+    if (busy || glides.length > 0) {
+      if (!modelRepaintPending) {
+        modelRepaintPending = true;
+        const wait = () => {
+          if (disposed) { modelRepaintPending = false; return; }
+          if (busy || glides.length > 0) { raf(wait); return; }
+          modelRepaintPending = false;
+          paint();
+        };
+        raf(wait);
+      }
+      return;
+    }
+    paint();
   }
 
   // Normalise a loaded GLB scene into a template Group: recenter on XZ base, scale
@@ -947,6 +1013,93 @@ export function createGame(ctx) {
     if (g.userData.crossGeo) for (const cg of g.userData.crossGeo) cg.dispose?.();
   }
 
+  // ===========================================================================
+  // Capture trays — park a captured piece (shrunk + stood upright) on the side
+  // tray for the colour that took it. Mirrors checkers' rails. White captures rack
+  // on +X, black captures on -X; a per-colour counter lays them out 2 columns wide,
+  // 8 rows deep so all 15 prisoners of one colour fit inside the tray's Z extent.
+  // ===========================================================================
+  // Resting world-local pose for the `slot`-th prisoner CAPTURED BY `capturedBy`.
+  function trayDest(capturedBy, slot) {
+    const sx = capturedBy === "white" ? 1 : -1;     // white racks on +X, black on -X
+    const col = slot % TRAY_COLS;
+    const row = Math.floor(slot / TRAY_COLS);
+    const dx = (col === 0 ? -1 : 1) * TRAY_COL_DX;
+    // Centre the column of `row`s about z=0; clamp so a long game can't march a
+    // prisoner off the tray (extra captures just stack on the last slot).
+    const maxRow = 7;
+    const z = -maxRow / 2 * TRAY_ROW_DZ + Math.min(row, maxRow) * TRAY_ROW_DZ;
+    return { x: sx * TRAY_LANE_X + dx, y: TRAY_TOP, z };
+  }
+
+  // Re-home an existing piece mesh onto the tray as a prisoner (used at the glide
+  // peak so the captured mesh slides off the board onto the shelf instead of being
+  // disposed). `capturedBy` is the colour of the CAPTOR (opposite the victim).
+  function parkPrisonerMesh(mesh, victimColor, victimType, capturedBy) {
+    const dest = trayDest(capturedBy, trayCount[capturedBy]++);
+    mesh.userData.cell = null;                       // off-board: never resolve clicks here
+    mesh.rotation.set(0, 0, 0);
+    if (mesh.userData.pieceColor === "black") mesh.rotation.y = Math.PI;
+    mesh.scale.setScalar(TRAY_SCALE);
+    mesh.position.set(dest.x, dest.y, dest.z);
+    const mat = mesh.userData.pieceMat;
+    if (mat) { mat.transparent = false; mat.opacity = 1; }
+    prisoners.push({ mesh, color: victimColor, type: victimType });
+  }
+
+  // Drop ALL prisoners (used by applyState / dispose before recomputing the roster).
+  function clearPrisoners() {
+    for (const p of prisoners) disposePiece(p.mesh);
+    prisoners.length = 0;
+    trayCount.white = 0;
+    trayCount.black = 0;
+  }
+
+  // Recompute the prisoner roster from the current board by diffing it against a
+  // full 16-piece army, then build fresh prisoner meshes on the trays. Used by
+  // applyState so spectators / late-joiners see populated trays even though they
+  // never witnessed the captures. Promotions are accounted for: a side's prisoner
+  // COUNT is exactly (16 - survivors), and the extra material a promotion creates
+  // (e.g. a 2nd queen) cancels one phantom pawn from the deficit, so the displayed
+  // prisoners read as genuine losses rather than a spurious "missing pawn".
+  function rebuildPrisonersFromBoard() {
+    clearPrisoners();
+    const FULL = { p: 8, n: 2, b: 2, r: 2, q: 1 };   // king never captured
+    for (const color of ["white", "black"]) {
+      const live = { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 };
+      for (let r = 0; r < N; r++) {
+        for (let c = 0; c < N; c++) {
+          const p = state.board[r][c];
+          if (p && p.color === color) live[p.type] = (live[p.type] || 0) + 1;
+        }
+      }
+      // Promotion surplus: any non-pawn type above its starting count came from a
+      // promoted pawn. That surplus offsets the pawn deficit so we don't park a
+      // phantom pawn for a pawn that was actually promoted (not captured).
+      let promoSurplus = 0;
+      for (const type of ["n", "b", "r", "q"]) {
+        promoSurplus += Math.max(0, (live[type] || 0) - FULL[type]);
+      }
+      const deficit = {
+        q: Math.max(0, FULL.q - (live.q || 0)),
+        r: Math.max(0, FULL.r - (live.r || 0)),
+        b: Math.max(0, FULL.b - (live.b || 0)),
+        n: Math.max(0, FULL.n - (live.n || 0)),
+        p: Math.max(0, FULL.p - (live.p || 0) - promoSurplus),
+      };
+      const capturedBy = other(color);               // who took this colour's losses
+      // Walk a stable order so the tray layout is deterministic across clients.
+      for (const type of ["q", "r", "b", "n", "p"]) {
+        for (let i = 0; i < deficit[type]; i++) {
+          const mesh = makePiece(type, color);
+          mesh.userData.isModel = modelsReady && !!modelTemplate[type];
+          group.add(mesh);
+          parkPrisonerMesh(mesh, color, type, capturedBy);
+        }
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Paint: idempotently rebuild the visible pieces from the logical board.
   // -------------------------------------------------------------------------
@@ -956,6 +1109,11 @@ export function createGame(ctx) {
         if (paintSkipCell === r * 8 + c) continue;
         const want = state.board[r][c];
         const have = pieceMeshes[r][c];
+        // B6: if this cell's mesh is mid-glide (e.g. a deferred modelsReady repaint
+        // landed while a move animates), leave it ALONE — disposing/repositioning it
+        // would orphan the in-flight glide and pop the piece to its target. It will
+        // be reconciled cleanly on the next paint after the glide finishes.
+        if (have && isGliding(have)) continue;
         if (!want) {
           if (have) { disposePiece(have); pieceMeshes[r][c] = null; }
           continue;
@@ -1000,6 +1158,11 @@ export function createGame(ctx) {
     if (!selectedFrom) return;
     const p = pieceMeshes[selectedFrom.r][selectedFrom.c];
     if (!p || !p.userData.pieceMat) return;
+    // B4 (defensive): only capture the rest baseline when none is already stored, so
+    // a double refreshHighlights() (e.g. a stray repaint) can't stack lifts and bake
+    // the lifted Y in as the new rest height. If _y0 is still set, this piece is
+    // already lifted — just re-tag it as the lifted piece and return.
+    if (p.userData._y0 !== undefined) { liftedPiece = p; return; }
     const mat = p.userData.pieceMat;
     p.userData._emR0 = mat.emissive.getHex();
     p.userData._emI0 = mat.emissiveIntensity;
@@ -1111,11 +1274,30 @@ export function createGame(ctx) {
     hoverRingMesh.position.set(cellX(c), TILE_TOP + 0.0018, cellZ(r));
     hoverRingMesh.renderOrder = 2;
     group.add(hoverRingMesh);
+    // I2b: when no piece is committed yet, ghost where the hovered own-piece COULD
+    // go so a mouse user can scout before clicking. Dimmer/cooler than the firm
+    // selection targets so "scout" never reads the same as "committed". Skipped
+    // once a piece is selected (the firm targets already cover that case).
+    if (!selectedFrom) {
+      for (const m of legalMovesFrom(state, r, c)) {
+        addGhost(m.to.r, m.to.c);
+      }
+    }
     startLoopIfNeeded();
+  }
+
+  function addGhost(r, c) {
+    const g = new THREE.Mesh(G.ghost, M.ghost);
+    g.position.set(cellX(c), TILE_TOP + STEP * 0.10, cellZ(r));
+    g.renderOrder = 2;
+    group.add(g);
+    hoverGhosts.push(g);
   }
 
   function clearHoverRing() {
     if (hoverRingMesh) { group.remove(hoverRingMesh); hoverRingMesh = null; }
+    for (const g of hoverGhosts) group.remove(g);
+    hoverGhosts.length = 0;
   }
 
   // ===========================================================================
@@ -1158,7 +1340,7 @@ export function createGame(ctx) {
 
   function loopActive() {
     return glides.length > 0 || targets.length > 0 || promoChoiceMeshes.length > 0 ||
-      fxAnims.length > 0 || checkPulseKing != null ||
+      fxAnims.length > 0 || checkPulseKing != null || winGlowMeshes.length > 0 ||
       (traceFromMesh && traceFromMesh.visible);
   }
   function startLoopIfNeeded() { if (loopActive()) startLoop(); }
@@ -1217,6 +1399,7 @@ export function createGame(ctx) {
     stepFxAnims(dt);
     stepTrace(dt);
     stepCheckPulse(dt);
+    stepWinFlourish(dt);
   }
 
   // Transient cosmetic animations: capture sink/fade, promotion scale-pop, mate
@@ -1233,6 +1416,20 @@ export function createGame(ctx) {
         a.mesh.position.y = a.y0 - e * STEP * 0.5;
         if (a.mat) { a.mat.transparent = true; a.mat.opacity = 1 - e; }
         if (k >= 1) { disposePiece(a.mesh); fxAnims.splice(i, 1); }
+      } else if (a.kind === "toTray") {
+        // Slide the captured mesh off the board onto the captor's tray, shrinking
+        // to TRAY_SCALE on the way, with a small arc so it reads as "swept aside".
+        const e = easeInOut(k);
+        a.mesh.position.x = a.fromX + (a.toX - a.fromX) * e;
+        a.mesh.position.z = a.fromZ + (a.toZ - a.fromZ) * e;
+        a.mesh.position.y = a.fromY + (a.toY - a.fromY) * e + Math.sin(k * Math.PI) * STEP * 0.18;
+        a.mesh.scale.setScalar(a.s0 + (a.s0 * TRAY_SCALE - a.s0) * e);
+        if (k >= 1) {
+          fxAnims.splice(i, 1);
+          // Finalise: parkPrisonerMesh snaps the exact pose, bumps the slot counter
+          // and records the prisoner so applyState/dispose can manage it.
+          parkPrisonerMesh(a.mesh, a.victimColor, a.victimType, a.capturedBy);
+        }
       } else if (a.kind === "pop") {
         // Promotion settle: overshoot past 1 then ease back (subtle).
         const o = 1 + Math.sin(k * Math.PI) * 0.18;
@@ -1311,6 +1508,11 @@ export function createGame(ctx) {
       capR = move.to.r; capC = move.to.c;
     }
     if (capR >= 0) captured = pieceMeshes[capR][capC];
+    // Record the victim's identity (board still pre-move here) so the glide peak
+    // can park it on the captor's tray as a prisoner.
+    const victim = capR >= 0 && state.board[capR][capC]
+      ? { color: state.board[capR][capC].color, type: state.board[capR][capC].type }
+      : null;
 
     state = applyMoveToState(state, move);
 
@@ -1338,15 +1540,31 @@ export function createGame(ctx) {
     paint(); // rebuilds rook on castle, en-passant square, everything but mover/victim
     paintSkipCell = -1;
 
-    // I5: trace the move so the waiting player + spectators can read it.
+    // I5: trace the move so the waiting player + spectators can read it. Stash it
+    // into lastMove so snapshot() can carry it to converged viewers.
+    lastMove = { from: { r: move.from.r, c: move.from.c }, to: { r: move.to.r, c: move.to.c } };
     armTrace(move.from, move.to);
 
     const onPeak = () => {
-      if (captured) {
+      if (captured && victim) {
+        // Park the captured mesh on the captor's tray instead of disposing it: the
+        // "toTray" fxAnim sinks it briefly, then slides + shrinks it onto the shelf
+        // and finalises via parkPrisonerMesh (so it survives in `prisoners`).
+        const capturedBy = other(victim.color);
+        const dest = trayDest(capturedBy, trayCount[capturedBy]); // peek; counter bumped on land
+        fxAnims.push({
+          kind: "toTray", mesh: captured,
+          t: 0, dur: 0.34,
+          s0: captured.scale.x || 1,
+          fromX: captured.position.x, fromY: captured.position.y, fromZ: captured.position.z,
+          toX: dest.x, toY: dest.y, toZ: dest.z,
+          victimColor: victim.color, victimType: victim.type, capturedBy,
+        });
+        captured = null;
+        startLoop();
+      } else if (captured) {
+        // No recorded victim (defensive) — fall back to the old sink+fade dispose.
         const mat = captured.userData.pieceMat;
-        // Flag transparent up front so the fade actually takes (avoids a one-frame
-        // shader recompile mid-anim). pieceMat is a per-piece clone, disposed with
-        // the mesh, so this never leaks onto a shared material.
         if (mat) { mat.transparent = true; mat.needsUpdate = true; }
         fxAnims.push({
           kind: "capture", mesh: captured, mat,
@@ -1393,6 +1611,7 @@ export function createGame(ctx) {
       clearSelection(); clearHighlights();
       updateIdentityCue();
       mateFlourish(state.turn); // topple the mated king (state.turn = loser)
+      startWinFlourish(winner); // victory breathe on the surviving winning army
       try { ctx.onGameOver?.({ winner, reason: "checkmate" }); } catch { /* */ }
       return;
     }
@@ -1449,6 +1668,56 @@ export function createGame(ctx) {
     // Topple toward +X (a stable, board-bounded direction); reuse fxAnims.
     fxAnims.push({ kind: "topple", mesh: km, t: 0, dur: 0.5, dir: 1 });
     startLoop();
+  }
+
+  // ===========================================================================
+  // Win flourish — a gentle gold "victory breathe" on every surviving piece of
+  // the WINNING army, plus a celebratory pulse recolour of the local home rail when
+  // the local player won. Purely cosmetic; driven by stepWinFlourish from the loop
+  // and re-derivable in applyState so a late-join sees the end-state styling.
+  // ===========================================================================
+  function startWinFlourish(winColor) {
+    clearWinFlourish();
+    if (!winColor) return;
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const m = pieceMeshes[r][c];
+        if (!m || m.userData.pieceColor !== winColor || !m.userData.pieceMat) continue;
+        const mat = m.userData.pieceMat;
+        // Stash the resting emissive so it can be restored if the game restarts via
+        // a fresh applyState. (clearWinFlourish reads these back.)
+        m.userData._wfR0 = mat.emissive.getHex();
+        m.userData._wfI0 = mat.emissiveIntensity;
+        winGlowMeshes.push(m);
+      }
+    }
+    winFlourishT = 0;
+    startLoop();
+  }
+
+  function stepWinFlourish(dt) {
+    if (winGlowMeshes.length === 0) return;
+    winFlourishT += dt;
+    const pulse = 0.5 + 0.5 * Math.sin(winFlourishT * 3.2);
+    for (const m of winGlowMeshes) {
+      const mat = m.userData.pieceMat;
+      if (!mat) continue;
+      mat.emissive.set("#e0a23a");
+      mat.emissiveIntensity = 0.22 + pulse * 0.5;
+    }
+  }
+
+  function clearWinFlourish() {
+    for (const m of winGlowMeshes) {
+      const mat = m.userData.pieceMat;
+      if (mat && m.userData._wfR0 !== undefined) {
+        mat.emissive.setHex(m.userData._wfR0);
+        mat.emissiveIntensity = m.userData._wfI0;
+      }
+      delete m.userData._wfR0; delete m.userData._wfI0;
+    }
+    winGlowMeshes.length = 0;
+    winFlourishT = 0;
   }
 
   // ===========================================================================
@@ -1582,7 +1851,9 @@ export function createGame(ctx) {
       M.promoBack
     );
     promoBackMesh.rotation.x = -Math.PI / 2;
-    promoBackMesh.position.set(baseX, TILE_TOP + 0.006, baseZ);
+    // Lift clear of the trace/target overlay quads (which sit at TILE_TOP + ~0.002);
+    // paired with depthTest:false + renderOrder 4 the backing never z-fights them.
+    promoBackMesh.position.set(baseX, TILE_TOP + 0.012, baseZ);
     promoBackMesh.renderOrder = 4;
     group.add(promoBackMesh);
 
@@ -1694,6 +1965,11 @@ export function createGame(ctx) {
       ep: state.ep ? { r: state.ep.r, c: state.ep.c } : null,
       phase,
       winner,
+      // Pure-cosmetic derived data so a snapshot-converged viewer (spectator /
+      // late-join) can re-arm the last-move trace. Wire-safe: ignored by decode.
+      lastMove: lastMove
+        ? { from: { r: lastMove.from.r, c: lastMove.from.c }, to: { r: lastMove.to.r, c: lastMove.to.c } }
+        : null,
     };
   }
   function publicState() { return snapshot(); }
@@ -1711,9 +1987,11 @@ export function createGame(ctx) {
     busy = false;
     clearSelection();
     clearHighlights();
+    clearWinFlourish();
     // Drop any transient cosmetic anim that references meshes paint() may dispose.
     clearTransientFx();
 
+    let lm = null;
     if (!incoming) {
       state = initialState();
       phase = "play";
@@ -1722,19 +2000,41 @@ export function createGame(ctx) {
       state = decodeState(incoming);
       phase = incoming.phase === "over" ? "over" : "play";
       winner = incoming.winner === "white" || incoming.winner === "black" ? incoming.winner : null;
+      const m = incoming.lastMove;
+      if (m && m.from && m.to &&
+        Number.isInteger(m.from.r) && Number.isInteger(m.from.c) &&
+        Number.isInteger(m.to.r) && Number.isInteger(m.to.c) &&
+        inBounds(m.from.r, m.from.c) && inBounds(m.to.r, m.to.c)) {
+        lm = { from: { r: m.from.r, c: m.from.c }, to: { r: m.to.r, c: m.to.c } };
+      }
     }
+    lastMove = lm;
     updateIdentityCue();
     paint();
+    // Populate the capture trays by diffing the rebuilt board against a full army,
+    // so spectators / late-joiners see the prisoners even though they never saw the
+    // captures happen.
+    rebuildPrisonersFromBoard();
+    // Re-arm the last-move trace so a converged viewer sees what just happened.
+    if (lastMove) armTrace(lastMove.from, lastMove.to);
     // Re-derive the in-check pulse from the rebuilt position so a snapshot that
     // lands mid-check still shows the cue (spectators/late-join). On game over we
     // leave the king upright — applyState has no per-move topple context.
     if (phase === "play") updateCheckFlourish(inCheck(state.board, state.turn));
+    // Re-derive the victory styling on a snapshot that lands already over.
+    else if (winner) startWinFlourish(winner);
   }
 
   // Stop & detach transient cosmetic animations without restoring materials of
   // meshes that are about to be disposed (paint rebuilds them). Used by applyState
   // and dispose so we never poke a freed mesh.
   function clearTransientFx() {
+    // Dispose any mesh still mid-flight in an fxAnim so it isn't orphaned in the
+    // group (capture sink, toTray slide, promotion pop). The promoted "pop" mesh is
+    // a live board piece tracked by pieceMeshes, so paint() owns it — leave it.
+    for (const a of fxAnims) {
+      if (a.kind === "capture" || a.kind === "toTray") disposePiece(a.mesh);
+    }
     fxAnims.length = 0;
     checkPulseKing = null;
     hideTrace();
@@ -1791,11 +2091,13 @@ export function createGame(ctx) {
     disposed = true;
     if (rafId != null) { caf(rafId); rafId = null; }
     glides.length = 0;
+    clearWinFlourish();
     clearTransientFx();
     if (traceFromMesh) { group.remove(traceFromMesh); traceFromMesh = null; }
     if (traceToMesh) { group.remove(traceToMesh); traceToMesh = null; }
     closePromoPicker();
     clearHighlights();
+    clearPrisoners();
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         if (pieceMeshes[r][c]) { disposePiece(pieceMeshes[r][c]); pieceMeshes[r][c] = null; }

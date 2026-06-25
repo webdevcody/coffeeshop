@@ -965,3 +965,84 @@ body {
   background: var(--accent, #7fd1ff);
 }
 .fleet-row.dead .fleet-pip { background: #8a1c0c; }
+
+/* ---------- City minimap ---------- */
+.minimap {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  pointer-events: none;
+  background: rgba(24, 16, 10, 0.78);
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  border-radius: 12px;
+  padding: 6px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.minimap-canvas {
+  display: block;
+  width: 180px;
+  height: 180px;
+  border-radius: 8px;
+}
+.minimap-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+.mm-leg {
+  font: 600 9px system-ui, sans-serif;
+  color: rgba(246, 239, 224, 0.72);
+  white-space: nowrap;
+}
+.mm-leg-you { color: #ffe08a; }
+.mm-leg-them { color: #7fd1ff; }
+.mm-leg-car { color: #ff7a68; }
+
+/* ---------- Driving HUD (speedometer + hint) ---------- */
+.drive-hud {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+.drive-hud.hidden { display: none; }
+.speedo {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  background: rgba(24, 16, 10, 0.82);
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  border-radius: 14px;
+  padding: 8px 16px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.speedo-num {
+  font: 800 28px "Segoe UI", system-ui, sans-serif;
+  color: #ffe08a;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.6em;
+  text-align: right;
+}
+.speedo-unit {
+  font: 600 12px system-ui, sans-serif;
+  color: rgba(246, 239, 224, 0.7);
+}
+.drive-hint {
+  background: rgba(34, 22, 14, 0.72);
+  color: var(--cream);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}

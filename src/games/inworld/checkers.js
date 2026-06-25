@@ -186,7 +186,16 @@ const REST_Y = WELL_FLOOR + DISC_T / 2; // resting centre height of a man
 const HOP_Y = STEP * 0.62;            // peak extra height of a jump parabola
 const LIFT_Y = STEP * 0.05;           // gentle hover lift for the SELECTED disc (reduced so the contact shadow doesn't detach)
 
-const RAIL_GAP = HALF + FRAME_W / 2; // lane sits ON the frame shoulder so racked discs read as seated on the border, not floating over the table rim
+const RAIL_GAP = HALF + FRAME_W / 2; // lane centred on the frame band (X=0.365); the frame band spans X∈[HALF, HALF+FRAME_W] = [0.350, 0.380]
+
+// Captured discs rack as small chips on the frame band. The band is only FRAME_W
+// (0.030 m) wide — far narrower than a full disc (0.070 m) — so a full-size disc
+// would overhang BOTH the playable field (inner) and the table rim (outer). We
+// therefore shrink parked discs to PARK_SCALE so a single column sits FULLY within
+// the frame band: parked radius = DISC_R*PARK_SCALE = 0.014, diameter 0.028, which
+// fits inside the 0.030-wide band centred on RAIL_GAP. Reads as a neat trophy rack.
+const PARK_SCALE = 0.40;
+const PARK_R = DISC_R * PARK_SCALE;   // 0.014 m — half the racked chip's diameter
 
 function cellX(c) { return -HALF + (c + 0.5) * STEP; }
 function cellZ(r) { return -HALF + (r + 0.5) * STEP; }
@@ -257,6 +266,14 @@ export function createGame(ctx) {
     gold: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.72, emissive: "#5a3c00", emissiveIntensity: 0.32 }),
     selRing: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.34, metalness: 0.5, emissive: "#e0a23a", emissiveIntensity: 0.5, transparent: true, opacity: 0.92, depthWrite: false }),
     target: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.3, emissive: "#e0a23a", emissiveIntensity: 0.55, transparent: true, opacity: 0.7, depthWrite: false }),
+    // Faint preview of the FURTHER steps of a committed multi-jump chain (steps beyond
+    // the immediate next landing), so a long jump's full path reads ahead of time.
+    targetGhost: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.3, emissive: "#e0a23a", emissiveIntensity: 0.3, transparent: true, opacity: 0.3, depthWrite: false }),
+    // Last-move trail (spectator-safe, shown to EVERYONE): a faint dark ring on the
+    // previous move's from-square and a brighter gold ring on its to-square. Cosmetic
+    // readability cue; cleared on applyState. depthWrite:false + low opacity like selRing.
+    trailFrom: new THREE.MeshStandardMaterial({ color: "#2c1d11", roughness: 0.7, metalness: 0.1, emissive: "#1a1208", emissiveIntensity: 0.25, transparent: true, opacity: 0.4, depthWrite: false }),
+    trailTo: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.34, metalness: 0.5, emissive: "#e0a23a", emissiveIntensity: 0.35, transparent: true, opacity: 0.5, depthWrite: false }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
     homeRed: new THREE.MeshStandardMaterial({ color: "#c4452f", roughness: 0.5, metalness: 0.1, emissive: "#c4452f", emissiveIntensity: 0.0 }),
     homeBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.5, metalness: 0.1, emissive: "#6b6058", emissiveIntensity: 0.12 }),
@@ -264,6 +281,10 @@ export function createGame(ctx) {
     lampBlack: new THREE.MeshStandardMaterial({ color: "#2a2320", roughness: 0.35, metalness: 0.2, emissive: "#6b6058", emissiveIntensity: 0.0 }),
   };
   const GLOW = { red: new THREE.Color("#e7796a"), black: new THREE.Color("#6b6058") };
+  // Forced-capture emphasis: a warm amber the selectable glow blends toward, plus a
+  // single reusable scratch colour so the per-frame blend allocates nothing.
+  const FORCE_GLOW = new THREE.Color("#ff9a3c");
+  const _glowScratch = new THREE.Color();
 
   // Turned draught profile via LatheGeometry: a gently domed, beveled disc.
   function discProfile() {
@@ -288,6 +309,7 @@ export function createGame(ctx) {
     well: new THREE.BoxGeometry(STEP * 0.92, WELL_D + 0.001, STEP * 0.92), // sunk square well floor
     tile: new THREE.BoxGeometry(STEP, STEP * 0.6, STEP),                   // light-square filler (cosmetic, between wells)
     selRing: new THREE.TorusGeometry(DISC_R * 1.12, DISC_R * 0.1, 8, 28),
+    trailRing: new THREE.TorusGeometry(DISC_R * 1.18, DISC_R * 0.08, 8, 28), // last-move from/to markers
     target: new THREE.CylinderGeometry(STEP * 0.22, STEP * 0.22, STEP * 0.04, 24),
     hit: new THREE.BoxGeometry(STEP * 0.98, DISC_T * 3, STEP * 0.98),      // per-square collider
     homeBar: new THREE.BoxGeometry(BOARD_SIZE * 0.7, FRAME_H * 0.5, FRAME_W * 0.5),
@@ -295,7 +317,7 @@ export function createGame(ctx) {
     plank: new THREE.BoxGeometry(OUTER, PLANK_H, OUTER),                   // solid base plank
     frameLong: new THREE.BoxGeometry(OUTER, FRAME_H, FRAME_W),             // ±Z frame rails
     frameSide: new THREE.BoxGeometry(FRAME_W, FRAME_H, OUTER - FRAME_W * 2), // ±X frame rails
-    capRail: new THREE.BoxGeometry(STEP * 0.9, 0.006, BOARD_SIZE * 0.92),  // captured-disc rails
+    capRail: new THREE.BoxGeometry(FRAME_W * 0.9, 0.006, BOARD_SIZE * 0.62), // captured-chip tray, sized to sit WITHIN the frame band (X) and span the rack run (Z)
   };
 
   // ---- Piece pool ---------------------------------------------------------
@@ -309,6 +331,15 @@ export function createGame(ctx) {
   const targets = [];
   const glowing = new Set();
   let hoverKey = -1;   // r*8+c of the hovered legal target (mouse pre-click feedback), or -1
+  let hoverPieceId = 0; // id of a hovered selectable own disc (legal from-square), or 0 — boosts its glow
+  let forcedCapture = false; // true when the local player's ONLY legal moves are captures (drives a warmer/faster glow)
+
+  // ---- Last-move trail (persistent, shown to EVERYONE incl. spectators) ----
+  // The from/to squares of the most recent committed/applied move. Drawn as faint
+  // rings so both players AND spectators can read what just happened. Distinct from
+  // the turn-gated highlights above (cleared on applyState, not on every refresh).
+  let lastMove = null;          // { from:{r,c}, to:{r,c} } in canonical cell coords
+  const trailMeshes = [];       // the from/to ring meshes currently in the scene
 
   // ---- Persistent identity / turn cues (built once) -----------------------
   const cue = { red: { bar: null, lamp: null }, black: { bar: null, lamp: null } };
@@ -324,6 +355,8 @@ export function createGame(ctx) {
   //   winT      — a sustained brighten/pulse of the winner's bar+lamp on game over.
   let handoffT = 0;    // >0 while the turn-arrival pulse plays
   let winPulseT = 0;   // accumulator that drives the win flourish while phase==="over"
+  let winHopT = 0;     // one-shot accumulator: winner's surviving discs do a brief victory hop
+  const WIN_HOP_DUR = 1.6; // seconds the victory-hop wave plays before settling
   let glintT = 0;      // accumulator for the faint continuous king gold glint
   let kingCount = 0;   // number of kings currently on the board (gates the glint)
   const HANDOFF_DUR = 0.5; // seconds the turn-arrival bar pulse lasts
@@ -583,20 +616,22 @@ export function createGame(ctx) {
   }
 
   // Next free slot on a colour's capture rail. Captured red park on the -X lane,
-  // captured black on +X, two columns deep so 12 fit comfortably.
+  // captured black on +X. A SINGLE column of small chips, CENTRED on the frame band:
+  //   * X = lane (RAIL_GAP) — chip diameter (2*PARK_R = 0.028) fits inside the
+  //     0.030-wide band, so nothing overhangs the field (inner) or table rim (outer).
+  //   * Z is centred: slot 0..11 maps symmetrically around z=0 so the rack fills the
+  //     tray evenly instead of hugging one end (the old two-column layout overlapped
+  //     its own neighbours by ~0.041 m AND overhung the outer frame by 0.035 m).
+  const RACK_ROWS = 12;
+  const RACK_DZ = PARK_R * 2 + 0.0035;        // chip diameter + a small gap (0.0315 m)
   function railDest(color) {
     const sx = color === "red" ? -1 : 1;
-    const slot = railCount[color]++;
+    const slot = Math.min(railCount[color]++, RACK_ROWS - 1);
     const lane = sx * RAIL_GAP;
-    const col = slot % 2;
-    const rowN = Math.floor(slot / 2);
-    // Seat captured discs ON the frame rail top (not floating above the plank) and
-    // keep the two columns hugging the frame shoulder so 12 men rack neatly along the
-    // border within the frame length (6 rows * ~0.035 m << BOARD_SIZE*0.92).
     return {
-      x: lane + (col === 0 ? -DISC_R * 0.42 : DISC_R * 0.42),
-      y: PLANK_TOP + FRAME_H + DISC_T / 2,
-      z: -BOARD_SIZE * 0.4 + rowN * (DISC_T * 1.2 + STEP * 0.18),
+      x: lane,
+      y: PLANK_TOP + FRAME_H + (DISC_T * PARK_SCALE) / 2, // chip seated on the tray top
+      z: (slot - (RACK_ROWS - 1) / 2) * RACK_DZ,          // centred run around z=0
     };
   }
 
@@ -607,7 +642,9 @@ export function createGame(ctx) {
     rec.onBoard = false;
     rec.mesh.userData.cell = null; // off-board: never resolve a click to a stale square
     const dest = railDest(rec.color);
-    rec.mesh.scale.set(1, 1, 1);
+    // Shrink the racked disc to a chip so a full column fits within the frame band
+    // without overhanging the field or the table rim (see PARK_SCALE / railDest).
+    rec.mesh.scale.set(PARK_SCALE, PARK_SCALE, PARK_SCALE);
     rec.mesh.rotation.set(0, 0, 0);
     rec.mesh.position.set(dest.x, dest.y, dest.z);
     rec.baseMat.opacity = 1;
@@ -729,14 +766,26 @@ export function createGame(ctx) {
     // it), so the rest of the selectable set glows without the floaty-shadow jank.
     if (glowing.size > 0 || targets.length > 0) {
       idleT += dt;
-      const pulse = 0.3 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4.2));
-      const lift = LIFT_Y * (0.5 + 0.5 * Math.sin(idleT * 4.2));
+      // Forced-capture turns pulse FASTER and a touch BRIGHTER, and the glow blends
+      // toward a warm amber — a clear "you must jump" cue. Quiet turns keep the calm
+      // slow pulse in each side's own colour.
+      const freq = forcedCapture ? 6.4 : 4.2;
+      const wave = 0.5 + 0.5 * Math.sin(idleT * freq);
+      const pulse = forcedCapture ? 0.4 + 0.45 * wave : 0.3 + 0.3 * wave;
+      const lift = LIFT_Y * (0.5 + 0.5 * Math.sin(idleT * freq));
       const selId = selectedFrom ? idAt(selectedFrom.r, selectedFrom.c) : 0;
       for (const id of glowing) {
         const rec = pieces.get(id);
         if (!rec) continue;
-        rec.baseMat.emissive.copy(GLOW[rec.color]);
-        rec.baseMat.emissiveIntensity = pulse;
+        if (forcedCapture) {
+          // Blend the side's glow toward amber (no allocation: reuse the scratch colour).
+          _glowScratch.copy(GLOW[rec.color]).lerp(FORCE_GLOW, 0.6);
+          rec.baseMat.emissive.copy(_glowScratch);
+        } else {
+          rec.baseMat.emissive.copy(GLOW[rec.color]);
+        }
+        // Pre-pick hover: brighten the disc the cursor is resting on (mouse affordance).
+        rec.baseMat.emissiveIntensity = pulse + (id === hoverPieceId ? 0.35 : 0);
         if (!isHopping(rec.id)) {
           rec.mesh.position.y = (id === selId) ? REST_Y + lift : REST_Y;
         }
@@ -784,6 +833,29 @@ export function createGame(ctx) {
         const w = 0.5 + 0.5 * Math.sin(winPulseT * 3.2);
         c.bar.material.emissiveIntensity = 0.55 + 0.35 * w;
         c.lamp.material.emissiveIntensity = 0.55 + 0.45 * w;
+      }
+
+      // Victory hop (one-shot): the winner's surviving discs do a brief synchronized
+      // bobbing wave, then settle back to rest. Reads only `winner`/`phase`, so every
+      // viewer (both players AND spectators) sees the win celebrated. No rules/sync.
+      if (winHopT > 0) {
+        winHopT = Math.max(0, winHopT - dt);
+        const prog = 1 - winHopT / WIN_HOP_DUR;       // 0..1 across the celebration
+        const envelope = Math.sin(prog * Math.PI);    // ramp in then out (no snap at the ends)
+        for (const rec of pieces.values()) {
+          if (!rec.onBoard || rec.color !== winner) continue;
+          if (isHopping(rec.id)) continue;            // never fight an in-flight glide (defensive)
+          const cell = rec.mesh.userData.cell;
+          const phaseOff = cell ? (cell.r + cell.c) * 0.6 : 0; // board-position wave
+          const bob = Math.abs(Math.sin(prog * Math.PI * 3 + phaseOff));
+          rec.mesh.position.y = REST_Y + envelope * bob * HOP_Y * 0.45;
+        }
+        if (winHopT === 0) {
+          // Settle every winner disc flat once the wave ends.
+          for (const rec of pieces.values()) {
+            if (rec.onBoard && rec.color === winner && !isHopping(rec.id)) rec.mesh.position.y = REST_Y;
+          }
+        }
       }
     }
   }
@@ -914,6 +986,11 @@ export function createGame(ctx) {
       capRecs.push(capRec);
     }
 
+    // Record the last move for the persistent trail (drawn for everyone). Set here so
+    // BOTH the local commit path and the remote apply path get it through one place.
+    lastMove = { from: { r: from.r, c: from.c }, to: { r: final.r, c: final.c } };
+    refreshTrail();
+
     busy = true;
     animateMove(rec, from, steps, capRecs, promotes, () => { busy = false; });
     return true;
@@ -924,12 +1001,30 @@ export function createGame(ctx) {
   // NO legal moves loses — covers an empty side AND a fully-blocked side), then
   // refresh highlights.
   // -------------------------------------------------------------------------
+  // Recompute the king tally from the authoritative id grid. Promotion bumps
+  // kingCount in performMove, but a CAPTURED king (its id cleared from the grid)
+  // never decremented it, so a delta-only game would let kingCount drift upward and
+  // keep the gold glint running forever. Recomputing here keeps the delta path as
+  // authoritative as the snapshot path (which recomputes in setBoardFromLogical).
+  function recomputeKingCount() {
+    let n = 0;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const rec = pieceAt(r, c);
+        if (rec && rec.king) n++;
+      }
+    }
+    kingCount = n;
+  }
+
   function afterMove() {
+    recomputeKingCount();
     turn = other(turn);
     if (allMoves(logicalBoard(), turn).length === 0) {
       phase = "over";
       winner = other(turn);
       winPulseT = 0;
+      winHopT = WIN_HOP_DUR; // arm the one-shot victory hop for the winner's discs
       clearSelection();
       clearHighlights();
       updateIdentityCues();
@@ -954,8 +1049,12 @@ export function createGame(ctx) {
   function refreshHighlights() {
     clearHighlights();
     updateIdentityCues();
-    if (!myTurnNow()) return;
+    if (!myTurnNow()) { forcedCapture = false; return; }
     const moves = allMoves(logicalBoard(), myColor);
+    // allMoves() returns ONLY captures when any exist (mandatory-capture rule), so a
+    // non-empty set that is all-captures means the player is forced to jump. Drive a
+    // warmer/faster selectable glow off this so "you must jump" reads at a glance.
+    forcedCapture = moves.length > 0 && moves.every((m) => m.captured.length > 0);
 
     if (!selectedFrom) {
       const selectable = new Set(moves.map((m) => m.from.r * 8 + m.from.c));
@@ -986,14 +1085,30 @@ export function createGame(ctx) {
       seen.add(k);
       addTarget(next.r, next.c);
     }
+
+    // Multi-jump path preview: when the selection has narrowed to a SINGLE remaining
+    // chain, faintly mark its further landings (beyond the immediate next) so the
+    // player sees where a long jump ends. Only when unambiguous, to avoid clutter.
+    if (candidateSeqs.length === 1) {
+      const only = candidateSeqs[0];
+      for (let i = pathSoFar.length + 1; i < only.steps.length; i++) {
+        const s = only.steps[i];
+        if (seen.has(s.r * 8 + s.c)) continue;
+        seen.add(s.r * 8 + s.c);
+        addTarget(s.r, s.c, true);
+      }
+    }
   }
 
-  function addTarget(r, c) {
-    const t = new THREE.Mesh(G.target, M.target);
-    const baseY = REST_Y + STEP * 0.18;
+  // `ghost` true => a faint, lower preview marker for a FURTHER step of a single
+  // remaining jump chain (not the immediate landing). Ghosts are NOT hover/click
+  // targets (no userData.target), they only hint where a long jump continues.
+  function addTarget(r, c, ghost) {
+    const t = new THREE.Mesh(G.target, ghost ? M.targetGhost : M.target);
+    const baseY = REST_Y + (ghost ? STEP * 0.1 : STEP * 0.18);
     t.position.set(cellX(c), baseY, cellZ(r));
     t.userData.baseY = baseY;
-    t.userData.target = { r, c };
+    if (!ghost) t.userData.target = { r, c };
     t.renderOrder = 3;
     group.add(t);
     targets.push(t);
@@ -1007,7 +1122,32 @@ export function createGame(ctx) {
     for (const t of targets) group.remove(t);
     targets.length = 0;
     hoverKey = -1;
+    hoverPieceId = 0;
     if (selRingMesh) { group.remove(selRingMesh); selRingMesh = null; }
+  }
+
+  // -------------------------------------------------------------------------
+  // Last-move trail: rebuild the two faint rings to match `lastMove`. Shown to
+  // EVERYONE (seated players AND spectators) since it is pure read-only history —
+  // it is NOT gated by myTurnNow(). Cleared (lastMove=null) in applyState so a
+  // fresh game / authoritative resync doesn't carry a stale marker.
+  function clearTrail() {
+    for (const m of trailMeshes) group.remove(m);
+    trailMeshes.length = 0;
+  }
+  function addTrailRing(r, c, mat) {
+    const ring = new THREE.Mesh(G.trailRing, mat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(cellX(c), PLANK_TOP + 0.0035, cellZ(r));
+    ring.renderOrder = 1; // under the selRing (2) / targets (3) so live cues stay on top
+    group.add(ring);
+    trailMeshes.push(ring);
+  }
+  function refreshTrail() {
+    clearTrail();
+    if (!lastMove) return;
+    addTrailRing(lastMove.from.r, lastMove.from.c, M.trailFrom);
+    addTrailRing(lastMove.to.r, lastMove.to.c, M.trailTo);
   }
 
   // ===========================================================================
@@ -1019,14 +1159,19 @@ export function createGame(ctx) {
   // re-check myTurnNow() defensively. Never touches rules or sync.
   // ===========================================================================
   function setHover(cell) {
-    if (!myTurnNow()) { hoverKey = -1; return; }
+    if (!myTurnNow()) { hoverKey = -1; hoverPieceId = 0; return; }
     let r = null, c = null;
     if (cell && typeof cell === "object") { r = cell.r; c = cell.c; }
-    if (!Number.isInteger(r) || !Number.isInteger(c)) { hoverKey = -1; return; }
+    if (!Number.isInteger(r) || !Number.isInteger(c)) { hoverKey = -1; hoverPieceId = 0; return; }
     const key = r * 8 + c;
-    // Only honour the hover when it lands on a real legal-target token (one we drew).
+    // Honour the hover when it lands on a real legal-target token (one we drew).
     hoverKey = targets.some((t) => t.userData.target && t.userData.target.r === r && t.userData.target.c === c)
       ? key : -1;
+    // Also recognise a hover over a SELECTABLE own disc (a legal from-square, already in
+    // `glowing`) and momentarily boost that disc's glow so a mouse user gets pre-pick
+    // feedback before clicking. Rules untouched — the disc is already selectable.
+    const id = idAt(r, c);
+    hoverPieceId = id && glowing.has(id) ? id : 0;
   }
 
   function clearSelection() {
@@ -1189,6 +1334,10 @@ export function createGame(ctx) {
     busy = false;
     clearSelection();
     clearHighlights();
+    // An authoritative snapshot doesn't carry which delta produced it, so drop any
+    // stale last-move trail rather than show a marker that may not match this state.
+    lastMove = null;
+    refreshTrail();
 
     const prevTurn = turn;
     const prevPhase = phase;
@@ -1213,6 +1362,11 @@ export function createGame(ctx) {
     // reads as over, and fire the turn-handoff flourish only when the turn ACTUALLY
     // changed to the local player (so a redundant same-turn echo never re-pulses).
     if (newPhase === "over" && (prevPhase !== "over" || winPulseT === 0)) winPulseT = 0;
+    // Victory hop: arm the one-shot only on the TRANSITION into a won game (a resync of
+    // an already-over board must not re-trigger it). Reset to 0 otherwise so a fresh /
+    // still-playing snapshot never leaves the discs mid-hop.
+    if (newPhase === "over" && newWinner && prevPhase !== "over") winHopT = WIN_HOP_DUR;
+    else if (newPhase !== "over") winHopT = 0;
     if (newPhase === "play" && myColor != null && role !== "spectator"
         && turn === myColor && prevTurn !== myColor) {
       handoffT = HANDOFF_DUR;
@@ -1285,13 +1439,7 @@ export function createGame(ctx) {
 
     // Recompute the king tally authoritatively from the freshly-seated board (only
     // on-board kings count; parked discs were demoted by parkOnRail).
-    kingCount = 0;
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const rec = pieceAt(r, c);
-        if (rec && rec.king) kingCount++;
-      }
-    }
+    recomputeKingCount();
 
     turn = newTurn;
     phase = newPhase;
@@ -1388,6 +1536,7 @@ export function createGame(ctx) {
     crowns.length = 0;
     settles.length = 0;
     clearHighlights();
+    clearTrail();
     for (const rec of pieces.values()) {
       rec.baseMat.dispose?.();
       rec.capMat.dispose?.();

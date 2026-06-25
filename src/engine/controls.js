@@ -14,6 +14,13 @@ export function createControls(domElement) {
   let sitPressed = false; // edge-triggered Space, drained by consumeSit()
   let dropPressed = false; // edge-triggered G, drained by consumeDrop()
   let usePressed = false; // edge-triggered E, drained by consumeUse() (enter/exit a ride)
+  // Skate trick edges (drained only while skating by rides.js). Ollie is also
+  // queued by Space so the natural "jump" key works on the board; when NOT
+  // skating that Space ollie-flag is simply never read (sit drains it via
+  // consumeSit, and consumeOllie isn't called), so it can't fire spuriously.
+  let olliePressed = false; // edge: Space / J -> ollie (pop into the air)
+  let flipPressed = false; // edge: K -> kickflip (deck spins about its length)
+  let shuvPressed = false; // edge: L -> pop-shuvit (deck spins flat)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -30,13 +37,20 @@ export function createControls(domElement) {
     if (typing()) return;
     if (e.code === "Space") {
       e.preventDefault(); // don't scroll the page
-      if (!keys.has("Space")) sitPressed = true; // first press only, ignore auto-repeat
+      if (!keys.has("Space")) {
+        sitPressed = true; // first press only, ignore auto-repeat
+        olliePressed = true; // Space doubles as the ollie/jump while skating
+      }
     }
     // G drops the item you're holding. `typing()` above already ignores keys
     // while the chat box is focused, so this never fires mid-message.
     if (e.code === "KeyG" && !keys.has("KeyG")) dropPressed = true;
     // E enters/exits a ride (car / skateboard). Edge-triggered like sit/drop.
     if (e.code === "KeyE" && !keys.has("KeyE")) usePressed = true;
+    // Skate trick keys (only consumed in skate mode): J ollie, K kickflip, L shuvit.
+    if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
+    if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
+    if (e.code === "KeyL" && !keys.has("KeyL")) shuvPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -154,6 +168,9 @@ export function createControls(domElement) {
   function consumeSit() {
     const pressed = sitPressed;
     sitPressed = false;
+    // Space also queues an ollie; clear it here so a Space that toggles sit on
+    // foot can't leave a stale ollie that fires the instant you mount the board.
+    olliePressed = false;
     // NOTE: not gated by `locked`. Movement stays locked during a game, but Space
     // must ALWAYS toggle sit/stand so you can STAND UP to quit mid-game (standing
     // fires onStand → the app unlocks). Gating this left you trapped in the game.
@@ -173,6 +190,33 @@ export function createControls(domElement) {
     const pressed = usePressed;
     usePressed = false;
     return pressed;
+  }
+
+  // Skate trick edges — drained once per press by rides.js while skating.
+  function consumeOllie() {
+    const p = olliePressed;
+    olliePressed = false;
+    return p;
+  }
+  function consumeFlip() {
+    const p = flipPressed;
+    flipPressed = false;
+    return p;
+  }
+  function consumeShuv() {
+    const p = shuvPressed;
+    shuvPressed = false;
+    return p;
+  }
+
+  // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
+  // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
+  function spinAxis() {
+    let s = 0;
+    if (keys.has("KeyD") || keys.has("ArrowRight")) s += 1;
+    if (keys.has("KeyA") || keys.has("ArrowLeft")) s -= 1;
+    if (joystick.active) s += joystick.dx;
+    return clamp(s, -1, 1);
   }
 
   // Raw car-relative drive axis straight from the keys (NOT camera-relative like
@@ -228,10 +272,13 @@ export function createControls(domElement) {
       move.z = 0;
       sitPressed = false;
       dropPressed = false;
+      olliePressed = false;
+      flipPressed = false;
+      shuvPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

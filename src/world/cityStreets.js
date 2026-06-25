@@ -8,7 +8,7 @@
 
 import * as THREE from "three";
 
-const NEAR = 8, FAR = 277, LEFT = -122, RIGHT = 122;
+const NEAR = 13, FAR = 277, LEFT = -122, RIGHT = 122; // NEAR=13 keeps roads OUT of the cafe (front wall at z=11)
 const MIDX = (LEFT + RIGHT) / 2, MIDZ = (NEAR + FAR) / 2;
 const LEN = FAR - NEAR, WID = RIGHT - LEFT;
 const VROADS = [-60, 0, 60]; // vertical avenues (run along Z) on the column seams
@@ -60,9 +60,37 @@ function crosswalkTex() {
   return c;
 }
 
+// Green street-name blade: a label bar with faux text strokes. Re-used on both
+// faces of the blade so the sign reads from either approach.
+function streetSignTex(label) {
+  const [c, g] = cnv(256, 64);
+  g.fillStyle = "#1f7a4d"; g.fillRect(0, 0, 256, 64);
+  g.strokeStyle = "#eef3ee"; g.lineWidth = 3;
+  g.strokeRect(5, 5, 246, 54);
+  // Faux letters: a row of short white bars suggesting a name (cheap + readable).
+  g.fillStyle = "#f3f6f3";
+  let x = 22;
+  for (const w of [10, 14, 8, 16, 6, 12, 18, 9, 13]) { g.fillRect(x, 24, w, 16); x += w + 8; if (x > 220) break; }
+  return c;
+}
+
+// Newspaper-box front: a coloured panel with a paler "window" rectangle.
+function newsboxTex() {
+  const [c, g] = cnv(64, 64);
+  g.fillStyle = "#b23838"; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = "#d9d2bf"; g.fillRect(10, 10, 44, 30);
+  g.fillStyle = "#2a2a2a"; g.fillRect(16, 16, 32, 4); g.fillRect(16, 24, 28, 3); g.fillRect(16, 30, 30, 3);
+  return c;
+}
+
 export function buildStreets() {
   const group = new THREE.Group();
   group.name = "streets";
+
+  // World-space XZ AABB colliders for SOLID static street props (collected below
+  // and inside addStreetLife). Players/car must not pass through these. The road
+  // surface, low kerbs, crosswalks and flat decals deliberately get NO collider.
+  const colliders = [];
 
   // GROUND Y-STACK (deliberate, so the layers never z-fight or sink the avatars):
   //   base pavement   y = -0.12  (opaque fallback under the whole map; a clear
@@ -88,44 +116,77 @@ export function buildStreets() {
   // and deterministically wins over whatever district slab top sits beneath it at
   // y=0 — that ordering no longer relies on a sub-mm Y lift the depth buffer can't
   // resolve at city distance. Vertical avenues and cross streets share one height
-  // (y=0.02); at intersections the cross street is forced on top by renderOrder.
+  // (y=0.02); inside the 12x12 intersection square the two road planes are exactly
+  // coplanar, so renderOrder alone (which only sequences draws) can't stop them
+  // z-fighting. The H (cross-street) material gets a STRONGER polygonOffset than the
+  // V material, so in the overlap the cross street is pulled a hair closer to the
+  // camera and deterministically wins the depth test — matching the renderOrder
+  // intent (H on top) with an actual depth bias, not luck.
   const roadMatV = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, LEN / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-  const roadMatH = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, WID / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  const roadMatH = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, WID / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1.5, polygonOffsetUnits: -1.5 });
   const kerbMat = new THREE.MeshStandardMaterial({ color: "#b9b6ac", roughness: 0.9 });
+
+  // Kerbs are BROKEN at every crossing so the two perpendicular kerb runs never
+  // interpenetrate at the 4 intersection corners (that overlap was the visible
+  // clipping). KGAP is the half-width of the air gap left around each crossing
+  // road's centreline — wide enough to clear the road (HALFR) AND the perpendicular
+  // kerb's own outer face (HALFR+0.5), so corners read as clean open junctions.
+  const KGAP = HALFR + 1;
+  // Emit straight kerb segments along one axis (`along` = "z" for the Z-running
+  // avenue kerbs, "x" for the X-running cross-street kerbs), spanning [aMin,aMax]
+  // at the fixed cross-coordinate `fixed`, but skipping the band ±KGAP around each
+  // crossing in `crossings`. Only segments with positive length are added.
+  const addKerb = (along, fixed, aMin, aMax, crossings) => {
+    const cuts = crossings.filter((c) => c > aMin && c < aMax).sort((p, q) => p - q);
+    let start = aMin;
+    const emit = (s, e) => {
+      const len = e - s;
+      if (len <= 0.01) return;
+      const mid = (s + e) / 2;
+      const k = along === "z"
+        ? new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, len), kerbMat)
+        : new THREE.Mesh(new THREE.BoxGeometry(len, 0.18, 0.5), kerbMat);
+      if (along === "z") k.position.set(fixed, 0.06, mid);
+      else k.position.set(mid, 0.06, fixed);
+      group.add(k);
+    };
+    for (const c of cuts) { emit(start, c - KGAP); start = c + KGAP; }
+    emit(start, aMax);
+  };
 
   // Vertical avenues (run along Z) + flanking kerbs. PlaneGeometry(ROADW, LEN) with
   // rotation.x=-PI/2 maps width->world X (ROADW) and height->world Z (LEN); the dashed
-  // centre line runs down the height, i.e. along Z. No extra rotation.
+  // centre line runs down the height, i.e. along Z. No extra rotation. Kerbs run the
+  // length of the avenue but are gapped where each cross street (HROADS) passes.
   for (const x of VROADS) {
     const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, LEN), roadMatV);
     r.rotation.x = -Math.PI / 2; r.position.set(x, 0.02, MIDZ); r.receiveShadow = true; r.renderOrder = 0;
     group.add(r);
-    for (const s of [-1, 1]) {
-      const k = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, LEN), kerbMat);
-      k.position.set(x + s * (HALFR + 0.25), 0.06, MIDZ); group.add(k);
-    }
+    for (const s of [-1, 1]) addKerb("z", x + s * (HALFR + 0.25), NEAR, FAR, HROADS);
   }
   // Cross streets (run along X) + flanking kerbs. Use PlaneGeometry(ROADW, WID) then
-  // rotation.z=PI/2 to swing the long axis (and the centre dashes) onto world X.
+  // rotation.z=PI/2 to swing the long axis (and the centre dashes) onto world X. Kerbs
+  // run the width of the street but are gapped where each avenue (VROADS) passes.
   for (const z of HROADS) {
     const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, WID), roadMatH);
     r.rotation.x = -Math.PI / 2; r.rotation.z = Math.PI / 2; r.position.set(MIDX, 0.02, z); r.receiveShadow = true; r.renderOrder = 1;
     group.add(r);
-    for (const s of [-1, 1]) {
-      const k = new THREE.Mesh(new THREE.BoxGeometry(WID, 0.18, 0.5), kerbMat);
-      k.position.set(MIDX, 0.06, z + s * (HALFR + 0.25)); group.add(k);
-    }
+    for (const s of [-1, 1]) addKerb("x", z + s * (HALFR + 0.25), LEFT, RIGHT, VROADS);
   }
 
   // Crosswalks at every intersection (4 approaches each). Top decal of the road
   // tier: a hair (5 mm) above the asphalt, with the strongest polygonOffset and
   // highest renderOrder so the paint always composites over the road and the other
   // decals. depthWrite:false lets the transparent stripes blend over a single
-  // stable surface instead of depth-fighting the road beneath them.
+  // stable surface instead of depth-fighting the road beneath them. The stripes sit
+  // entirely OUTSIDE the 12x12 intersection square on each approach: the bar is 4.2
+  // deep, so a centre offset of HALFR+2.5 puts its inner edge at HALFR+0.4 — clear
+  // of the box edge (HALFR) so it overlaps only ONE road plane, never both.
   const cwMat = new THREE.MeshStandardMaterial({ map: tex(crosswalkTex()), transparent: true, depthWrite: false, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
   const cwGeo = new THREE.PlaneGeometry(ROADW - 1, 4.2);
+  const CWO = HALFR + 2.5;
   for (const x of VROADS) for (const z of HROADS) {
-    for (const [dx, dz, rot] of [[0, HALFR + 2, 0], [0, -HALFR - 2, 0], [HALFR + 2, 0, Math.PI / 2], [-HALFR - 2, 0, Math.PI / 2]]) {
+    for (const [dx, dz, rot] of [[0, CWO, 0], [0, -CWO, 0], [CWO, 0, Math.PI / 2], [-CWO, 0, Math.PI / 2]]) {
       const cw = new THREE.Mesh(cwGeo, cwMat);
       cw.rotation.x = -Math.PI / 2; cw.rotation.z = rot; cw.position.set(x + dx, 0.025, z + dz); cw.renderOrder = 4;
       group.add(cw);
@@ -148,6 +209,8 @@ export function buildStreets() {
   });
   posts.castShadow = true;
   group.add(posts); group.add(heads);
+  // Tight collider per street-lamp post (head box 0.5 -> half 0.25; posts at ax+-7.4).
+  for (const [x, z] of spots) colliders.push({ minX: x - 0.25, maxX: x + 0.25, minZ: z - 0.25, maxZ: z + 0.25 });
 
   // Instanced roadside trees on the cross streets for greenery/density.
   const trunkGeo = new THREE.CylinderGeometry(0.18, 0.22, 1.6, 6);
@@ -165,9 +228,29 @@ export function buildStreets() {
   trunks.castShadow = true; leaves.castShadow = true;
   group.add(trunks); group.add(leaves);
 
-  addStreetLife(group, m);
+  const life = addStreetLife(group, m);
+  if (life.colliders) for (const c of life.colliders) colliders.push(c);
 
-  return { group };
+  // Drive the traffic-light heads through R -> G -> A in a continuous loop. We
+  // animate by fading each colour's shared emissive material (every lamp of a
+  // colour shares one material, so this is a handful of float writes per frame —
+  // allocation-free). The lamps stay dimly lit when "off" so they never vanish.
+  const lights = life.lights;
+  const PHASE = [4.6, 4.6, 1.6];   // seconds for RED, GREEN, AMBER
+  const CYCLE = PHASE[0] + PHASE[1] + PHASE[2];
+  const HOT = 1.5, COLD = 0.12;    // emissiveIntensity when active / idle
+  let tAcc = 0;
+  const update = (dt) => {
+    tAcc += dt;
+    if (tAcc > CYCLE) tAcc -= CYCLE * Math.floor(tAcc / CYCLE);
+    // 0 = red, 1 = green, 2 = amber
+    const phase = tAcc < PHASE[0] ? 0 : tAcc < PHASE[0] + PHASE[1] ? 1 : 2;
+    lights.r.emissiveIntensity = phase === 0 ? HOT : COLD;
+    lights.g.emissiveIntensity = phase === 1 ? HOT : COLD;
+    lights.a.emissiveIntensity = phase === 2 ? HOT : COLD;
+  };
+
+  return { group, update, colliders };
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +269,30 @@ function addStreetLife(group, m) {
     m.compose(v, q, s); mesh.setMatrixAt(i, m);
   };
 
+  // World-space XZ AABB colliders for the SOLID static props built below. Each is
+  // kept TIGHT to the prop's footprint. addAABB() centres a box at (x,z) with the
+  // given half-extents along world X/Z; for props placed with a small yaw it widens
+  // the box to the rotated bounding extents so the AABB still fully contains the
+  // footprint. Road surface, kerbs, crosswalks and flat decals get NO collider.
+  const colliders = [];
+  // True if (x,z) falls inside (or within a small margin of) any intersection
+  // square — the 12x12 patch where an avenue (VROADS) crosses a cross street
+  // (HROADS). Flat road decals (manhole/stain/patch) are dropped here so none
+  // ever lands on the doubly-painted junction and flickers against both road
+  // planes + the crosswalk paint stacked there.
+  const intMargin = HALFR + 2;
+  const inIntersection = (x, z) =>
+    VROADS.some((ax) => Math.abs(x - ax) < intMargin) &&
+    HROADS.some((hz) => Math.abs(z - hz) < intMargin);
+  const addAABB = (x, z, hx, hz, ry = 0) => {
+    if (ry) {
+      const c = Math.abs(Math.cos(ry)), n = Math.abs(Math.sin(ry));
+      const ax = hx * c + hz * n, az = hx * n + hz * c;
+      hx = ax; hz = az;
+    }
+    colliders.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz });
+  };
+
   // --- Traffic-light posts at the 12 intersections (one per corner approach). ---
   // A dark pole + a stacked head box with three emissive lamp discs (R/A/G).
   const tlInter = [];
@@ -198,11 +305,14 @@ function addStreetLife(group, m) {
   const tlBoxMat = new THREE.MeshStandardMaterial({ color: "#17191c", roughness: 0.6, metalness: 0.3 });
   const tlBoxes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.3, 0.42), tlBoxMat, tlCount);
   // Three lamp colours, one InstancedMesh each so each can carry its own emissive.
+  // We keep the materials around so the update() loop can cycle them R->G->A.
   const lampGeo = new THREE.CircleGeometry(0.16, 10);
-  const mkLamp = (col, emi) => new THREE.InstancedMesh(lampGeo, new THREE.MeshStandardMaterial({ color: col, emissive: emi, emissiveIntensity: 1.4, roughness: 0.4 }), tlCount);
-  const lampR = mkLamp("#ff5a4a", "#ff2a18");
-  const lampA = mkLamp("#ffd24a", "#ffb000");
-  const lampG = mkLamp("#5dff84", "#16d24a");
+  const lampMatR = new THREE.MeshStandardMaterial({ color: "#ff5a4a", emissive: "#ff2a18", emissiveIntensity: 1.5, roughness: 0.4 });
+  const lampMatA = new THREE.MeshStandardMaterial({ color: "#ffd24a", emissive: "#ffb000", emissiveIntensity: 0.12, roughness: 0.4 });
+  const lampMatG = new THREE.MeshStandardMaterial({ color: "#5dff84", emissive: "#16d24a", emissiveIntensity: 0.12, roughness: 0.4 });
+  const lampR = new THREE.InstancedMesh(lampGeo, lampMatR, tlCount);
+  const lampA = new THREE.InstancedMesh(lampGeo, lampMatA, tlCount);
+  const lampG = new THREE.InstancedMesh(lampGeo, lampMatG, tlCount);
   let ti = 0;
   for (const [ix, iz] of tlInter) for (const [cx, cz] of tlCorners) {
     const x = ix + cx, z = iz + cz;
@@ -210,6 +320,8 @@ function addStreetLife(group, m) {
     const ry = Math.atan2(-cx, -cz);
     place(tlPoles, ti, x, 2.2, z, ry);
     place(tlBoxes, ti, x, 4.7, z, ry);
+    // Tight collider on the traffic-light post footprint (head box 0.5 x 0.42).
+    addAABB(x, z, 0.25, 0.21, ry);
     // Lamps sit on the +Z face of the (unrotated) box; offset along the box-forward.
     const fz = 0.23, fx = 0;
     const rx = Math.cos(ry) * fx + Math.sin(ry) * fz;
@@ -228,10 +340,14 @@ function addStreetLife(group, m) {
   // --- Parked cars pulled to the kerb along the avenues (instanced low-poly boxes). ---
   // Bodies + cabins, varied colours via a few colour buckets (one InstancedMesh per
   // colour so we keep instancing). Wheels are one dark InstancedMesh (4 per car).
-  const carColors = ["#b5392f", "#2f5fb5", "#cdb23a", "#3a8f55", "#cfcfcf", "#7a3fa0", "#d98a2b", "#2b2e33"];
-  const carBodyGeo = new THREE.BoxGeometry(2.0, 0.85, 4.4);
+  const carColors = ["#b5392f", "#2f5fb5", "#cdb23a", "#3a8f55", "#cfcfcf", "#7a3fa0", "#d98a2b", "#2b2e33", "#2c8c8c", "#9aa0a6"];
+  // Two body silhouettes for variety: a sedan and a longer/taller van. Each type
+  // gets its own cabin geometry; both reuse the per-colour body materials.
+  const carBodyGeo = new THREE.BoxGeometry(2.0, 0.85, 4.4);   // sedan
   const carCabGeo = new THREE.BoxGeometry(1.85, 0.7, 2.2);
-  const carSpots = []; // [x, z, ry, colorIdx]
+  const vanBodyGeo = new THREE.BoxGeometry(2.1, 1.2, 5.0);    // van/SUV
+  const vanCabGeo = new THREE.BoxGeometry(1.95, 0.95, 3.2);
+  const carSpots = []; // [x, z, ry, colorIdx, type]  type 0 = sedan, 1 = van
   let cseed = 1234.5;
   const rnd = () => { cseed = (cseed * 9301 + 49297) % 233280; return cseed / 233280; };
   for (const ax of VROADS) {
@@ -241,7 +357,9 @@ function addStreetLife(group, m) {
       const side = rnd() < 0.5 ? -1 : 1;
       const x = ax + side * (HALFR - 1.3);
       const jitter = (rnd() - 0.5) * 3.0;
-      carSpots.push([x, z + jitter, 0, Math.floor(rnd() * carColors.length)]);
+      const ry = (rnd() - 0.5) * 0.18; // slight angle so they don't look stamped
+      const type = rnd() < 0.28 ? 1 : 0;
+      carSpots.push([x, z + jitter, ry, Math.floor(rnd() * carColors.length), type]);
     }
   }
   // Group spots by colour to build one InstancedMesh per colour for bodies+cabins.
@@ -256,22 +374,36 @@ function addStreetLife(group, m) {
     const mine = carSpots.filter((c) => c[3] === ci);
     if (!mine.length) continue;
     const bodyMat = new THREE.MeshStandardMaterial({ color: carColors[ci], roughness: 0.4, metalness: 0.25 });
-    const bodies = new THREE.InstancedMesh(carBodyGeo, bodyMat, mine.length);
-    const cabs = new THREE.InstancedMesh(carCabGeo, cabMat, mine.length);
-    mine.forEach(([x, z, ry], i) => {
-      place(bodies, i, x, 0.62, z, ry);
-      place(cabs, i, x, 1.28, z - 0.2, ry);
-    });
-    bodies.castShadow = true; cabs.castShadow = true;
-    group.add(bodies, cabs);
+    // Split by type so each instanced batch shares one geometry.
+    const sedans = mine.filter((c) => c[4] === 0);
+    const vans = mine.filter((c) => c[4] === 1);
+    if (sedans.length) {
+      const bodies = new THREE.InstancedMesh(carBodyGeo, bodyMat, sedans.length);
+      const cabs = new THREE.InstancedMesh(carCabGeo, cabMat, sedans.length);
+      sedans.forEach(([x, z, ry], i) => { place(bodies, i, x, 0.62, z, ry); place(cabs, i, x, 1.28, z - 0.2, ry); });
+      bodies.castShadow = true; cabs.castShadow = true;
+      group.add(bodies, cabs);
+    }
+    if (vans.length) {
+      const bodies = new THREE.InstancedMesh(vanBodyGeo, bodyMat, vans.length);
+      const cabs = new THREE.InstancedMesh(vanCabGeo, cabMat, vans.length);
+      vans.forEach(([x, z, ry], i) => { place(bodies, i, x, 0.8, z, ry); place(cabs, i, x, 1.78, z - 0.3, ry); });
+      bodies.castShadow = true; cabs.castShadow = true;
+      group.add(bodies, cabs);
+    }
   }
   // Wheels for all cars (after bodies so indices line up to carSpots order).
-  for (const [x, z, ry] of carSpots) {
+  for (const [x, z, ry, , type] of carSpots) {
+    const cs = Math.cos(ry), sn = Math.sin(ry);
+    q.setFromEuler(new THREE.Euler(0, ry, Math.PI / 2)); // lay cylinder on its side (axis -> X), then yaw
     for (const [ox, oz] of wheelOff) {
-      q.setFromEuler(new THREE.Euler(0, 0, Math.PI / 2)); // lay cylinder on its side (axis -> X)
-      v.set(x + ox, 0.34, z + oz); s.set(1, 1, 1);
+      v.set(x + ox * cs - oz * sn, 0.34, z + ox * sn + oz * cs); s.set(1, 1, 1);
       m.compose(v, q, s); wheels.setMatrixAt(wi++, m);
     }
+    // Tight collider on the parked-car body footprint (sedan 2.0x4.4 / van 2.1x5.0),
+    // widened to the yawed bounding box. These hug the kerb edge by design.
+    const hw = type === 1 ? 1.05 : 1.0, hl = type === 1 ? 2.5 : 2.2;
+    addAABB(x, z, hw, hl, ry);
   }
   group.add(wheels);
 
@@ -281,7 +413,7 @@ function addStreetLife(group, m) {
   for (const ax of VROADS) for (let z = NEAR + 30; z < FAR; z += 60) { hydSpots.push([ax - HALFR - 1.0, z]); }
   const hydBody = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.26, 0.8, 8), hydMat, hydSpots.length);
   const hydCap = new THREE.InstancedMesh(new THREE.SphereGeometry(0.24, 8, 6), hydMat, hydSpots.length);
-  hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); });
+  hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); addAABB(x, z, 0.26, 0.26); });
   hydBody.castShadow = true;
   group.add(hydBody, hydCap);
 
@@ -291,7 +423,10 @@ function addStreetLife(group, m) {
   // stains for a stable ordering on the unified road tier.
   const mhMat = new THREE.MeshStandardMaterial({ color: "#3a3b40", roughness: 0.95, metalness: 0.3, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
   const mhSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 24; z < FAR; z += 38) mhSpots.push([ax + (Math.random() < 0.5 ? -2.5 : 2.5), z]);
+  for (const ax of VROADS) for (let z = NEAR + 24; z < FAR; z += 38) {
+    const x = ax + (Math.random() < 0.5 ? -2.5 : 2.5);
+    if (!inIntersection(x, z)) mhSpots.push([x, z]);
+  }
   const manholes = new THREE.InstancedMesh(new THREE.CircleGeometry(0.55, 14), mhMat, mhSpots.length);
   manholes.renderOrder = 3;
   mhSpots.forEach(([x, z], i) => {
@@ -307,7 +442,10 @@ function addStreetLife(group, m) {
   // overlap reads as a faint stain, never a hard dark patch.
   const stainMat = new THREE.MeshStandardMaterial({ color: "#15151a", roughness: 1, transparent: true, opacity: 0.32, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   const stainSpots = [];
-  for (const ax of VROADS) for (let z = NEAR + 14; z < FAR; z += 21) stainSpots.push([ax + (Math.random() - 0.5) * 7, z + (Math.random() - 0.5) * 8, 1.0 + Math.random() * 1.8]);
+  for (const ax of VROADS) for (let z = NEAR + 14; z < FAR; z += 21) {
+    const sx = ax + (Math.random() - 0.5) * 7, sz = z + (Math.random() - 0.5) * 8;
+    if (!inIntersection(sx, sz)) stainSpots.push([sx, sz, 1.0 + Math.random() * 1.8]);
+  }
   const stains = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 10), stainMat, stainSpots.length);
   stains.renderOrder = 2;
   stainSpots.forEach(([x, z, sc], i) => {
@@ -356,6 +494,8 @@ function addStreetLife(group, m) {
   const glassMat = new THREE.MeshStandardMaterial({ color: "#acd5e6", roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.35 });
   const shelterSpots = [[0 - HALFR - 2.6, 70], [0 + HALFR + 2.6, 200]];
   for (const [sx, sz] of shelterSpots) {
+    // Tight collider on the shelter footprint (roof 4.2 x 2.0 -> half 2.1 x 1.0).
+    addAABB(sx, sz, 2.1, 1.0);
     const roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.16, 2.0), shelterMat);
     roof.position.set(sx, 2.5, sz); roof.castShadow = true; group.add(roof);
     const back = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.0, 0.08), glassMat);
@@ -367,6 +507,144 @@ function addStreetLife(group, m) {
     const bench = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.12, 0.5), shelterMat);
     bench.position.set(sx, 0.5, sz - 0.5); group.add(bench);
   }
+
+  // --- Bus-stop benches on the pavement (slatted seat + back on two legs). ---
+  // Stand-alone seating, well outside the kerb so the lanes stay >=6 m clear.
+  const benchWoodMat = new THREE.MeshStandardMaterial({ color: "#7a5532", roughness: 0.85 });
+  const benchMetalMat = new THREE.MeshStandardMaterial({ color: "#33373c", roughness: 0.5, metalness: 0.6 });
+  const benchSpots = []; // [x, z, ry]
+  for (const ax of VROADS) for (let z = NEAR + 38; z < FAR; z += 70) {
+    benchSpots.push([ax - HALFR - 2.4, z, Math.PI / 2]);   // long axis runs along Z (parallel to avenue)
+  }
+  const bSeat = new THREE.InstancedMesh(new THREE.BoxGeometry(2.2, 0.12, 0.5), benchWoodMat, benchSpots.length);
+  const bBack = new THREE.InstancedMesh(new THREE.BoxGeometry(2.2, 0.5, 0.1), benchWoodMat, benchSpots.length);
+  const bLegs = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.5, 0.5), benchMetalMat, benchSpots.length * 2);
+  let bli = 0;
+  benchSpots.forEach(([x, z, ry], i) => {
+    place(bSeat, i, x, 0.5, z, ry);
+    // Tight collider on the bench seat footprint (2.2 x 0.5 -> half 1.1 x 0.25, yawed).
+    addAABB(x, z, 1.1, 0.25, ry);
+    // back panel sits at the rear edge (local -Z before yaw); offset rotated into world
+    const bx = Math.sin(ry) * -0.2, bz = Math.cos(ry) * -0.2;
+    place(bBack, i, x + bx, 0.78, z + bz, ry);
+    for (const lo of [-0.9, 0.9]) {
+      place(bLegs, bli++, x + Math.cos(ry) * lo, 0.25, z + Math.sin(ry) * lo, ry);
+    }
+  });
+  bSeat.castShadow = true; bBack.castShadow = true;
+  group.add(bSeat, bBack, bLegs);
+
+  // --- Bike racks: a low U-loop rail (a few bars) on the pavement. ---
+  const bikeMat = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.4, metalness: 0.7 });
+  const bikeSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 54; z < FAR; z += 64) bikeSpots.push([ax + HALFR + 2.2, z]);
+  // Each rack = 3 vertical U-bars; instance the bars (3 per rack) along one rail.
+  const bikeBars = new THREE.InstancedMesh(new THREE.TorusGeometry(0.32, 0.04, 5, 8, Math.PI), bikeMat, bikeSpots.length * 3);
+  let bbi = 0;
+  bikeSpots.forEach(([x, z]) => {
+    for (const off of [-0.5, 0, 0.5]) {
+      // torus arc stands upright facing +X; ry=0 keeps the loop in the X-Y plane along Z
+      q.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
+      v.set(x, 0.32, z + off); s.set(1, 1, 1);
+      m.compose(v, q, s); bikeBars.setMatrixAt(bbi++, m);
+    }
+  });
+  group.add(bikeBars);
+
+  // --- Mailboxes: classic rounded-top blue boxes on a short pedestal. ---
+  const mailMat = new THREE.MeshStandardMaterial({ color: "#2452a6", roughness: 0.5, metalness: 0.3 });
+  const mailSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 58; z < FAR; z += 80) mailSpots.push([ax - HALFR - 2.0, z]);
+  const mailBody = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 0.7, 0.5), mailMat, mailSpots.length);
+  const mailTop = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.3, 0.5, 10, 1, false, 0, Math.PI), mailMat, mailSpots.length);
+  const mailLeg = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.07, 0.5, 6), benchMetalMat, mailSpots.length);
+  mailSpots.forEach(([x, z], i) => {
+    place(mailLeg, i, x, 0.25, z);
+    place(mailBody, i, x, 0.85, z);
+    // Tight collider on the mailbox body footprint (0.6 x 0.5 -> half 0.3 x 0.25).
+    addAABB(x, z, 0.3, 0.25);
+    // half-cylinder cap: lay it so the flat side faces down, long axis along Z
+    q.setFromEuler(new THREE.Euler(0, 0, Math.PI / 2));
+    v.set(x, 1.2, z); s.set(1, 0.5, 1);
+    m.compose(v, q, s); mailTop.setMatrixAt(i, m);
+  });
+  mailBody.castShadow = true; mailTop.castShadow = true;
+  group.add(mailBody, mailTop, mailLeg);
+
+  // --- Newspaper boxes: clustered coloured vending boxes by the kerb. ---
+  const newsTex = tex(newsboxTex());
+  const newsMat = new THREE.MeshStandardMaterial({ map: newsTex, roughness: 0.6, metalness: 0.2 });
+  const newsSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 64; z < FAR; z += 88) {
+    newsSpots.push([ax + HALFR + 1.8, z]); newsSpots.push([ax + HALFR + 2.4, z + 0.7]);
+  }
+  const newsboxes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), newsMat, newsSpots.length);
+  newsSpots.forEach(([x, z], i) => {
+    const ry = (i % 2) * 0.3;
+    place(newsboxes, i, x, 0.55, z, ry);
+    // Tight collider on the newspaper-box footprint (0.5 x 0.5 -> half 0.25, yawed).
+    addAABB(x, z, 0.25, 0.25, ry);
+  });
+  newsboxes.castShadow = true;
+  group.add(newsboxes);
+
+  // --- Planters: low concrete tubs with a leafy mound, lining the pavement. ---
+  const planterMat = new THREE.MeshStandardMaterial({ color: "#9b958a", roughness: 0.95 });
+  const plantMat = new THREE.MeshStandardMaterial({ color: "#4f8a53", roughness: 0.9, flatShading: true });
+  const planterSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 28; z < FAR; z += 34) {
+    planterSpots.push([ax + (z % 2 < 1 ? -1 : 1) * (HALFR + 1.6), z]);
+  }
+  const planterBox = new THREE.InstancedMesh(new THREE.BoxGeometry(1.1, 0.5, 1.1), planterMat, planterSpots.length);
+  const planterBush = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.6, 0), plantMat, planterSpots.length);
+  planterSpots.forEach(([x, z], i) => {
+    place(planterBox, i, x, 0.25, z);
+    place(planterBush, i, x, 0.78, z, 0, 1, 0.8, 1);
+    // Tight collider on the planter tub footprint (1.1 x 1.1 -> half 0.55).
+    addAABB(x, z, 0.55, 0.55);
+  });
+  planterBox.castShadow = true; planterBush.castShadow = true;
+  group.add(planterBox, planterBush);
+
+  // --- Street-name blades at each intersection (green double-sided sign). ---
+  // Sits on the same thin posts used for road signs but up high, perpendicular to
+  // the avenue so it reads from the road. Visual only.
+  const bladeMat = new THREE.MeshStandardMaterial({ map: tex(streetSignTex()), roughness: 0.6, side: THREE.DoubleSide });
+  const bladePostMat = new THREE.MeshStandardMaterial({ color: "#5a5e63", roughness: 0.5, metalness: 0.6 });
+  const bladeSpots = [];
+  for (const ax of VROADS) for (const hz of HROADS) bladeSpots.push([ax + HALFR + 1.4, hz + HALFR + 1.4]);
+  const bladePosts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.6, 6), bladePostMat, bladeSpots.length);
+  const blades = new THREE.InstancedMesh(new THREE.PlaneGeometry(2.4, 0.6), bladeMat, bladeSpots.length);
+  bladeSpots.forEach(([x, z], i) => {
+    place(bladePosts, i, x, 1.8, z);
+    // blade faces along X (readable from the avenue), mounted near the top
+    q.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
+    v.set(x, 3.4, z); s.set(1, 1, 1);
+    m.compose(v, q, s); blades.setMatrixAt(i, m);
+  });
+  bladePosts.castShadow = true;
+  group.add(bladePosts, blades);
+
+  // --- Road wear / asphalt-patch decals: lighter rectangular repairs on the
+  // lanes (polygonOffset, no Y lift). Sits on the decal tier just above the oil
+  // stains, below the manhole covers, so the ordering stays stable. ---
+  const patchMat = new THREE.MeshStandardMaterial({ color: "#42434a", roughness: 1, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2.5, polygonOffsetUnits: -2.5 });
+  const patchSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 20; z < FAR; z += 29) {
+    const px = ax + (Math.random() - 0.5) * 5;
+    if (!inIntersection(px, z)) patchSpots.push([px, z, 1.4 + Math.random() * 2.0, 0.8 + Math.random() * 1.4]);
+  }
+  const patches = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), patchMat, patchSpots.length);
+  patches.renderOrder = 2;
+  patchSpots.forEach(([x, z, sw, sl], i) => {
+    q.setFromAxisAngle(_RIGHT, -Math.PI / 2); v.set(x, 0.025, z); s.set(sw, sl, 1);
+    m.compose(v, q, s); patches.setMatrixAt(i, m);
+  });
+  group.add(patches);
+
+  // Hand the traffic-light materials back so buildStreets can cycle their emissive,
+  // plus the world-space prop colliders so buildStreets can return them to the city.
+  return { lights: { r: lampMatR, g: lampMatG, a: lampMatA }, colliders };
 }
 
 const _UP = new THREE.Vector3(0, 1, 0);

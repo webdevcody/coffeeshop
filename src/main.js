@@ -5,6 +5,7 @@
 import "./styles.css";
 import * as THREE from "three";
 import { createEngine } from "./engine/scene.js";
+import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
@@ -23,7 +24,17 @@ import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
-const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
+const { renderer, scene, camera, labelRenderer, updateDayNight } = createEngine(canvas);
+// Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
+// makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
+// glow. Built on the existing renderer/scene/camera; scene.js still owns tone
+// mapping + day/night exposure (OutputPass consumes them). frame() renders
+// through postFX.render() instead of renderer.render().
+const postFX = createPostFX(renderer, scene, camera);
+// Keep the composer's buffers in step with the window. scene.js already wires
+// its own onResize (camera aspect + renderer/label sizes) to the resize event;
+// we add a second listener that resizes the composer with the same dimensions.
+window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
 const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -79,7 +90,7 @@ const ambient = new AmbientBoards({
 let local = null;
 let joined = false;
 let lastStateSent = 0;
-let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false };
+let lastSent = { x: NaN, z: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
 
 // Where everyone is, so voice (and screen share) can scope to the people you're
 // actually with — table-mates when seated, nearby players otherwise.
@@ -143,7 +154,7 @@ network.on("player-left", (m) => {
   updateCount();
 });
 network.on("state", (m) => {
-  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY);
+  remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held);
 });
 // A remote player restyled themselves (skin / hair / clothing).
 network.on("appearance", (m) => {
@@ -430,6 +441,7 @@ function syncSeatedCamera() {
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   controls.update();
+  updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
 
   if (joined && local) {
@@ -438,9 +450,13 @@ function frame() {
     const ride = rides.update(dt, camera, controls, local);
     if (ride.mode === "drive") {
       if (local.character?.group) local.character.group.visible = false;
-      hud.setSitPrompt(ride.prompt);
+      // The drive HUD (bottom-right) carries the speedometer + "WASD / E exit"
+      // hint while driving, so suppress the bottom-center sit prompt to avoid
+      // showing the same hint twice.
+      hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
+      hud.setDriveHud(true, rides.car.state.speed); // speedometer + drive hint
     } else {
       const seatedView = syncSeatedCamera();
       local.update(dt, camera, seatedView);
@@ -455,7 +471,11 @@ function frame() {
       // you're holding (and the drop hint) the rest of the time.
       hud.setShopVisible(nearBar() && !local.sitting);
       hud.setHeldItem(local.heldName());
+      hud.setDriveHud(false); // not driving — hide the speedometer
     }
+    // City minimap: redraw from this frame's positions (local arrow + facing,
+    // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
+    updateMinimap();
     maybeSendState();
   } else {
     // Gentle interior orbit of the room while the join card is up.
@@ -475,9 +495,40 @@ function frame() {
   voice.updateSpeaking(dt);
   screenShare.update(dt);
 
-  renderer.render(scene, camera);
+  postFX.render();
   labelRenderer.render(scene, camera);
   requestAnimationFrame(frame);
+}
+
+// Feed the HUD minimap this frame's positions. Reuses scratch objects/array so
+// the per-frame redraw allocates nothing: _mmLocal/_mmCar are mutated in place
+// and _mmRemotes is refilled (length reset, not reallocated) each call.
+const _mmLocal = { x: 0, z: 0, facing: 0 };
+const _mmCar = { x: 0, z: 0, active: false };
+const _mmRemotes = [];
+function updateMinimap() {
+  if (!local) return;
+  _mmLocal.x = local.pos.x;
+  _mmLocal.z = local.pos.z;
+  _mmLocal.facing = local.facing;
+  // Refill the remote-dot list in place (grow lazily; never shrink the backing array).
+  const list = remotes.list();
+  let n = 0;
+  for (const e of list) {
+    const p = e.character.group.position;
+    let slot = _mmRemotes[n];
+    if (!slot) { slot = { x: 0, z: 0 }; _mmRemotes[n] = slot; }
+    slot.x = p.x;
+    slot.z = p.z;
+    n++;
+  }
+  _mmRemotes.length = n;
+  // The car: bright while someone is driving it (rides.mode === "drive").
+  const cs = rides.car.state;
+  _mmCar.x = cs.x;
+  _mmCar.z = cs.z;
+  _mmCar.active = rides.mode === "drive";
+  hud.updateMinimap(_mmLocal, _mmRemotes, _mmCar);
 }
 
 function maybeSendState() {
@@ -488,18 +539,26 @@ function maybeSendState() {
   const ry = +local.facing.toFixed(3);
   const moving = local.moving;
   const sitting = local.sitting;
-  // Only send if something changed (or we're moving) to save bandwidth.
+  // Ride tag (null | "car" | "skate") so remotes render the car/board mesh.
+  const ride = rides.ride;
+  // Held item id (null | item id) so remotes render the item in this player's hand.
+  const held = local.heldId();
+  // Only send if something changed (or we're moving) to save bandwidth. The ride
+  // tag and held id are in the comparison so entering/exiting a vehicle or
+  // buying/dropping an item forces an immediate send.
   if (
     x === lastSent.x &&
     z === lastSent.z &&
     ry === lastSent.ry &&
     moving === lastSent.moving &&
-    sitting === lastSent.sitting
+    sitting === lastSent.sitting &&
+    ride === lastSent.ride &&
+    held === lastSent.held
   ) {
     return;
   }
-  network.sendState(x, z, ry, moving, sitting, local.seatY);
-  lastSent = { x, z, ry, moving, sitting };
+  network.sendState(x, z, ry, moving, sitting, local.seatY, ride, held);
+  lastSent = { x, z, ry, moving, sitting, ride, held };
   lastStateSent = now;
 }
 

@@ -65,6 +65,44 @@ const boothRoofMat = new THREE.MeshStandardMaterial({ color: "#f6d24a", roughnes
 const gullMat = new THREE.MeshStandardMaterial({ color: "#f4f4ee", roughness: 0.8, flatShading: true });
 const buoyMat = new THREE.MeshStandardMaterial({ color: "#e0473c", roughness: 0.7 });
 const ropeMat = new THREE.MeshStandardMaterial({ color: "#caa86a", roughness: 1 });
+// Building skins for the promenade pavilions (a ticket-office / pier hall and the
+// arcade). Painted seaside-resort woodwork: cream walls, teal & coral trim, glassy
+// shopfronts and a striped awning. All reused across the two buildings.
+const wallMat = new THREE.MeshStandardMaterial({ color: "#eae3d2", roughness: 0.85 });
+const wallTrimMat = new THREE.MeshStandardMaterial({ color: "#2f7f93", roughness: 0.75 });
+const roofMat = new THREE.MeshStandardMaterial({ color: "#b8453e", roughness: 0.7 });
+const doorMat = new THREE.MeshStandardMaterial({ color: "#3a4f57", roughness: 0.7, metalness: 0.2 });
+const shopWinMat = new THREE.MeshStandardMaterial({
+  color: "#bfe6ef", roughness: 0.25, metalness: 0.2,
+  emissive: "#2b3d44", emissiveIntensity: 0.35,
+});
+const awningMat = new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.75 });
+const awningStripeMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.75 });
+const columnMat = new THREE.MeshStandardMaterial({ color: "#d8cfb8", roughness: 0.85 });
+// --- Ice-cream & souvenir shack skins (created ONCE, reused) ---------------
+// Mint-and-cream seaside shack: pastel walls, a candy-stripe interior accent,
+// pale wood floor and a coral roof so it reads as a cheerful beach kiosk.
+const shackWallMat = new THREE.MeshStandardMaterial({ color: "#bfe7df", roughness: 0.85 });
+const shackWallInMat = new THREE.MeshStandardMaterial({ color: "#f3efe2", roughness: 0.9, side: THREE.DoubleSide });
+const shackRoofMat = new THREE.MeshStandardMaterial({ color: "#e8896b", roughness: 0.75 });
+const shackFloorMat = new THREE.MeshStandardMaterial({ color: "#caa86a", roughness: 0.95 });
+const counterMat = new THREE.MeshStandardMaterial({ color: "#9c6b3f", roughness: 0.8 });
+const counterTopMat = new THREE.MeshStandardMaterial({ color: "#f2efe6", roughness: 0.6 });
+const shelfMat = new THREE.MeshStandardMaterial({ color: "#7d5230", roughness: 0.9 });
+const rugMat = new THREE.MeshStandardMaterial({ color: "#d24b6a", roughness: 0.95, side: THREE.DoubleSide });
+const stoolSeatMat = new THREE.MeshStandardMaterial({ color: "#2f7f93", roughness: 0.7 });
+const stoolLegMat = new THREE.MeshStandardMaterial({ color: "#444", roughness: 0.5, metalness: 0.6 });
+const bulbMat = new THREE.MeshStandardMaterial({
+  color: "#fff3c4", emissive: "#ffe08a", emissiveIntensity: 1.2, roughness: 0.3,
+});
+// A small pool of pastel "product" colours for the shelf goods + display tubs.
+const goodsMats = [
+  new THREE.MeshStandardMaterial({ color: "#ff9eb5", roughness: 0.7 }), // strawberry
+  new THREE.MeshStandardMaterial({ color: "#fff1b8", roughness: 0.7 }), // vanilla
+  new THREE.MeshStandardMaterial({ color: "#a8e6cf", roughness: 0.7 }), // mint
+  new THREE.MeshStandardMaterial({ color: "#c8a2c8", roughness: 0.7 }), // grape
+  new THREE.MeshStandardMaterial({ color: "#ffcf3f", roughness: 0.7 }), // lemon
+];
 
 // --- Shared geometries (reused across repeated props) ----------------------
 const pilingGeo = new THREE.CylinderGeometry(0.22, 0.26, 5, 8);
@@ -180,10 +218,12 @@ export function buildPier() {
     group.add(seam);
   }
 
-  // --- Pier deck on pilings, running out along X=0 (Z from -4 to 28) ------
+  // --- Pier deck on pilings, running out along X=0 (Z from -4 to 23) ------
+  // The seaward tip is held at Z=23 (was 28) so the deck + its collider clear the
+  // ~7 m road+sidewalk setback at the +Z tile seam; nothing reaches past +23.
   const DECK_W = 6;       // 6 m wide: a clear lane a car could drive onto
   const DECK_Z0 = -4;
-  const DECK_Z1 = 28;
+  const DECK_Z1 = 23;
   const deckLen = DECK_Z1 - DECK_Z0;
   const deckCz = (DECK_Z0 + DECK_Z1) / 2;
   const deck = box(DECK_W, 0.3, deckLen, plankMat);
@@ -276,53 +316,170 @@ export function buildPier() {
   group.add(lighthouse);
   addCollider(colliders, lhX, lhZ, 4.0, 4.0);
 
-  // --- Arcade booth on the promenade (off to one side) --------------------
-  const boothX = -16, boothZ = -16;
-  const booth = new THREE.Group();
-  booth.position.set(boothX, 0, boothZ);
-  const boothBody = box(5, 3, 4, boothMat);
-  boothBody.position.y = 1.5;
-  booth.add(boothBody);
-  const boothRoof = new THREE.Mesh(new THREE.ConeGeometry(4, 1.6, 4), boothRoofMat);
-  boothRoof.rotation.y = Math.PI / 4;
-  boothRoof.position.y = 3.8;
-  boothRoof.castShadow = true;
-  booth.add(boothRoof);
-  // Glowing neon sign on the booth front (faces +Z, toward the shore lane).
-  const boothSign = artPanel(4.2, 1.6, "neon", {
+  // --- Seaside-resort buildings on the promenade --------------------------
+  // PRIORITY: these are FULL 3D VOLUMES (real width AND depth AND height), not
+  // flat facades or thin slabs. Each sits BEHIND the clear promenade driving lane
+  // (Z in [-12,-2]) with its detailed FRONT facing +Z toward that lane/sea, so
+  // artPanel signs (which face +Z by default) need NO rotation — no mirrored text.
+  // Each building is a solid hall (wall box + overhanging roof) whose FRONT wall
+  // sits at +Z = depth/2. The shared shopfront/awning helpers below pin glazing,
+  // an awning and the sign just PROUD of that wall (≤0.6 m), so the ONE footprint
+  // collider added per building (full width×depth) stays exact.
+  function makeShopWindows(w, frontZ) {
+    // A run of glowing shopfront windows across the front wall, framed by a
+    // continuous teal sill/lintel so the storefront reads as glazed, not blank.
+    const g = new THREE.Group();
+    const panes = Math.max(2, Math.round(w / 2.2));
+    const paneW = (w - 0.8) / panes;
+    for (let i = 0; i < panes; i++) {
+      const pane = box(paneW - 0.18, 1.7, 0.12, shopWinMat, false);
+      pane.position.set(-w / 2 + 0.4 + (i + 0.5) * paneW, 1.9, frontZ + 0.07);
+      g.add(pane);
+    }
+    const sill = box(w - 0.4, 0.18, 0.18, wallTrimMat, false);
+    sill.position.set(0, 0.95, frontZ + 0.09);
+    g.add(sill);
+    const lintel = box(w - 0.4, 0.2, 0.2, wallTrimMat, false);
+    lintel.position.set(0, 2.85, frontZ + 0.1);
+    g.add(lintel);
+    return g;
+  }
+  // A striped awning shading the shopfront: alternating coral/cream slats on a
+  // gentle forward tilt, with two slim support posts to the deck.
+  function makeAwning(w, frontZ, y) {
+    const g = new THREE.Group();
+    const depth = 1.8;
+    const slats = Math.max(3, Math.round(w / 1.1));
+    const slatW = w / slats;
+    for (let i = 0; i < slats; i++) {
+      const slat = box(slatW + 0.02, 0.08, depth, i % 2 ? awningStripeMat : awningMat, false);
+      slat.position.set(-w / 2 + (i + 0.5) * slatW, y, frontZ + depth / 2 - 0.1);
+      g.add(slat);
+    }
+    g.rotation.x = -0.18; // tip the front edge down toward the street
+    // Support posts run from the awning's outer corners down to the deck.
+    for (const sx of [-w / 2 + 0.4, w / 2 - 0.4]) {
+      const post = box(0.12, y, 0.12, columnMat, false);
+      post.position.set(sx, y / 2, frontZ + depth - 0.2);
+      g.add(post);
+    }
+    return g;
+  }
+
+  // --- ARCADE (a full hall, left of the pier) -----------------------------
+  // 11 m wide × 8 m deep × 5 m tall — a real city-block volume, solid from all
+  // sides. Pulled in to centre (-14,-18.5) so its footprint sits in LOCAL
+  // X[-19.5,-8.5], Z[-22.5,-14.5] — well inside the [-23,23] road+sidewalk
+  // setback — while its front wall (Z=-14.5) still clears the lane (ends -12).
+  const arcX = -14, arcZ = -18.5, arcW = 11, arcD = 8, arcH = 5;
+  const arcFrontZ = arcD / 2;
+  const arcade = new THREE.Group();
+  arcade.position.set(arcX, 0, arcZ);
+  const arcBody = box(arcW, arcH, arcD, boothMat);
+  arcBody.position.y = arcH / 2;
+  arcade.add(arcBody);
+  // A pitched parapet roof cap (full footprint, slightly overhanging) so the
+  // building reads as a solid hall from front, sides AND back.
+  const arcRoof = box(arcW + 0.5, 0.6, arcD + 0.5, boothRoofMat);
+  arcRoof.position.y = arcH + 0.2;
+  arcade.add(arcRoof);
+  const arcRidge = new THREE.Mesh(new THREE.ConeGeometry(arcW * 0.62, 1.7, 4), boothRoofMat);
+  arcRidge.rotation.y = Math.PI / 4;
+  arcRidge.position.y = arcH + 1.2;
+  arcRidge.scale.z = (arcD + 0.5) / (arcW + 0.5);
+  arcRidge.castShadow = true;
+  arcade.add(arcRidge);
+  // Glazed shopfront + glowing neon sign on the FRONT (faces +Z toward the lane).
+  arcade.add(makeShopWindows(arcW, arcFrontZ));
+  // Central entrance door set into the glazing.
+  const arcDoor = box(2.0, 2.6, 0.16, doorMat, false);
+  arcDoor.position.set(0, 1.3, arcFrontZ + 0.08);
+  arcade.add(arcDoor);
+  arcade.add(makeAwning(arcW - 1.0, arcFrontZ, 3.4));
+  const arcSign = artPanel(5.0, 1.7, "neon", {
     lines: ["ARCADE", "PIER"], color: "#ff5fae", color2: "#5fd2ff",
     emissiveIntensity: 0.9, file: "pier-arcade-neon.png",
   });
-  boothSign.position.set(0, 2.0, 2.06);
-  booth.add(boothSign);
-  group.add(booth);
-  addCollider(colliders, boothX, boothZ, 5, 4);
+  arcSign.position.set(0, arcH - 0.7, arcFrontZ + 0.12);
+  arcade.add(arcSign);
+  group.add(arcade);
+  addCollider(colliders, arcX, arcZ, arcW, arcD);
 
-  // A big welcome billboard near the boardwalk entrance.
-  const welcome = artPanel(6, 3, "billboard", {
+  // --- PIER HALL / ticket office (a full hall, right of the pier) ----------
+  // 12 m wide × 9 m deep × 6 m tall — the district's main building, a substantial
+  // volume that reads solid from every angle. Pulled in to centre (10,-18) so its
+  // footprint sits in LOCAL X[4,16], Z[-22.5,-13.5] — fully inside the [-23,23]
+  // road+sidewalk setback (even its overhanging roof eave stops at Z≈-22.95) —
+  // with its front wall (Z=-13.5) still clearing the lane, and leaving the
+  // back-right corner clear for the ferris wheel.
+  const hallX = 10, hallZ = -18, hallW = 12, hallD = 9, hallH = 6;
+  const hallFrontZ = hallD / 2;
+  const hall = new THREE.Group();
+  hall.position.set(hallX, 0, hallZ);
+  const hallBody = box(hallW, hallH, hallD, wallMat);
+  hallBody.position.y = hallH / 2;
+  hall.add(hallBody);
+  // Corner pilasters give the seaside-resort hall some relief on the side/back
+  // faces too, so it never reads as a plain slab from behind.
+  for (const cx of [-hallW / 2 + 0.25, hallW / 2 - 0.25]) {
+    for (const cz of [-hallD / 2 + 0.25, hallD / 2 - 0.25]) {
+      const pil = box(0.5, hallH, 0.5, wallTrimMat, false);
+      pil.position.set(cx, hallH / 2, cz);
+      hall.add(pil);
+    }
+  }
+  // Overhanging hip roof (full footprint) + a small cupola, reading solid all round.
+  const hallRoof = box(hallW + 0.9, 0.7, hallD + 0.9, roofMat);
+  hallRoof.position.y = hallH + 0.25;
+  hall.add(hallRoof);
+  const hallHip = new THREE.Mesh(new THREE.ConeGeometry(hallW * 0.62, 2.2, 4), roofMat);
+  hallHip.rotation.y = Math.PI / 4;
+  hallHip.position.y = hallH + 1.4;
+  hallHip.scale.z = (hallD + 0.9) / (hallW + 0.9);
+  hallHip.castShadow = true;
+  hall.add(hallHip);
+  const cupola = box(1.4, 1.4, 1.4, wallMat);
+  cupola.position.y = hallH + 2.3;
+  hall.add(cupola);
+  const cupolaCap = new THREE.Mesh(new THREE.ConeGeometry(1.1, 1.0, 8), roofMat);
+  cupolaCap.position.y = hallH + 3.5;
+  cupolaCap.castShadow = true;
+  hall.add(cupolaCap);
+  // FRONT: a row of portico columns, glazed ticket windows, a central doorway,
+  // an awning and the welcome billboard — all facing +Z (the promenade lane).
+  for (const cx of [-hallW / 2 + 1.2, -1.8, 1.8, hallW / 2 - 1.2]) {
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 3.2, 12), columnMat);
+    col.position.set(cx, 1.6, hallFrontZ + 0.55);
+    col.castShadow = true;
+    hall.add(col);
+  }
+  hall.add(makeShopWindows(hallW, hallFrontZ));
+  const hallDoor = box(2.4, 3.0, 0.18, doorMat, false);
+  hallDoor.position.set(0, 1.5, hallFrontZ + 0.08);
+  hall.add(hallDoor);
+  hall.add(makeAwning(hallW - 1.2, hallFrontZ, 3.6));
+  // Welcome billboard mounted PROUD of the front wall, facing +Z (no rotation →
+  // readable, not mirrored). The big mass + roof sit BEHIND it as a real building.
+  const welcome = artPanel(7, 2.6, "billboard", {
     title: "SEASIDE PIER", sub: "Boardwalk • Funfair • Fish & Chips",
     a: "#1f6f9c", b: "#0b2a3e", accent: "#ffd24a", glyph: "⚓",
     emissiveIntensity: 0.5, file: "pier-welcome.png",
   });
-  welcome.position.set(16, 3.2, -18);
-  welcome.rotation.y = -0.5;
-  group.add(welcome);
-  // Posts holding the billboard.
-  for (const dx of [-2.4, 2.4]) {
-    const post = box(0.3, 4.4, 0.3, railMat);
-    const px = 16 + Math.cos(-0.5) * dx;
-    const pz = -18 - Math.sin(-0.5) * dx;
-    post.position.set(px, 2.2, pz);
-    group.add(post);
-  }
-  addCollider(colliders, 16, -18, 5.4, 1.2);
+  welcome.position.set(0, hallH - 0.6, hallFrontZ + 0.12);
+  hall.add(welcome);
+  group.add(hall);
+  addCollider(colliders, hallX, hallZ, hallW, hallD);
 
-  // --- Ferris-wheel silhouette behind the arcade booth --------------------
-  const wheelX = 22, wheelZ = -22;
+  // --- Ferris-wheel silhouette in the back-right corner -------------------
+  // Tucked into the back-right corner at centre (19.8,-19), just right of the
+  // pulled-in pier hall (which now ends at X=16). Its radius was trimmed (5.2→2.6)
+  // and its legs narrowed so the WHOLE wheel — outer cabins reach X≈22.85 — stays
+  // inside the [-23,23] setback and never interpenetrates the hall (clear of X=16).
+  const wheelX = 19.8, wheelZ = -19;
   const wheel = new THREE.Group();
   wheel.position.set(wheelX, 0, wheelZ);
   // Support A-frame legs.
-  for (const sx of [-2.4, 2.4]) {
+  for (const sx of [-1.5, 1.5]) {
     const leg = box(0.35, 9, 0.35, steelMat);
     leg.position.set(sx, 4.3, 0);
     leg.rotation.z = sx > 0 ? 0.22 : -0.22;
@@ -331,7 +488,7 @@ export function buildPier() {
   // The rotating ring with spokes + cabins.
   const ring = new THREE.Group();
   ring.position.y = 8.2;
-  const R = 5.2;
+  const R = 2.6;
   const rimGeo = new THREE.TorusGeometry(R, 0.16, 6, 28);
   const rim = new THREE.Mesh(rimGeo, steelMat);
   rim.castShadow = true;
@@ -355,7 +512,8 @@ export function buildPier() {
   }
   wheel.add(ring);
   group.add(wheel);
-  addCollider(colliders, wheelX, wheelZ, 5, 1.6);
+  // Collider covers the wheel's leg base; X[17.8,21.8], Z[-19.8,-18.2] — inside [-23,23].
+  addCollider(colliders, wheelX, wheelZ, 4, 1.6);
 
   // --- Mooring buoys floating near the pier (decorative, no collider) ------
   const buoyGeo = new THREE.SphereGeometry(0.5, 10, 8);
@@ -375,6 +533,199 @@ export function buildPier() {
     bollard.position.set(x, 0.85, DECK_Z1 - 3);
     bollard.castShadow = true;
     group.add(bollard);
+  }
+
+  // --- ENTERABLE ICE-CREAM & SOUVENIR SHACK -------------------------------
+  // A small walk-in beach kiosk tucked into the open promenade pocket BETWEEN
+  // the arcade (ends X=-8.5) and the pier hall (starts X=4), well BEHIND the
+  // clear driving lane (Z in [-12,-2]). Its whole footprint sits in LOCAL
+  // X[-6.5,1.5], Z[-21,-14] — clear of every existing building, the deck, the
+  // lighthouse and the lane — and entirely inside the [-23,23] setback.
+  //
+  // The room is a real interior: 4 thin walls (back + 2 sides + 2 short front
+  // segments flanking a 2.2 m doorway), a floor and a flat ceiling. The FRONT
+  // wall faces +Z toward the lane, so the player walks in from the promenade and
+  // the outside sign (artPanel, faces +Z) reads un-mirrored. Each wall gets its
+  // OWN AABB collider; the doorway gap gets NONE, so the inside is walkable.
+  const shopCx = -2.5, shopCz = -17.5;     // room centre
+  const shopW = 8, shopD = 7, shopH = 3.2; // 8 m wide × 7 m deep × 3.2 m tall
+  const WT = 0.25;                          // wall thickness
+  const DOOR_W = 2.2;                        // doorway gap width
+  const shop = new THREE.Group();
+  shop.position.set(shopCx, 0, shopCz);
+  const frontZ = shopD / 2;   // +Z wall (street-facing), local = +3.5
+  const backZ = -shopD / 2;   // -Z wall, local = -3.5
+  const leftX = -shopW / 2;   // local -4
+  const rightX = shopW / 2;   // local +4
+
+  // Floor (pale wood) + flat ceiling/roof.
+  const shopFloor = new THREE.Mesh(new THREE.PlaneGeometry(shopW, shopD), shackFloorMat);
+  shopFloor.rotation.x = -Math.PI / 2;
+  shopFloor.position.y = 0.12;
+  shopFloor.receiveShadow = true;
+  shop.add(shopFloor);
+  const shopRoof = box(shopW + 0.4, 0.2, shopD + 0.4, shackRoofMat);
+  shopRoof.position.set(0, shopH + 0.1, 0);
+  shop.add(shopRoof);
+  // A slim coral fascia band just under the eave on the front, for kerb appeal.
+  const fascia = box(shopW + 0.4, 0.4, 0.12, shackRoofMat, false);
+  fascia.position.set(0, shopH - 0.2, frontZ + 0.22);
+  shop.add(fascia);
+
+  // Walls (thin boxes). Outer skin = mint, but we keep one material; interior
+  // reads via the cream ceiling + props. Each load-bearing wall is its own mesh
+  // AND its own collider; the doorway gap in the front wall has neither blocker.
+  // Back wall (full width).
+  const backWall = box(shopW, shopH, WT, shackWallMat);
+  backWall.position.set(0, shopH / 2, backZ);
+  shop.add(backWall);
+  // Side walls (full depth).
+  const leftWall = box(WT, shopH, shopD, shackWallMat);
+  leftWall.position.set(leftX, shopH / 2, 0);
+  shop.add(leftWall);
+  const rightWall = box(WT, shopH, shopD, shackWallMat);
+  rightWall.position.set(rightX, shopH / 2, 0);
+  shop.add(rightWall);
+  // Front wall = two short segments flanking the central doorway gap.
+  const frontSegW = (shopW - DOOR_W) / 2; // each flank = 2.9 m
+  for (const sx of [-(DOOR_W / 2 + frontSegW / 2), (DOOR_W / 2 + frontSegW / 2)]) {
+    const seg = box(frontSegW, shopH, WT, shackWallMat);
+    seg.position.set(sx, shopH / 2, frontZ);
+    shop.add(seg);
+  }
+  // A lintel beam bridges over the doorway (above head height, no collider).
+  const lintel = box(DOOR_W + 0.3, 0.4, WT, shackRoofMat, false);
+  lintel.position.set(0, shopH - 0.2, frontZ);
+  shop.add(lintel);
+
+  // INTERIOR CONTENT --------------------------------------------------------
+  // Rug on the floor (welcoming a customer in from the door).
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.6), rugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(0, 0.13, 0.6);
+  shop.add(rug);
+
+  // Service COUNTER along the back-left, with a pale top and a display of
+  // ice-cream tubs sunk into it (a row of pastel scoops).
+  const counterW = 4.4, counterD = 1.0, counterH = 1.05;
+  const counterCx = -0.7, counterCz = backZ + counterD / 2 + 0.45;
+  const counterBody = box(counterW, counterH, counterD, counterMat);
+  counterBody.position.set(counterCx, counterH / 2 + 0.12, counterCz);
+  shop.add(counterBody);
+  const counterTop = box(counterW + 0.2, 0.12, counterD + 0.2, counterTopMat, false);
+  counterTop.position.set(counterCx, counterH + 0.18, counterCz);
+  shop.add(counterTop);
+  // Ice-cream tubs along the counter (instanced; one geo, pastel colours).
+  const tubGeo = new THREE.CylinderGeometry(0.28, 0.24, 0.34, 12);
+  for (let i = 0; i < 5; i++) {
+    const tub = new THREE.Mesh(tubGeo, goodsMats[i % goodsMats.length]);
+    tub.position.set(counterCx - counterW / 2 + 0.5 + i * 0.85, counterH + 0.32, counterCz);
+    tub.castShadow = true;
+    shop.add(tub);
+  }
+
+  // SHELVES on the back wall stocked with little souvenir goods (instanced
+  // boxes). Two tiers of shelf plus a grid of pastel product blocks.
+  const shelfX = 1.9, shelfClearW = 3.6;
+  for (let tier = 0; tier < 2; tier++) {
+    const shelf = box(shelfClearW, 0.1, 0.5, shelfMat, false);
+    shelf.position.set(shelfX, 1.2 + tier * 0.9, backZ + 0.35);
+    shop.add(shelf);
+  }
+  // Instanced souvenir goods sitting on the two shelves (5 per tier × 2 tiers).
+  const goodGeo = new THREE.BoxGeometry(0.32, 0.42, 0.3);
+  const goodsCount = 10;
+  const goods = new THREE.InstancedMesh(goodGeo, goodsMats[1], goodsCount);
+  goods.castShadow = true;
+  const gm = new THREE.Matrix4();
+  let gi = 0;
+  for (let tier = 0; tier < 2; tier++) {
+    for (let i = 0; i < 5; i++) {
+      gm.makeTranslation(
+        shelfX - shelfClearW / 2 + 0.45 + i * 0.7,
+        1.2 + tier * 0.9 + 0.28,
+        backZ + 0.35,
+      );
+      goods.setMatrixAt(gi++, gm);
+    }
+  }
+  goods.instanceMatrix.needsUpdate = true;
+  shop.add(goods);
+
+  // DISPLAY CASE / souvenir rack near the right wall: a glass-fronted cabinet
+  // showing a couple of bright trinkets.
+  const caseBody = box(0.7, 1.5, 2.2, shelfMat);
+  caseBody.position.set(rightX - 0.55, 0.75 + 0.12, 0.4);
+  shop.add(caseBody);
+  const caseGlass = box(0.12, 1.1, 1.9, shopWinMat, false);
+  caseGlass.position.set(rightX - 0.55 - 0.42, 0.95 + 0.12, 0.4);
+  shop.add(caseGlass);
+  for (let i = 0; i < 3; i++) {
+    const trinket = new THREE.Mesh(
+      new THREE.ConeGeometry(0.14, 0.34, 10),
+      goodsMats[i % goodsMats.length],
+    );
+    trinket.position.set(rightX - 0.7, 1.05 + 0.12, -0.4 + i * 0.7);
+    shop.add(trinket);
+  }
+
+  // A couple of STOOLS in front of the counter (round seat + four thin legs).
+  const seatGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.1, 14);
+  const legGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.62, 6);
+  for (const sx of [-1.6, -0.2]) {
+    const stool = new THREE.Group();
+    stool.position.set(sx, 0, counterCz + 1.0);
+    const seat = new THREE.Mesh(seatGeo, stoolSeatMat);
+    seat.position.y = 0.74 + 0.12;
+    seat.castShadow = true;
+    stool.add(seat);
+    for (const [lx, lz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]]) {
+      const leg = new THREE.Mesh(legGeo, stoolLegMat);
+      leg.position.set(lx, 0.31 + 0.12, lz);
+      stool.add(leg);
+    }
+    shop.add(stool);
+  }
+
+  // Wall SIGNAGE inside (a little menu board on the cream back wall, faces +Z).
+  const menu = artPanel(2.2, 1.2, "sign", {
+    text: "ICE CREAM", bg: "#0b6e4f", fg: "#f7fff7",
+    file: "pier-shack-menu.png", emissiveIntensity: 0.5,
+  });
+  menu.position.set(-1.4, 2.3, backZ + WT / 2 + 0.02);
+  shop.add(menu);
+
+  // Hanging interior LIGHTS: two glowing bulbs on short cords from the ceiling.
+  const cordGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.5, 6);
+  const bulbGeo = new THREE.SphereGeometry(0.13, 10, 8);
+  for (const lx of [-1.5, 1.5]) {
+    const cord = new THREE.Mesh(cordGeo, stoolLegMat);
+    cord.position.set(lx, shopH - 0.25, 0.3);
+    shop.add(cord);
+    const bulb = new THREE.Mesh(bulbGeo, bulbMat);
+    bulb.position.set(lx, shopH - 0.55, 0.3);
+    shop.add(bulb);
+  }
+
+  // OUTSIDE shop SIGN above the door, facing the street (+Z). artPanel faces +Z
+  // by default, so the text reads correctly (un-mirrored) from the lane.
+  const shopSign = artPanel(3.6, 1.0, "sign", {
+    text: "SEASIDE SCOOPS", bg: "#1a73e8", fg: "#fff8e1",
+    file: "pier-shack-sign.png", emissiveIntensity: 0.55,
+  });
+  shopSign.position.set(0, shopH + 0.45, frontZ + 0.2);
+  shop.add(shopSign);
+
+  group.add(shop);
+
+  // Per-wall AABB colliders (world space = local + shop centre). The DOORWAY
+  // GAP (front-wall centre, X in [shopCx ± DOOR_W/2]) gets NO collider, so the
+  // player can walk through the door into the interior.
+  addCollider(colliders, shopCx, shopCz + backZ, shopW, WT);   // back wall
+  addCollider(colliders, shopCx + leftX, shopCz, WT, shopD);   // left wall
+  addCollider(colliders, shopCx + rightX, shopCz, WT, shopD);  // right wall
+  for (const sx of [-(DOOR_W / 2 + frontSegW / 2), (DOOR_W / 2 + frontSegW / 2)]) {
+    addCollider(colliders, shopCx + sx, shopCz + frontZ, frontSegW, WT); // front flanks
   }
 
   // --- Seagulls circling overhead -----------------------------------------

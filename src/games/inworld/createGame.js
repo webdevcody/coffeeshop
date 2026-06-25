@@ -44,11 +44,20 @@ export function orientFor(seatRy) {
 // the per-viewer group.rotation.y, so every seat resolves the SAME canonical
 // cell. col → local X, row → local Z (row 0 at -Z). Returns null outside [0,1).
 // NOTE: clones the point — worldToLocal mutates its argument.
+//
+// Defensive guards (null instead of throwing) for callers that hand a malformed
+// hit — the framework dispatches this from the raw pointer/relay path where a
+// throw is costly, and a missing point/group must degrade to "no cell", not crash.
+// None of these guards alter the result for a valid group + point: the math below
+// is byte-for-byte the same.
 export function hitToCell(group, worldPoint, n = 8) {
+  if (!group || typeof group.worldToLocal !== "function") return null;
+  if (!worldPoint || typeof worldPoint.clone !== "function") return null;
+  if (!Number.isFinite(n) || n <= 0) return null;
   const local = group.worldToLocal(worldPoint.clone());
   const u = (local.x + BOARD_HALF) / BOARD_SIZE;
   const v = (local.z + BOARD_HALF) / BOARD_SIZE;
-  if (u < 0 || u >= 1 || v < 0 || v >= 1) return null;
+  if (!(u >= 0) || u >= 1 || !(v >= 0) || v >= 1) return null; // also rejects NaN
   return { r: Math.floor(v * n), c: Math.floor(u * n) };
 }
 

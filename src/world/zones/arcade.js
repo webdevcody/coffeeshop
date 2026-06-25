@@ -70,6 +70,26 @@ const matButton = new THREE.MeshStandardMaterial({
 });
 const matPole = new THREE.MeshStandardMaterial({ color: "#1c1a28", roughness: 0.5, metalness: 0.7 });
 
+// --- Enterable shop (retro arcade lounge) materials ------------------------
+const matShopWall = new THREE.MeshStandardMaterial({ color: "#241a3e", roughness: 0.85, flatShading: true });
+const matShopFloor = new THREE.MeshStandardMaterial({ color: "#161024", roughness: 0.9 });
+const matShopRoof = new THREE.MeshStandardMaterial({ color: "#0f0a1c", roughness: 0.9 });
+const matCounter = new THREE.MeshStandardMaterial({ color: "#2a1640", roughness: 0.6, metalness: 0.15 });
+const matCounterTop = new THREE.MeshStandardMaterial({
+  color: "#1a2a3a", emissive: "#1f6f8c", emissiveIntensity: 0.4, roughness: 0.3, metalness: 0.3,
+});
+const matShelf = new THREE.MeshStandardMaterial({ color: "#1d1530", roughness: 0.75 });
+const matRug = new THREE.MeshStandardMaterial({ color: "#3a124a", roughness: 0.95 });
+const matStool = new THREE.MeshStandardMaterial({ color: "#c2103f", roughness: 0.5, metalness: 0.2 });
+const matStoolLeg = new THREE.MeshStandardMaterial({ color: "#22202c", roughness: 0.5, metalness: 0.7 });
+const matLampShade = new THREE.MeshStandardMaterial({
+  color: "#ffd277", emissive: "#ffb733", emissiveIntensity: 0.85, roughness: 0.4,
+});
+// Small colourful goods sit on the shelves as InstancedMesh (one shared mat).
+const matGoods = new THREE.MeshStandardMaterial({
+  color: "#46d6ff", emissive: "#2f9fc4", emissiveIntensity: 0.35, roughness: 0.5,
+});
+
 // Helper: a box prop. Scales the shared unit box; sets shadows.
 function box(w, h, d, mat, x, y, z, cast = true) {
   const m = new THREE.Mesh(BOX, mat);
@@ -113,14 +133,36 @@ export function buildArcade() {
   group.add(box(0.5, 0.18, 60, matCurb, 6.25, 0.06, 0, false));
 
   // --- Arcade buildings: two rows flanking the avenue -----------------------
-  // Each building footprint sits beyond X = ±6 so the lane stays clear.
-  // Buildings sit at z = ±18 on each side; the facade faces the avenue.
+  // Each building is a SUBSTANTIAL full-volume mass (real width AND depth AND
+  // height) that fills its quadrant of the plot — never a thin facade. The
+  // avenue-facing wall is at X = ±7 (the lane X∈[-6,6] + curbs stay clear); the
+  // mass runs deep (14 m) toward the tile edge so it reads solid from the back
+  // too, and an attached ANNEX wing toward the tile edge gives each block a
+  // stepped multi-volume silhouette. Centers/depths are chosen so the four
+  // blocks nearly tile each side of the avenue, leaving only the plaza cross
+  // lane (Z∈[-6,6]) and the wide sidewalks open.
   const buildMats = [matBuildA, matBuildB];
+  // w = depth along the AVENUE wall's tangent is `d` (Z extent); `w` is the X
+  // extent (how far the mass reaches back from the avenue). facadeX = b.x +
+  // facing*(w/2) is the avenue wall. Annex sits on the tile-edge side (away from
+  // the avenue), lower/taller for stepped massing.
+  // SETBACK: a ROAD GRID runs on the tile seams (tile edge = ±30); a road + kerb
+  // + sidewalk covers the outer ~7 m of every tile edge. So every building mass
+  // AND its annex must stay within LOCAL X,Z in [-23, 23] to clear the street.
+  // Centers/depths below are pulled inward (mains z=±16 d=14 => Z∈[±9,±23];
+  // annexes outer edge at ±22.7) so nothing reaches past ±23 while the avenue
+  // wall stays at X=±7 and the plaza cross lane (Z∈[-9,9]) stays open.
   const buildSpots = [
-    { x: -13, z: -18, w: 12, d: 12, facing: 1 },  // faces +X (toward avenue)
-    { x: -13, z: 18, w: 12, d: 12, facing: 1 },
-    { x: 13, z: -18, w: 12, d: 12, facing: -1 },  // faces -X (toward avenue)
-    { x: 13, z: 18, w: 12, d: 12, facing: -1 },
+    // Left row (faces +X toward avenue). Avenue wall at x=-7 => b.x = -7 - w/2.
+    { x: -14, z: -16, w: 14, d: 14, facing: 1,
+      annex: { dx: -6.7, dz: 0, w: 4, d: 10, h: 13 } },   // main X[-21,-7] Z[-23,-9]; annex X[-22.7,-18.7]
+    { x: -14, z: 16, w: 14, d: 14, facing: 1,
+      annex: { dx: -6.7, dz: 0, w: 4, d: 10, h: 7 } },    // main X[-21,-7] Z[9,23]; annex X[-22.7,-18.7]
+    // Right row (faces -X toward avenue). Avenue wall at x=7 => b.x = 7 + w/2.
+    { x: 14, z: -16, w: 14, d: 14, facing: -1,
+      annex: { dx: 6.7, dz: 0, w: 4, d: 10, h: 7 } },     // main X[7,21] Z[-23,-9]; annex X[18.7,22.7]
+    { x: 14, z: 16, w: 14, d: 14, facing: -1,
+      annex: { dx: 6.7, dz: 0, w: 4, d: 10, h: 13 } },    // main X[7,21] Z[9,23]; annex X[18.7,22.7]
   ];
 
   // Reusable matrix/objects for InstancedMesh writes (no per-frame allocation).
@@ -140,8 +182,39 @@ export function buildArcade() {
     const facadeX = b.x + b.facing * (b.w / 2); // inner face X toward avenue
     const fnorm = b.facing; // +1 means face points toward +X
 
-    // Main mass.
+    // Main mass — a full WxDxH volume that reads solid from every side.
     group.add(box(b.w, h, b.d, mat, b.x, h / 2, b.z));
+
+    // --- ANNEX wing: a second stacked volume toward the tile edge -----------
+    // Gives the block a stepped multi-volume silhouette (taller or shorter than
+    // the main mass) and pushes real building DEPTH back across the plot, so the
+    // structure never reads as a single slab. Footprint folded into the
+    // building's collider below.
+    const an = b.annex;
+    const anX = b.x + an.dx;
+    const anZ = b.z + an.dz;
+    group.add(box(an.w, an.h, an.d, buildMats[(i + 1) % 2], anX, an.h / 2, anZ));
+    // A glowing trim band capping the annex parapet.
+    group.add(box(an.w + 0.2, 0.35, an.d + 0.2, trim, anX, an.h - 0.5, anZ, false));
+    // Where the annex is TALLER than the main mass it forms a back tower with a
+    // rooftop neon blade; where shorter it forms a setback terrace. Either way a
+    // small vent box sits on its roof for clutter.
+    group.add(box(1.2, 0.7, 1.2, matRoof, anX, an.h + 0.35, anZ, true));
+    if (an.h > h) {
+      const blade = box(0.25, 2.6, 0.25, trim, anX, an.h + 1.3, anZ - 0.0, false);
+      group.add(blade);
+    }
+    // Lit windows on the annex's tile-edge-facing wall (so the BACK reads solid).
+    {
+      const anEdgeX = anX + b.facing * (-an.w / 2) - b.facing * 0.06; // outward (away from avenue) X wall
+      const anRows = Math.max(1, Math.floor((an.h - 2.5) / 1.6));
+      for (let r = 0; r < anRows; r++) {
+        const wy = 2.0 + r * 1.6;
+        for (let k = -1; k <= 1; k++) {
+          winPlacements.push({ x: anEdgeX, y: wy, z: anZ + k * 2.6, ry: 0, w: 1.0, h: 0.9 });
+        }
+      }
+    }
 
     // --- Cornice / parapet trim band near the top (existing look kept) ------
     group.add(box(b.w + 0.3, 0.5, b.d + 0.3, trim, b.x, h - 1.2, b.z, false));
@@ -192,8 +265,11 @@ export function buildArcade() {
     group.add(arch);
     // Dark doorway recess inside the arch.
     group.add(box(0.1, 3.0, 1.8, matStore, facadeX + fnorm * 0.28, 1.6, b.z, false));
-    // Glowing threshold strip on the ground at the entrance.
-    group.add(box(1.4, 0.05, 1.8, trim, facadeX + fnorm * 1.0, 0.06, b.z, false));
+    // Glowing threshold strip on the ground at the entrance. Kept on the
+    // sidewalk: with the facade at X=±7 and the curb at X=±6.25, a strip
+    // centered at facadeX+fnorm*0.35 (=±6.65) with width 0.8 spans only out to
+    // ±6.25, so it never juts into the drivable lane (X in [-6,6]).
+    group.add(box(0.8, 0.05, 1.8, trim, facadeX + fnorm * 0.35, 0.06, b.z, false));
 
     // --- Movie-style POSTERS flanking the entrance (artPanel) ---------------
     const posterDefs = [
@@ -216,25 +292,31 @@ export function buildArcade() {
     }
 
     // --- Upper-floor window GRID (queued for InstancedMesh) -----------------
-    // Lit windows on the avenue-facing face above the marquee.
+    // Lit windows on the avenue-facing face above the marquee. The instanced
+    // pane is thin along X by default (scale 0.12 in X => its broad faces face
+    // ±X), so the FRONT facade (which faces the X-aligned avenue) wants ry=0 and
+    // a SIDE wall (which faces ±Z) wants ry=PI/2 to lie flat. (These were
+    // previously swapped, making every pane read edge-on.)
     const winBottom = marqY + 1.4;
     const rows = Math.floor((h - 1.6 - winBottom) / 1.6);
     for (let r = 0; r < rows; r++) {
       const wy = winBottom + 0.8 + r * 1.6;
       for (let k = -1; k <= 1; k++) {
         const wz = b.z + k * 3.0;
-        winPlacements.push({ x: facadeX + fnorm * 0.18, y: wy, z: wz, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+        // Front pane sits just proud of the avenue-facing wall, normal along ±X.
+        winPlacements.push({ x: facadeX + fnorm * 0.18, y: wy, z: wz, ry: 0, w: 1.2, h: 0.9 });
       }
     }
-    // A couple of windows on the side faces for believability.
-    // These sit on the -Z wall (which faces along Z). The front windows above
-    // use ry=PI/2 to face the X-aligned avenue; ry=0 here turns the broad pane
-    // face toward ±Z so they read flat against the side wall (not edge-on).
+    // Windows on BOTH Z side walls so the mass reads solid from front, side AND
+    // back angles (not just the avenue facade). Panes on a ±Z wall need ry=PI/2.
     for (let r = 0; r < rows; r++) {
       const wy = winBottom + 0.8 + r * 1.6;
-      const sideZ = b.z - b.d / 2 - 0.05; // -Z face
-      winPlacements.push({ x: b.x - 2.5, y: wy, z: sideZ, ry: 0, w: 1.2, h: 0.9 });
-      winPlacements.push({ x: b.x + 2.5, y: wy, z: sideZ, ry: 0, w: 1.2, h: 0.9 });
+      const zN = b.z - b.d / 2 - 0.05; // -Z wall
+      const zP = b.z + b.d / 2 + 0.05; // +Z wall
+      for (const wx of [b.x - 3.5, b.x, b.x + 3.5]) {
+        winPlacements.push({ x: wx, y: wy, z: zN, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+        winPlacements.push({ x: wx, y: wy, z: zP, ry: Math.PI / 2, w: 1.2, h: 0.9 });
+      }
     }
 
     // --- ROOFTOP neon + clutter --------------------------------------------
@@ -264,10 +346,17 @@ export function buildArcade() {
     antTip.castShadow = false;
     group.add(antTip);
 
-    colliders.push({
-      minX: b.x - b.w / 2, maxX: b.x + b.w / 2,
-      minZ: b.z - b.d / 2, maxZ: b.z + b.d / 2,
-    });
+    // Collider = merged AABB of the main mass AND its annex wing, so the solid
+    // footprint matches the full enlarged building.
+    {
+      const anX2 = b.x + an.dx, anZ2 = b.z + an.dz;
+      colliders.push({
+        minX: Math.min(b.x - b.w / 2, anX2 - an.w / 2),
+        maxX: Math.max(b.x + b.w / 2, anX2 + an.w / 2),
+        minZ: Math.min(b.z - b.d / 2, anZ2 - an.d / 2),
+        maxZ: Math.max(b.z + b.d / 2, anZ2 + an.d / 2),
+      });
+    }
   });
   neonMats.push(matTrim);
 
@@ -307,9 +396,13 @@ export function buildArcade() {
     g.add(band);
     return g;
   }
+  // Sit in the open plaza band. After the setback the building masses occupy
+  // Z∈[9,23] and Z∈[-23,-9], so the open band is Z∈[-9,9]; the cross lane is
+  // Z∈[-6,6]. z=±7.5 (collider Z∈[±6.5,±8.5]) clears both the cross lane and the
+  // building masses. X=±9.5 stays clear of the avenue (X∈[-6,6]).
   const boothSpots = [
-    { x: -9.5, z: -11.5, faceX: 1 },
-    { x: 9.5, z: 11.5, faceX: -1 },
+    { x: -9.5, z: -7.5, faceX: 1 },
+    { x: 9.5, z: 7.5, faceX: -1 },
   ];
   for (const s of boothSpots) {
     group.add(ticketBooth(s.x, s.z, s.faceX));
@@ -322,7 +415,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade.png",
   });
-  arcadeSign.position.set(-7.05, 7, -18);
+  arcadeSign.position.set(-6.94, 7, -16); // on the pulled-in front-left building
   arcadeSign.rotation.y = Math.PI / 2; // face +X (toward avenue)
   arcadeSign.castShadow = false;
   group.add(arcadeSign);
@@ -333,7 +426,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-play.png",
   });
-  playSign.position.set(7.05, 7, 18);
+  playSign.position.set(6.94, 7, 16); // on the pulled-in back-right building
   playSign.rotation.y = -Math.PI / 2; // face -X (toward avenue)
   playSign.castShadow = false;
   group.add(playSign);
@@ -344,7 +437,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ffd23f", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade2.png",
   });
-  arcade2.position.set(7.05, 7, -18);
+  arcade2.position.set(6.94, 7, -16); // on the pulled-in front-right building
   arcade2.rotation.y = -Math.PI / 2;
   arcade2.castShadow = false;
   group.add(arcade2);
@@ -354,7 +447,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#9fff4f", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-play2.png",
   });
-  play2.position.set(-7.05, 7, 18);
+  play2.position.set(-6.94, 7, 16); // on the pulled-in back-left building
   play2.rotation.y = Math.PI / 2;
   play2.castShadow = false;
   group.add(play2);
@@ -366,13 +459,16 @@ export function buildArcade() {
     a: "#3a1f6b", b: "#0c0830", accent: "#ff4fae", glyph: "▶",
     emissiveIntensity: 0.5, file: "arcade-billboard.png",
   });
-  billboard.position.set(0, 9, -27.6);
+  // Pulled in to z=-22.6 so the billboard + its legs/collider clear the seam road
+  // grid on the back tile edge. Panel still faces +Z toward the plaza interior so
+  // "PLAY AT THE CAFE" reads un-mirrored from the avenue.
+  billboard.position.set(0, 9, -22.6);
   billboard.castShadow = false;
   group.add(billboard);
   // Two support legs for the billboard frame.
-  group.add(cyl(0.35, 9, matMetal, -5.5, 4.5, -28.4));
-  group.add(cyl(0.35, 9, matMetal, 5.5, 4.5, -28.4));
-  colliders.push({ minX: -6, maxX: 6, minZ: -28.8, maxZ: -28 });
+  group.add(cyl(0.35, 9, matMetal, -5.5, 4.5, -23.0));
+  group.add(cyl(0.35, 9, matMetal, 5.5, 4.5, -23.0));
+  colliders.push({ minX: -6, maxX: 6, minZ: -23.0, maxZ: -22.3 });
 
   // --- Tall arcade cabinets along the curbs (standalone props) --------------
   // Placed beyond X = ±8 so they don't pinch the avenue. Reuse geometry/mats.
@@ -394,13 +490,18 @@ export function buildArcade() {
     g.add(box(0.06, 3.4, 0.06, matTrimCyan, -0.82, 1.8, 0.5, false));
     return g;
   }
-  // Original 4 cabinets + more lined along both curbs (all beyond X=±8).
+  // Cabinets line the OPEN plaza band on both sides of the avenue. After the
+  // setback the building masses occupy Z∈[9,23] and Z∈[-23,-9], so cabinets must
+  // stay at |z| <= 8 (also clears the cross lane at |z|=6). They face the avenue
+  // (rotY toward ∓X) at X=±8.5/±11.5 (clear of the avenue X∈[-6,6]). Booths sit
+  // at (∓9.5, ∓7.5); every cabinet keeps >=1.8 m from them.
   const cabSpots = [
-    [-8.5, -26, Math.PI], [-8.5, 26, Math.PI],
-    [8.5, -26, 0], [8.5, 26, 0],
-    [-8.5, -10, Math.PI], [-8.5, 10, Math.PI],
-    [8.5, -10, 0], [8.5, 10, 0],
-    [-8.5, -2, Math.PI], [8.5, 2, 0],
+    // inner row at X=±8.5 (left booth at (-9.5,-7.5), right booth at (9.5,7.5))
+    [-8.5, 7.5, Math.PI], [-8.5, 0, Math.PI], [-8.5, 3.5, Math.PI],
+    [8.5, -7.5, 0], [8.5, 0, 0], [8.5, -3.5, 0],
+    // outer row at X=±11.5, further from the avenue
+    [-11.5, -4, Math.PI], [-11.5, 4, Math.PI],
+    [11.5, 4, 0], [11.5, -4, 0],
   ];
   for (const [x, z, r] of cabSpots) {
     group.add(cabinet(x, z, r));
@@ -435,8 +536,10 @@ export function buildArcade() {
   colliders.push({ minX: -2.4, maxX: 2.4, minZ: -2.4, maxZ: 2.4 });
 
   // --- Neon perimeter poles (decorative pylons at corners) ------------------
+  // Pulled in to ±22.5 so they sit inside the setback and clear the corner road
+  // seams instead of standing in the street.
   const poleSpots = [
-    [-27, -27], [27, -27], [-27, 27], [27, 27],
+    [-22.5, -22.5], [22.5, -22.5], [-22.5, 22.5], [22.5, 22.5],
   ];
   for (const [x, z] of poleSpots) {
     group.add(cyl(0.3, 7, matPole, x, 3.5, z));
@@ -446,6 +549,165 @@ export function buildArcade() {
     cap.castShadow = false;
     group.add(cap);
     colliders.push({ minX: x - 0.4, maxX: x + 0.4, minZ: z - 0.4, maxZ: z + 0.4 });
+  }
+
+  // --- ENTERABLE SHOP: "GAME ON" retro arcade lounge -----------------------
+  // A real, walk-in room tucked into the open right-front pocket (clear of the
+  // avenue X∈[-6,6], the cabinets at X=±8.5/±11.5, and the right-front building
+  // mass at X≥7,Z≤-9). Outer footprint X∈[13,21], Z∈[-8.5,-1.5] (8 m wide x 7 m
+  // deep). The STREET-FACING wall is the -X wall (faces the avenue); it has a
+  // 2.2 m doorway GAP centered at Z=-5 with NO collider, so the player walks in.
+  {
+    const sCx = 17, sCz = -5;          // shop center
+    const sW = 8, sD = 7;              // outer extents (X width, Z depth)
+    const T = 0.25;                    // wall thickness
+    const wallH = 3.2;                 // wall/ceiling height
+    const doorW = 2.2;                 // doorway gap width
+    const minX = sCx - sW / 2, maxX = sCx + sW / 2; // 13..21
+    const minZ = sCz - sD / 2, maxZ = sCz + sD / 2; // -8.5..-1.5
+    const frontX = minX + T / 2;       // -X (street-facing) wall centerline
+    const backX = maxX - T / 2;        // +X (back) wall centerline
+    const sideZn = minZ + T / 2;       // -Z side wall centerline
+    const sideZp = maxZ - T / 2;       // +Z side wall centerline
+    const gapMinZ = sCz - doorW / 2;   // doorway gap Z span
+    const gapMaxZ = sCz + doorW / 2;
+
+    const shop = new THREE.Group();
+
+    // Floor slab + a cozy rug on top.
+    shop.add(box(sW, 0.08, sD, matShopFloor, sCx, 0.04, sCz, false));
+    const rug = box(4.6, 0.04, 3.4, matRug, sCx + 0.4, 0.1, sCz, false);
+    rug.castShadow = false;
+    shop.add(rug);
+
+    // Flat roof / ceiling.
+    shop.add(box(sW, 0.2, sD, matShopRoof, sCx, wallH + 0.1, sCz, false));
+
+    // --- Walls (individual boxes; colliders added to the array below) -------
+    // Back wall (+X), full Z span.
+    shop.add(box(T, wallH, sD, matShopWall, backX, wallH / 2, sCz));
+    // Side walls (±Z), full X span.
+    shop.add(box(sW, wallH, T, matShopWall, sCx, wallH / 2, sideZn));
+    shop.add(box(sW, wallH, T, matShopWall, sCx, wallH / 2, sideZp));
+    // Front wall (-X, street-facing) split into two segments flanking the door.
+    const segAlen = gapMinZ - minZ;    // segment toward -Z
+    const segBlen = maxZ - gapMaxZ;    // segment toward +Z
+    shop.add(box(T, wallH, segAlen, matShopWall, frontX, wallH / 2, (minZ + gapMinZ) / 2));
+    shop.add(box(T, wallH, segBlen, matShopWall, frontX, wallH / 2, (gapMaxZ + maxZ) / 2));
+    // A lintel beam above the doorway (visual only — spans the gap up high so it
+    // never blocks walking; no collider). Sits at the top of the opening.
+    shop.add(box(T, 0.5, doorW + 0.1, matShopWall, frontX, wallH - 0.25, sCz, false));
+    // Glowing threshold strip on the floor at the doorway (inviting).
+    const thr = box(0.5, 0.04, doorW, matTrimCyan, frontX + 0.3, 0.06, sCz, false);
+    thr.castShadow = false;
+    shop.add(thr);
+
+    // WALL COLLIDERS — back + two sides + two front segments. NONE across the
+    // doorway gap (Z∈[gapMinZ,gapMaxZ] at the front wall stays open).
+    colliders.push({ minX: backX - T / 2, maxX: backX + T / 2, minZ, maxZ });            // back
+    colliders.push({ minX, maxX, minZ: sideZn - T / 2, maxZ: sideZn + T / 2 });          // -Z side
+    colliders.push({ minX, maxX, minZ: sideZp - T / 2, maxZ: sideZp + T / 2 });          // +Z side
+    colliders.push({ minX: frontX - T / 2, maxX: frontX + T / 2, minZ, maxZ: gapMinZ }); // front seg A
+    colliders.push({ minX: frontX - T / 2, maxX: frontX + T / 2, minZ: gapMaxZ, maxZ }); // front seg B
+
+    // --- Service COUNTER along the back wall --------------------------------
+    const ctrZ = sCz;
+    const ctrX = backX - 0.7;
+    shop.add(box(1.0, 1.05, 4.2, matCounter, ctrX, 0.55, ctrZ));          // counter body
+    shop.add(box(1.2, 0.12, 4.4, matCounterTop, ctrX, 1.15, ctrZ, false)); // glowing top
+    // A small register / display box on the counter.
+    shop.add(box(0.5, 0.45, 0.6, matCabinet, ctrX, 1.42, ctrZ - 1.2, false));
+    shop.add(box(0.42, 0.3, 0.08, matScreen, ctrX - 0.3, 1.5, ctrZ - 1.2, false));
+
+    // --- SHELVES on the +Z side wall, stocked with little goods -------------
+    const shelfX = sCx + 0.6;
+    const shelfZ = sideZp - 0.25;
+    const goods = []; // queued for an InstancedMesh
+    const goodTints = [
+      new THREE.Color("#ff4fa3"), new THREE.Color("#46d6ff"),
+      new THREE.Color("#ffd23f"), new THREE.Color("#9fff4f"),
+    ];
+    for (let r = 0; r < 3; r++) {
+      const sy = 0.9 + r * 0.85;
+      shop.add(box(2.6, 0.08, 0.5, matShelf, shelfX, sy, shelfZ, false)); // shelf board
+      for (let k = -2; k <= 2; k++) {
+        goods.push({ x: shelfX + k * 0.5, y: sy + 0.22, z: shelfZ, tint: goodTints[(r + k + 8) % goodTints.length] });
+      }
+    }
+    if (goods.length) {
+      const gGeo = new THREE.BoxGeometry(0.3, 0.36, 0.28);
+      const gMesh = new THREE.InstancedMesh(gGeo, matGoods, goods.length);
+      gMesh.castShadow = false; gMesh.receiveShadow = false;
+      for (let n = 0; n < goods.length; n++) {
+        const g = goods[n];
+        _pos.set(g.x, g.y, g.z);
+        _quat.identity();
+        _scl.set(1, 1, 1);
+        _m4.compose(_pos, _quat, _scl);
+        gMesh.setMatrixAt(n, _m4);
+        gMesh.setColorAt(n, g.tint);
+      }
+      gMesh.instanceMatrix.needsUpdate = true;
+      if (gMesh.instanceColor) gMesh.instanceColor.needsUpdate = true;
+      shop.add(gMesh);
+    }
+
+    // --- DISPLAY RACK / glass case on the -Z side wall ----------------------
+    const caseX = sCx - 0.4;
+    const caseZ = sideZn + 0.35;
+    shop.add(box(2.4, 1.3, 0.5, matCabinet, caseX, 0.65, caseZ));           // case body
+    shop.add(box(2.2, 0.9, 0.45, matGlass, caseX, 0.75, caseZ + 0.04, false)); // lit glass front
+    shop.add(box(2.4, 0.1, 0.55, matCounterTop, caseX, 1.32, caseZ, false));    // glowing cap
+
+    // --- A couple of STOOLS in front of the counter -------------------------
+    const stoolGeoR = 0.32;
+    for (const sz of [ctrZ - 1.0, ctrZ + 1.0]) {
+      const sx = ctrX - 1.6;
+      shop.add(cyl(stoolGeoR, 0.12, matStool, sx, 0.74, sz));      // seat
+      shop.add(cyl(0.06, 0.7, matStoolLeg, sx, 0.37, sz));         // pedestal
+    }
+
+    // --- Interior wall SIGNAGE (artPanel) on the back wall ------------------
+    const wallSign = artPanel(2.6, 1.0, "sign", {
+      text: "HIGH SCORE", bg: "#1a0e2e", fg: "#46d6ff",
+      emissiveIntensity: 0.55, file: "arcade-shop-wall-highscore.png",
+    });
+    wallSign.position.set(backX - 0.13, 2.4, sCz + 1.6);
+    wallSign.rotation.y = -Math.PI / 2; // face -X (into the room)
+    wallSign.castShadow = false;
+    shop.add(wallSign);
+    neonMats.push(wallSign.material);
+
+    // --- Hanging interior LIGHTS (two pendant lamps) ------------------------
+    for (const lz of [sCz - 1.6, sCz + 1.6]) {
+      const lx = sCx - 0.6;
+      shop.add(cyl(0.02, 0.7, matStoolLeg, lx, wallH - 0.45, lz, false)); // cord
+      const shade = new THREE.Mesh(SPHERE, matLampShade);
+      shade.scale.set(0.5, 0.45, 0.5);
+      shade.position.set(lx, wallH - 0.85, lz);
+      shade.castShadow = false;
+      shop.add(shade);
+    }
+    neonMats.push(matLampShade, matCounterTop, matGoods);
+
+    // --- Exterior SHOP SIGN above the door, facing the street (un-mirrored) --
+    // The street is toward -X. artPanel faces +Z by default; rotate so its front
+    // faces -X (toward the avenue). At rotation.y = -PI/2 the panel's +Z front
+    // points to -X and the text reads correctly from the avenue.
+    const shopSign = artPanel(4.4, 1.4, "sign", {
+      text: "GAME ON", bg: "#5f0f40", fg: "#ffd23f",
+      emissiveIntensity: 0.6, file: "arcade-shop-sign-gameon.png",
+    });
+    shopSign.position.set(frontX - 0.16, wallH + 0.55, sCz);
+    shopSign.rotation.y = -Math.PI / 2; // front faces -X (the avenue/street)
+    shopSign.castShadow = false;
+    shop.add(shopSign);
+    neonMats.push(shopSign.material);
+    // A glowing sign bracket/backer behind it.
+    shop.add(box(0.18, 1.7, 4.7, matMarquee, frontX - 0.05, wallH + 0.55, sCz, false));
+    shop.add(box(0.2, 0.16, 4.8, matTrimGold, frontX - 0.06, wallH + 1.45, sCz, false));
+
+    group.add(shop);
   }
 
   // --- Base emissive intensities captured for flicker math ------------------

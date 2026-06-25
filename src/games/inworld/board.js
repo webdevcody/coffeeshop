@@ -42,6 +42,26 @@ const SEATED_CAM_ZOOM = { battleship: 1.7, connect4: 1.5 };
 // so the eye aims at the grid, not the tabletop. Symmetric across seats.
 const SEATED_CENTER_LIFT = { connect4: 0.33 };
 
+// Mount "settle-in" animation. A freshly-mounted board group eases up from a
+// slightly-shrunk scale to its authored size, so a board (or the flip-book menu)
+// appears with a gentle pop instead of snapping into existence. This is a purely
+// cosmetic, framework-OWNED transform that multiplies the module's OWN authored
+// group scale (battleship sets 0.78; most games leave 1) — it never touches
+// materials, opacity, geometry, or any per-mesh transform a module animates, so
+// no game is affected beyond the brief grow-in. The base scale is captured once
+// at mount and restored exactly when the animation completes, so a module that
+// later rescales its group is never fought. MOUNT_IN_FROM is the starting factor
+// (90% → a small, unmistakable-but-not-jarring grow), MOUNT_IN_MS the duration.
+const MOUNT_IN_FROM = 0.9;
+const MOUNT_IN_MS = 260;
+// Smoothstep on [0,1] — zero velocity at both ends so the grow-in eases out into
+// the settled size with no visible "stop". Pure, allocation-free.
+function _smoothstep01(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t * t * (3 - 2 * t);
+}
+
 // Derive the tabletop's local Y for parenting a board to a table group, the same
 // way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
 // face, fall back to the authored constant. Standalone so the ambient passersby
@@ -121,6 +141,19 @@ export function mountAmbientBoard(opts) {
   if (instance.orientPolicy !== "self") instance.group.rotation.y = orientFor(null);
   table.add(instance.group);
 
+  // Gentle grow-in so an ambient mirror pops into view as a passerby walks up,
+  // instead of snapping in. Captures the module's OWN authored base scale (one
+  // alloc here, never per frame) and eases a multiplier up to it; settles exactly
+  // on the authored vector when done. Cosmetic only — same scheme as the seated
+  // mount path. mountT is null once the grow-in has completed.
+  const baseScale = instance.group.scale.clone();
+  let mountT = 0;
+  instance.group.scale.set(
+    baseScale.x * MOUNT_IN_FROM,
+    baseScale.y * MOUNT_IN_FROM,
+    baseScale.z * MOUNT_IN_FROM
+  );
+
   return {
     group: instance.group,
     applyState(state) {
@@ -141,6 +174,19 @@ export function mountAmbientBoard(opts) {
       }
     },
     update(dt) {
+      // Drive the cosmetic grow-in first so it settles even if the module's own
+      // update throws. Guard dt so a bad/huge frame can't overshoot the ease.
+      if (mountT != null) {
+        const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
+        mountT += (step * 1000) / MOUNT_IN_MS;
+        if (mountT >= 1) {
+          instance.group.scale.copy(baseScale);
+          mountT = null; // done — stop touching the group's scale
+        } else {
+          const f = MOUNT_IN_FROM + (1 - MOUNT_IN_FROM) * _smoothstep01(mountT);
+          instance.group.scale.set(baseScale.x * f, baseScale.y * f, baseScale.z * f);
+        }
+      }
       if (typeof instance.update === "function") {
         try {
           instance.update(dt);
@@ -266,13 +312,20 @@ export class InWorldBoard {
     const lift = (a.instance && Number.isFinite(a.instance.seatedCenterLift))
       ? a.instance.seatedCenterLift
       : (SEATED_CENTER_LIFT[a.gameId] || 0);
+    const cx = world.x;
+    const cy = world.y + this._tabletopLocalY(a.table) + lift;
+    const cz = world.z;
+    // Robustness: if the table's world transform hasn't resolved to finite numbers
+    // (mid-teardown, a detached group, an un-updated matrix), report inactive rather
+    // than handing main.js a NaN centre — feeding NaN into the camera-position lerp
+    // would poison it permanently and the seated view would never recover. Holding
+    // the normal follow-cam for a frame is invisible; a NaN jolt is not.
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) {
+      return { active: false };
+    }
     return {
       active: true,
-      center: {
-        x: world.x,
-        y: world.y + this._tabletopLocalY(a.table) + lift,
-        z: world.z,
-      },
+      center: { x: cx, y: cy, z: cz },
       seatRy: a.seatRy,
       tableId: a.tableId,
       // Per-game pull-back (battleship + connect4); 1 = default first-person framing.
@@ -611,6 +664,15 @@ export class InWorldBoard {
       //                         isn't snapped away. null = none pending.
       _hydrated: role !== "spectator",
       _specSkipSnapUntil: null,
+      // Cosmetic mount grow-in (see update()): _baseScale captures the module's
+      // OWN authored group scale once at mount; _mountT eases a multiplier up to
+      // it, then resets to null so the framework stops touching the scale.
+      _baseScale: null,
+      _mountT: 0,
+      // Last hover cell forwarded to the module (cell object or -1), so the hover
+      // router only re-notifies the module on a CHANGE — fewer redundant setHover
+      // calls and a steadier affordance through the throttle (see _onPointerMove).
+      _lastHover: -1,
     };
 
     const ctx = this._makeCtx(a);
@@ -627,6 +689,17 @@ export class InWorldBoard {
     instance.group.position.y = anchorY;
     table.add(instance.group);
     this._orient(a);
+
+    // Arm the cosmetic grow-in: capture the module's authored scale (one alloc per
+    // mount, never per frame) and start slightly shrunk so the board eases up to
+    // size on the first few update() frames. Settles exactly on _baseScale.
+    a._baseScale = instance.group.scale.clone();
+    a._mountT = 0;
+    instance.group.scale.set(
+      a._baseScale.x * MOUNT_IN_FROM,
+      a._baseScale.y * MOUNT_IN_FROM,
+      a._baseScale.z * MOUNT_IN_FROM
+    );
 
     this.active = a;
     this._enablePointer(role !== "spectator");
@@ -797,6 +870,23 @@ export class InWorldBoard {
   update(dt) {
     const a = this.active;
     if (!a || !a.instance) return;
+    // Cosmetic mount grow-in. Runs BEFORE the module update so the board is the
+    // right size for any geometry the module animates this frame, and settles even
+    // if the module's update throws. _mountT is null once complete, so the steady
+    // state costs one cheap null check and never touches the group's scale again —
+    // leaving a module free to rescale its own group afterward. Allocation-free
+    // (mutates the existing scale Vector3 from the cached _baseScale).
+    if (a._mountT != null && a._baseScale) {
+      const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
+      a._mountT += (step * 1000) / MOUNT_IN_MS;
+      if (a._mountT >= 1) {
+        a.group?.scale.copy(a._baseScale);
+        a._mountT = null;
+      } else if (a.group) {
+        const f = MOUNT_IN_FROM + (1 - MOUNT_IN_FROM) * _smoothstep01(a._mountT);
+        a.group.scale.set(a._baseScale.x * f, a._baseScale.y * f, a._baseScale.z * f);
+      }
+    }
     if (typeof a.instance.update === "function") {
       try {
         a.instance.update(dt);
@@ -854,8 +944,22 @@ export class InWorldBoard {
       canvas.removeEventListener("pointerleave", this._onLeave);
       this._listening = false;
       const a = this.active;
+      if (a) a._lastHover = -1;
       try { a?.instance?.setHover?.(-1); } catch { /* ignore */ }
     }
+  }
+
+  // Equality for two resolved hover cells (or the -1 "no hover" sentinel). The
+  // resolver mints a FRESH cell object per raycast, so identity comparison would
+  // always differ and re-notify the module every throttled frame; compare by value
+  // (r,c and the optional `which` grid id battleship uses) so we only push a real
+  // change. Both -1 (miss/cleared) compare equal.
+  _sameHover(x, y) {
+    if (x === y) return true;
+    const ax = x && typeof x === "object";
+    const ay = y && typeof y === "object";
+    if (!ax || !ay) return false; // one is the -1 sentinel, the other a cell
+    return x.r === y.r && x.c === y.c && (x.which ?? null) === (y.which ?? null);
   }
 
   _onPointerDown(ev) {
@@ -886,21 +990,36 @@ export class InWorldBoard {
     const a = this.active;
     if (!a || !a.group) return;
     if (typeof a.instance?.setHover !== "function") return;
+    // ~40Hz throttle (was ~30Hz): a touch more responsive so the affordance tracks
+    // the cursor smoothly, while still cheap (one raycast per gate). Still
+    // non-consuming — hover never eats the orbit-drag.
     const now = performance.now ? performance.now() : Date.now();
-    if (now - this._hoverAt < 33) return;
+    if (now - this._hoverAt < 24) return;
     this._hoverAt = now;
     if (!this._turnAllowed(a)) {
-      try { a.instance.setHover(-1); } catch { /* ignore */ }
+      // Off-turn / spectator: clear once, then stay quiet until a turn returns.
+      if (!this._sameHover(a._lastHover, -1)) {
+        a._lastHover = -1;
+        try { a.instance.setHover(-1); } catch { /* ignore */ }
+      }
       return;
     }
     const cell = this._raycastCell(a, ev.clientX, ev.clientY);
+    const next = cell ?? -1;
+    // Only re-notify the module when the resolved cell actually CHANGES. The
+    // resolver returns a fresh object each raycast, so without this the module
+    // would re-run its hover work every throttled frame even while the cursor sits
+    // on one cell — wasteful and, for modules that restart an animation on each
+    // setHover, visibly jittery. Steadier and more forgiving.
+    if (this._sameHover(a._lastHover, next)) return;
+    a._lastHover = next;
     try {
       // Forward the FULL resolved {r,c,which} cell (or -1 on a miss). Modules that
       // only care about a column (connect4) read cell.c; modules that need the exact
       // row+col under the cursor (battleship's placement ghost / firing reticle)
       // read both. Passing only the column previously pinned battleship's reticle to
       // a column's top cell — it could never track the exact hovered row.
-      a.instance.setHover(cell ?? -1);
+      a.instance.setHover(next);
     } catch {
       /* ignore */
     }
@@ -908,7 +1027,44 @@ export class InWorldBoard {
 
   _onPointerLeave() {
     const a = this.active;
-    try { a?.instance?.setHover?.(-1); } catch { /* ignore */ }
+    if (!a) return;
+    if (this._sameHover(a._lastHover, -1)) return;
+    a._lastHover = -1;
+    try { a.instance?.setHover?.(-1); } catch { /* ignore */ }
+  }
+
+  // Set the shared NDC vector from a client-space coordinate. Returns false if the
+  // canvas has zero size (detached / not yet laid out) so callers bail cleanly
+  // instead of feeding NaN into the raycaster.
+  _setNdc(rect, cx, cy) {
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    this._ndc.x = ((cx - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    return true;
+  }
+
+  // Choose the best hit from a frontmost-first intersection list and return
+  // { hit, cell }. We walk the list and return the FIRST hit the active module
+  // AUTHORITATIVELY resolves to a cell (Tier 1 hitToCell / Tier 2 userData.cell) —
+  // so a transparent/decorative mesh sitting in front of the grid (a glass cover, a
+  // hover ghost, furniture) no longer swallows the click by being hits[0]. Selection
+  // uses _resolveCellStrict (NOT the geometric Tier-3 fallback), so a module's "this
+  // hit isn't a cell" verdict is always honoured and the geometric guess never steers
+  // which hit we route. Hits with no usable object are skipped. If NOTHING resolves
+  // authoritatively we fall back to the frontmost usable hit and hand the module the
+  // FULL resolver's value for it — preserving today's exact behaviour for
+  // object-routed mounts (the flip-book menu walks userData.menuAction off the
+  // frontmost object and ignores the geometric cell) and for honest misses.
+  _pickHit(a, hits) {
+    let front = null;
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      if (!h || !h.object) continue;
+      if (front == null) front = h; // remember the frontmost usable hit
+      const cell = this._resolveCellStrict(a, h);
+      if (cell != null) return { hit: h, cell };
+    }
+    return front ? { hit: front, cell: this._resolveCell(a, front) } : null;
   }
 
   // Raycast a screen coordinate onto the active board and resolve a cell, or null.
@@ -916,12 +1072,12 @@ export class InWorldBoard {
     const canvas = this.getCanvas?.();
     if (!canvas || cx == null || cy == null) return null;
     const rect = canvas.getBoundingClientRect();
-    this._ndc.x = ((cx - rect.left) / rect.width) * 2 - 1;
-    this._ndc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    if (!this._setNdc(rect, cx, cy)) return null;
     this._ray.setFromCamera(this._ndc, this.camera);
     const hits = this._ray.intersectObject(a.group, true);
     if (!hits.length) return null;
-    return this._resolveCell(a, hits[0]);
+    const picked = this._pickHit(a, hits);
+    return picked ? picked.cell : null;
   }
 
   // Resolve a pointer event to a board cell and dispatch to the module. Returns
@@ -935,13 +1091,16 @@ export class InWorldBoard {
     const cx = ev.clientX ?? (ev.touches && ev.touches[0]?.clientX);
     const cy = ev.clientY ?? (ev.touches && ev.touches[0]?.clientY);
     if (cx == null || cy == null) return false;
-    this._ndc.x = ((cx - rect.left) / rect.width) * 2 - 1;
-    this._ndc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    if (!this._setNdc(rect, cx, cy)) return false;
     this._ray.setFromCamera(this._ndc, this.camera);
     const hits = this._ray.intersectObject(a.group, true);
     if (!hits.length) return false;
-    const hit = hits[0];
-    const cell = this._resolveCell(a, hit);
+    // Pick the frontmost hit the module actually resolves to a cell (so a clear
+    // cover / ghost mesh in front of the grid doesn't eat the click); fall back to
+    // the frontmost usable hit (cell:null) for object-routed mounts (the menu).
+    const picked = this._pickHit(a, hits);
+    if (!picked) return false;
+    const { hit, cell } = picked;
     try {
       a.instance.onPointer?.({ cell, point: hit.point, object: hit.object });
     } catch {
@@ -950,8 +1109,16 @@ export class InWorldBoard {
     return true;
   }
 
-  // 3-tier resolver: module hitToCell > userData.cell ancestor walk > geometric.
-  _resolveCell(a, hit) {
+  // AUTHORITATIVE tiers only (Tier 1 hitToCell + Tier 2 userData.cell). Returns a
+  // cell ONLY when the module itself owns/tags this hit as a cell; null otherwise.
+  // _pickHit uses THIS (not the full resolver) to decide whether a hit "counts" as
+  // a board cell, because the geometric Tier-3 fallback below is a best-effort guess
+  // that some mounts (the flip-book menu) deliberately ignore — letting it steer hit
+  // SELECTION would make _pickHit choose a deeper hit over the frontmost one the menu
+  // routes by object. Keeping selection authoritative-only means the multi-hit scan
+  // only ever skips furniture for a module that truly resolves cells, and the menu
+  // still falls back to the frontmost hit exactly as before.
+  _resolveCellStrict(a, hit) {
     // Tier 1 — the module's OWN hit-test. A module that exposes hitToCell owns the
     // authoritative mapping for its geometry; if it returns a cell, use it. If it
     // returns null it has DELIBERATELY rejected this hit (e.g. connect4's base slab /
@@ -971,6 +1138,20 @@ export class InWorldBoard {
       if (o.userData && o.userData.cell) return o.userData.cell;
       o = o.parent;
     }
+    return null;
+  }
+
+  // 3-tier resolver: module hitToCell > userData.cell ancestor walk > geometric.
+  // This produces the FINAL cell value handed to the module; _pickHit selects the
+  // hit using the authoritative-only variant above.
+  _resolveCell(a, hit) {
+    // Tiers 1 & 2 (authoritative). A non-null result is final.
+    const tagged = this._resolveCellStrict(a, hit);
+    if (tagged != null) return tagged;
+    // A module that exposes hitToCell and returned null DELIBERATELY rejected this
+    // hit — its null is final and must NOT reach the flat geometric fallback (an
+    // upright cabinet would map a non-grid click to an arbitrary {r,c}).
+    if (typeof a.instance.hitToCell === "function") return null;
     // Tier 3 — geometric fallback (flat N×N XZ board in the group's local frame).
     // This is only correct for a FLAT board the host rotated via orientFor(seatRy):
     // group.worldToLocal then undoes that rotation and the layout really is a flat

@@ -189,6 +189,31 @@ export function createGame(ctx) {
     homeWhite: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.5, emissive: "#cfe6d8", emissiveIntensity: 0 })),
     lampBlack: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.35, metalness: 0.2, emissive: "#9aa0b5", emissiveIntensity: 0 })),
     lampWhite: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.35, metalness: 0.2, emissive: "#eafff2", emissiveIntensity: 0 })),
+    // Last-move marker: a thin accent ring parked on the just-placed cell so both
+    // seats (and spectators following relayed moves) can tell what just changed.
+    last: keep(standard(THREE, PALETTE.accent, {
+      emissive: PALETTE.accent,
+      emissiveIntensity: 0.85,
+      roughness: 0.5,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+    })),
+    // Score-tally pips: one row per side showing the live disc count. Lit pips use
+    // the side's own colour; spent pips dim. Pure board-derived decoration.
+    pipBlack: keep(standard(THREE, PALETTE.discBlack, { roughness: 0.5, emissive: "#9aa0b5", emissiveIntensity: 0.5 })),
+    pipWhite: keep(standard(THREE, PALETTE.discWhite, { roughness: 0.5, emissive: "#eafff2", emissiveIntensity: 0.45 })),
+    pipOff: keep(standard(THREE, PALETTE.feltEdge, { roughness: 0.85, emissive: "#000000", emissiveIntensity: 0 })),
+    // Faint tint over discs that WOULD flip if the local player commits the hovered
+    // cell. Local-only Othello juice — only ever shown on your own turn, recomputed
+    // per hover, so it never touches game state or the wire.
+    flipHint: keep(standard(THREE, PALETTE.accent, {
+      emissive: PALETTE.accent,
+      emissiveIntensity: 0.6,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    })),
   };
 
   const base = buildGridBoard(THREE, group, {
@@ -209,9 +234,20 @@ export function createGame(ctx) {
   const DISC_LIFT = 0.0008;
   const discGeo = keep(discGeometry(THREE, DISC_R, DISC_T, true));
   const ghostGeo = keep(new THREE.CylinderGeometry(DISC_R * 0.55, DISC_R * 0.55, 0.004, 20));
+  // Thin accent ring for the last-move marker; flat disc tint for the flip-preview.
+  const lastRingGeo = keep(new THREE.RingGeometry(DISC_R * 0.78, DISC_R * 0.98, 28));
+  const flipHintGeo = keep(new THREE.CylinderGeometry(DISC_R * 0.62, DISC_R * 0.62, 0.004, 20));
+  const pipGeo = keep(new THREE.SphereGeometry(STEP * 0.05, 12, 10));
 
   // ---- Identity / turn cues (authored canonical; rotated by applyFacing) -----
-  const cue = { black: { bar: null, lamp: null }, white: { bar: null, lamp: null } };
+  // Each side carries a home bar, a turn lamp, and a row of score pips, all parked
+  // on the side's outer rail. The pips are purely derived from `board` (count()),
+  // never the wire, so they stay correct on resync / late-join / spectator paths.
+  const cue = {
+    black: { bar: null, lamp: null, pips: [] },
+    white: { bar: null, lamp: null, pips: [] },
+  };
+  const PIPS_PER_SIDE = N * N; // 64 cells max; a full board is 64 discs total
   {
     const HALF = STEP * (N / 2);
     const frameW = 0.03;
@@ -221,30 +257,74 @@ export function createGame(ctx) {
     const barGeo = keep(new THREE.BoxGeometry(STEP * N * 0.7, frameH * 0.5, frameW * 0.5));
     const lampGeo = keep(new THREE.SphereGeometry(frameW * 0.32, 18, 14));
     const sides = [
-      { color: "black", z: -edge, barMat: M.homeBlack, lampMat: M.lampBlack },
-      { color: "white", z: edge, barMat: M.homeWhite, lampMat: M.lampWhite },
+      { color: "black", z: -edge, barMat: M.homeBlack, lampMat: M.lampBlack, sign: -1 },
+      { color: "white", z: edge, barMat: M.homeWhite, lampMat: M.lampWhite, sign: 1 },
     ];
+    // Two rows of 32 pips per side, packed inside the home bar's footprint so the
+    // tally reads as a little progress meter without overhanging the frame.
+    const pipCols = PIPS_PER_SIDE / 2; // 32
+    const pipSpan = STEP * N * 0.62;
+    const pipDx = pipSpan / (pipCols - 1);
+    const pipX0 = -pipSpan / 2;
+    const pipRowDz = frameW * 0.22;
     for (const s of sides) {
       const bar = meshOf(THREE, barGeo, s.barMat, false);
       bar.position.set(0, railTop + frameH * 0.26, s.z);
       group.add(bar);
+      // #4: lower the lamp and pull it inward so the half-turn for white can't graze
+      // the opposite side's lamp at a seated angle (bottom now well above railTop).
       const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
-      lamp.position.set(STEP * N * 0.42, railTop + frameW * 0.32, s.z);
+      lamp.position.set(STEP * N * 0.4, railTop + frameW * 0.2, s.z);
       group.add(lamp);
       cue[s.color].bar = bar;
       cue[s.color].lamp = lamp;
+      // Pip rows sit just INBOARD of the bar (toward board centre, away from the
+      // frame's outer face) so they never overhang the rail; lit/dimmed in
+      // updateCues() from count().
+      for (let i = 0; i < PIPS_PER_SIDE; i++) {
+        const row = i < pipCols ? 0 : 1;
+        const col = i % pipCols;
+        const pip = meshOf(THREE, pipGeo, M.pipOff, false);
+        pip.raycast = () => {};
+        pip.position.set(
+          pipX0 + col * pipDx,
+          railTop + frameH * 0.4,
+          s.z - s.sign * (frameW * 0.32 + row * pipRowDz),
+        );
+        group.add(pip);
+        cue[s.color].pips.push(pip);
+      }
     }
   }
 
-  // Drive cue emissives purely from local myColor/turn/phase — NEVER the wire.
+  // Drive cue emissives + score pips purely from local board/myColor/turn/phase —
+  // NEVER the wire. Pips show the live disc tally; on game-over the board itself
+  // reads "done": the winner's bar holds lit, the loser's dims to near-zero (a draw
+  // pulses both via the rAF lamp loop, gated below).
   function updateCues() {
+    const over = phase === "over";
     for (const color of ["black", "white"]) {
       const c = cue[color];
       if (!c.bar || !c.lamp) continue;
       const isMine = myColor != null && color === myColor;
       const isTurn = phase === "play" && turn === color;
-      c.bar.material.emissiveIntensity = isMine ? 0.6 : 0.0;
+      // #10: at game-over, light the winner's bar (regardless of which seat) and
+      // dim the loser's; a draw (winner == null) leaves both at a low hold.
+      let barI;
+      if (over) {
+        barI = winner == null ? 0.25 : color === winner ? 0.8 : 0.04;
+      } else {
+        barI = isMine ? 0.6 : 0.0;
+      }
+      c.bar.material.emissiveIntensity = barI;
       c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.45) : 0.0;
+      // #7: light `count` pips in the side's colour, the rest dim. Pure board-derived.
+      const lit = count(board, color);
+      const litMat = color === "black" ? M.pipBlack : M.pipWhite;
+      const pips = c.pips;
+      for (let i = 0; i < pips.length; i++) {
+        pips[i].material = i < lit ? litMat : M.pipOff;
+      }
     }
   }
 
@@ -270,8 +350,10 @@ export function createGame(ctx) {
   let rafId = 0;
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   let lastT = 0;
+  // #9: transient pass cue — a quick double-pulse of the skipped side's lamp.
+  const pass = { active: false, t: 0, dur: 0.9, color: null };
   function loopActive() {
-    return anims.length > 0 || flourish.active;
+    return anims.length > 0 || flourish.active || pass.active;
   }
   function startLoop() {
     if (rafId || disposed || typeof requestAnimationFrame === "undefined") return;
@@ -320,6 +402,7 @@ export function createGame(ctx) {
       }
     }
     if (flourish.active) stepFlourish(dt);
+    if (pass.active) stepPass(dt);
     if (!anims.length) busy = false;
   }
 
@@ -407,6 +490,31 @@ export function createGame(ctx) {
     }
   }
 
+  // #9: arm/run the pass cue. The passed-over side's lamp does two quick bumps so
+  // a skipped turn reads as deliberate rather than a stuck cue. Visual only; the
+  // lamp's resting emissive is owned by updateCues(), restored when the pulse ends.
+  function signalPass(color) {
+    if (!color || typeof requestAnimationFrame === "undefined") return;
+    pass.active = true;
+    pass.t = 0;
+    pass.color = color;
+    startLoop();
+  }
+  function stepPass(dt) {
+    pass.t += dt;
+    const k = Math.min(1, pass.t / pass.dur);
+    const c = cue[pass.color];
+    if (c && c.lamp) {
+      // Two full sine bumps over the cue's duration (sin of 2 periods, rectified).
+      c.lamp.material.emissiveIntensity = 0.15 + 0.85 * Math.abs(Math.sin(k * Math.PI * 2));
+    }
+    if (k >= 1) {
+      pass.active = false;
+      pass.color = null;
+      updateCues(); // restore the lamp to its resting (turn-driven) emissive
+    }
+  }
+
   // ---- Ghost legal-move markers (only on the LOCAL player's own turn) --------
   function clearGhosts() {
     for (const g of ghosts) group.remove(g);
@@ -459,14 +567,58 @@ export function createGame(ctx) {
   let hoverCell = null;   // last {r,c} resolved by hitToCell, or null on a miss
   let hoverPulse = 0;
 
+  // #6: single reusable last-move ring, parked on the just-placed cell. Set on the
+  // live commit() path; the wire snapshot carries no "last move", so applyState
+  // clears it when ingesting a foreign snapshot rather than guessing a wrong cell.
+  const lastRing = meshOf(THREE, lastRingGeo, M.last, false);
+  lastRing.rotation.x = -Math.PI / 2; // lay the ring flat on the board
+  lastRing.raycast = () => {};
+  lastRing.visible = false;
+  lastRing.renderOrder = 2;
+  group.add(lastRing);
+  let lastMove = null;
+
+  // #11: pool of faint tints over the discs that WOULD flip on the hovered cell.
+  // Local-only (only shown on your own turn); recomputed per hover, never on wire.
+  const flipHints = [];
+  function clearFlipHints() {
+    for (const h of flipHints) h.visible = false;
+  }
+  function showFlipHints(cells) {
+    let i = 0;
+    for (; i < cells.length; i++) {
+      let h = flipHints[i];
+      if (!h) {
+        h = meshOf(THREE, flipHintGeo, M.flipHint, false);
+        h.raycast = () => {};
+        group.add(h);
+        flipHints[i] = h;
+      }
+      h.position.set(cellX(cells[i][1], N), discRestY + DISC_T / 2 + 0.002, cellZ(cells[i][0], N));
+      h.visible = true;
+    }
+    for (; i < flipHints.length; i++) flipHints[i].visible = false;
+  }
+
   function retintHover() {
     hoverDisc.material = myColor === "white" ? M.hoverWhite : M.hoverBlack;
   }
   retintHover();
 
+  // #6: move the last-move ring onto `lastMove` (or hide it). Driven from paint().
+  function paintLastMarker() {
+    if (lastMove && board[lastMove.r] && board[lastMove.r][lastMove.c]) {
+      lastRing.position.set(cellX(lastMove.c, N), discRestY + DISC_T / 2 + 0.001, cellZ(lastMove.r, N));
+      lastRing.visible = true;
+    } else {
+      lastRing.visible = false;
+    }
+  }
+
   function hideHover() {
     hoverDisc.visible = false;
     hoverCell = null;
+    clearFlipHints();
   }
 
   // Is (r,c) a legal placement for the local player right now?
@@ -485,10 +637,13 @@ export function createGame(ctx) {
   function showHoverAt(r, c) {
     if (!canPlay(r, c)) {
       hoverDisc.visible = false;
+      clearFlipHints();
       return;
     }
     hoverDisc.position.set(cellX(c, N), REST_Y + DISC_T / 2 + 0.012, cellZ(r, N));
     hoverDisc.visible = true;
+    // #11: preview which discs this move would flip (recomputed locally each hover).
+    showFlipHints(flipsFor(board, r, c, myColor));
   }
 
   // Our own hit-test, used by BOTH the framework's click resolver (Tier 1) and the
@@ -530,6 +685,7 @@ export function createGame(ctx) {
       }
     }
     updateCues();
+    paintLastMarker();
     refreshGhosts();
     hideHover();
   }
@@ -549,6 +705,9 @@ export function createGame(ctx) {
       board[fr][fc] = color;
       setDisc(fr, fc, color, animate ? "flip" : false);
     }
+    // #6: record + show the just-played cell (live path only; not on the wire).
+    lastMove = { r, c };
+    paintLastMarker();
     advanceTurn(color);
   }
 
@@ -561,6 +720,10 @@ export function createGame(ctx) {
         endGame();
         return;
       }
+      // #9: the opponent had no legal move and was skipped. The turn lamp would
+      // otherwise just stay on the same colour and read as "stuck"; flag a quick
+      // double-pulse of the passed-over side's lamp (consumed by the rAF loop).
+      signalPass(next);
       next = justMoved;
     }
     turn = next;
@@ -694,8 +857,13 @@ export function createGame(ctx) {
     anims.length = 0;
     flourish.active = false;
     flourish.color = null;
+    pass.active = false;
+    pass.color = null;
     resetFlourishEmissive();
     busy = false;
+    // The wire snapshot carries no "last move", so clear the marker rather than
+    // guess. A subsequent live commit (own click / relayed move) re-arms it.
+    lastMove = null;
 
     if (!state) {
       board = initialBoard();
@@ -738,6 +906,12 @@ export function createGame(ctx) {
       // gating so only the terminal snapshot reached it). The incremental
       // endGame() path never ran here, so announce the game-over now — once.
       announceOver();
+      // #1: the incremental endGame() path (which fires the winner glow) never ran
+      // on this terminal-snapshot path, so the loser and EVERY spectator would miss
+      // the celebration. Re-arm it here. We cleared flourish.active above, so this
+      // is required even when a snapshot lands mid-flourish. startFlourish no-ops
+      // headless and when winner is null (a draw), so it's safe to call blind.
+      if (winner) startFlourish(winner);
     }
     paint();
   }
@@ -782,10 +956,18 @@ export function createGame(ctx) {
     anims.length = 0;
     flourish.active = false;
     flourish.color = null;
+    pass.active = false;
+    pass.color = null;
     resetFlourishEmissive(); // restore shared materials before a possible reuse
     clearGhosts();
     hideHover();
     group.remove(hoverDisc);
+    // Detach the decorative markers (their shared materials/geometry are freed via
+    // owned below). A reused/reparented group must not retain stale child meshes.
+    lastRing.visible = false;
+    group.remove(lastRing);
+    for (const h of flipHints) group.remove(h);
+    flipHints.length = 0;
     // Detach + null any live disc meshes so a reparented/reused group can't
     // reference disposed (shared) materials or stale meshes. Reset any transient
     // flip/place transform first so a reused mesh never starts half-rotated/scaled.

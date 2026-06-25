@@ -47,7 +47,11 @@
 //   { type:"start",  first:"host"|"guest" }                        // host-only, once both ready
 //   { type:"fire",   x, y }                                        // a shot at enemy cell (x,y)
 //   { type:"result", x, y, outcome:"miss"|"hit"|"sunk", sunk? }    // defender's reply
-//   { type:"reveal", layout }                                      // END-OF-GAME ONLY
+//
+// FLEET REVEAL travels on its OWN channel (ctx.net.sendReveal → applyReveal), NOT a
+// public move: { side, fleet } is published from doReady() the moment a seat deploys
+// and the server forwards it ONLY to spectators (never the opponent). No layout is
+// ever relayed on the public move stream.
 //
 // PUBLIC SNAPSHOT (publicState / applyState — spectator + opponent safe):
 //   { phase, turn, first, winner, ready:{host,guest},
@@ -311,6 +315,9 @@ export function createGame(ctx) {
     reticleBad: new THREE.MeshBasicMaterial({ color: "#ff6a5a", transparent: true, opacity: 0.95, depthWrite: false }),
     splash: new THREE.MeshBasicMaterial({ color: "#eef6ff", transparent: true, opacity: 0.9, depthWrite: false }),
     ember: new THREE.MeshBasicMaterial({ color: "#ff6a3c", transparent: true, opacity: 0.95, depthWrite: false }),
+    // Shared "most recent shot" halo (P2 #6). One per side reuses this single
+    // material; its opacity is driven per-frame in stepLastShot (no per-cell alloc).
+    lastShot: new THREE.MeshBasicMaterial({ color: "#ffe27a", transparent: true, opacity: 0.0, depthWrite: false }),
     pillarIdle: new THREE.MeshStandardMaterial({ color: "#27506f", roughness: 0.5, metalness: 0.2, emissive: "#0a1c2a", emissiveIntensity: 0.4 }),
     pillarGo: new THREE.MeshStandardMaterial({ color: "#2f8a5a", roughness: 0.45, metalness: 0.2, emissive: "#0c3320", emissiveIntensity: 0.6 }),
     pillarDim: new THREE.MeshStandardMaterial({ color: "#39444c", roughness: 0.7, metalness: 0.1, emissive: "#0a0e12", emissiveIntensity: 0.2 }),
@@ -359,6 +366,19 @@ export function createGame(ctx) {
   let reticle = null;
   let laneMesh = null;
   const targetRings = []; // bobbing rings on un-fired enemy cells (my turn)
+
+  // Last-shot indicator (P2 #6): the most-recent shot per side, plus one reusable
+  // halo mesh per side (lazily built, own material so the two fade independently).
+  // born = nowMs() of the shot; the halo bobs + fades over LAST_SHOT_MS then hides.
+  const lastShot = { host: null, guest: null }; // { x, y, which, born } | null
+  const lastShotHalos = { host: null, guest: null };
+  const LAST_SHOT_MS = 1500;
+
+  // Reticle "locked target" confirm (P2 #10): when the player commits a shot, the
+  // crosshair flips red + scale-punches for a beat at the fired cell before clearing,
+  // so the launch reads as deliberate. { until } drives a one-shot punch in stepAnim.
+  let reticleLock = null; // { until } | null
+  const RETICLE_LOCK_MS = 240;
 
   // Fleet-status placards (canvas-textured planes). Spectator: both. Seated: one
   // for the enemy fleet (what I must sink) and one for my own losses.
@@ -584,8 +604,20 @@ export function createGame(ctx) {
 
   function buildPanels() {
     if (fleetHook) { refreshPanels(); return; } // DOM panels instead of 3D placards
-    const W = GRID_SPAN * 0.5;
-    const H = GRID_SPAN * 0.46;
+    // Two flat placards laid along the LOCAL (−Z, own) near edge, INSIDE the board's
+    // footprint — previously they were pinned to the far (+Z) opponent side at
+    // ENEMY_CZ + GRID_SPAN/2 + H*0.62 (≈0.884), well past the base panel (z≈0.719),
+    // so the whole ~0.30m-deep placard floated over bare tabletop in front of the
+    // opponent, and at x=±W*0.62 its outer edge (X≈0.370) overhung HALF=0.330. Now
+    // sized to sit two-up within the board width and anchored over the local near
+    // edge where the HUD points, so they read as "my readouts" and never overhang or
+    // hover past the opponent (P2 #4/#5).
+    const W = HALF * 0.94;        // two placards span ≤ 2*HALF (the full board width)
+    const H = GRID_SPAN * 0.4;
+    // Far edge of the placard tucked just shy of the ocean grid's near rail, so the
+    // body lies over the small near base margin + the player's own near rows (their
+    // ships render as raised hulls above it, so the flat readout stays legible).
+    const panelZ = OCEAN_CZ - GRID_SPAN / 2 + H * 0.42;
     const make = (firer, x) => {
       const canCreate = typeof document !== "undefined" && document.createElement;
       const cv = canCreate ? document.createElement("canvas") : null;
@@ -593,12 +625,14 @@ export function createGame(ctx) {
       const tex = cv ? new THREE.CanvasTexture(cv) : null;
       if (tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
       const mat = tex
-        ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+        ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
         : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.85, depthWrite: false });
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(W, H), mat);
       mesh.rotation.x = -Math.PI / 2;
-      mesh.position.set(x, SURF_Y + 0.002, ENEMY_CZ + GRID_SPAN / 2 + H * 0.62);
-      mesh.renderOrder = 6;
+      // Lifted a touch higher than before (was +0.002) and given polygonOffset so the
+      // coplanar café tabletop underneath can't z-fight through it (P2 #5).
+      mesh.position.set(x, SURF_Y + 0.004, panelZ);
+      mesh.renderOrder = 7;
       mesh.userData.cv = cv;
       mesh.userData.tex = tex;
       group.add(mesh);
@@ -606,11 +640,11 @@ export function createGame(ctx) {
     };
     if (mySide) {
       // Enemy fleet I must sink (firer = me), plus my losses (firer = opponent).
-      make(mySide, -W * 0.62);
-      make(oppSide, W * 0.62);
+      make(mySide, -W * 0.52);
+      make(oppSide, W * 0.52);
     } else {
-      make("host", -W * 0.62);
-      make("guest", W * 0.62);
+      make("host", -W * 0.52);
+      make("guest", W * 0.52);
     }
     refreshPanels();
   }
@@ -926,6 +960,35 @@ export function createGame(ctx) {
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
   const easeOut = (x) => 1 - (1 - x) * (1 - x);
 
+  // Authored base emissive of the two frame-rail materials — the turn cue pulses
+  // around these and the inactive rail eases back to them (P2 #7).
+  const FRAME_OCEAN_EM = M.frameOcean.emissiveIntensity;
+  const FRAME_ENEMY_EM = M.frameEnemy.emissiveIntensity;
+  let turnCuePhase = 0;
+
+  // Which frame rail belongs to the grid the CURRENT firer is shooting at, in THIS
+  // view (matches applyState's marker placement): the firer hits the enemy grid
+  // (M.frameEnemy) when it's a seated player's own turn or, for a spectator, the
+  // host firing; otherwise it's the ocean grid (M.frameOcean). null while not playing.
+  function activeFireRail() {
+    if (phase !== "playing") return null;
+    const firer = currentFirer();
+    if (!firer) return null;
+    const onEnemyGrid = mySide ? firer === mySide : firer === "host";
+    return onEnemyGrid ? M.frameEnemy : M.frameOcean;
+  }
+
+  function stepTurnCue(dt) {
+    const active = phase === "playing" ? activeFireRail() : null;
+    turnCuePhase += dt;
+    const pulse = active ? 0.5 + 0.5 * Math.sin(turnCuePhase * 3.4) : 0;
+    // Pulse the active rail up to ~+0.9 over base; ease the other back toward base.
+    const oceanTarget = active === M.frameOcean ? FRAME_OCEAN_EM + 0.9 * pulse : FRAME_OCEAN_EM;
+    const enemyTarget = active === M.frameEnemy ? FRAME_ENEMY_EM + 0.9 * pulse : FRAME_ENEMY_EM;
+    M.frameOcean.emissiveIntensity += (oceanTarget - M.frameOcean.emissiveIntensity) * Math.min(1, dt * 8);
+    M.frameEnemy.emissiveIntensity += (enemyTarget - M.frameEnemy.emissiveIntensity) * Math.min(1, dt * 8);
+  }
+
   // Is anything still animating? Used to let the rAF self-cancel when idle (I9)
   // instead of spinning forever. The HUD billboard only needs re-tracking when the
   // group rotation changes (seat/role change), which re-arms the loop explicitly.
@@ -938,7 +1001,13 @@ export function createGame(ctx) {
       (reticle && reticle.visible) ||
       !!(panelFlash.host || panelFlash.guest) ||
       (ghostMesh && phase === "placement") ||
+      !!reticleLock ||
       flourishQueue.length > 0 ||
+      // Keep ticking while playing so the whose-turn rail pulse (P2 #7) and the
+      // last-shot halo (P2 #6) keep animating, and once more after to settle the
+      // rails back to base when the game ends.
+      phase === "playing" ||
+      !!(lastShot.host || lastShot.guest) ||
       missiles.active ||
       fx.active
     );
@@ -1027,6 +1096,16 @@ export function createGame(ctx) {
         reticle.scale.setScalar(s);
       }
     }
+    // Whose-turn board cue (P2 #7): while playing, gently pulse the emissive of the
+    // frame rail around the grid the CURRENT firer is shooting at, so a spectator or
+    // an idle player reads turn state off the board itself, not just the HUD text.
+    // Drives the two shared frame materials; the inactive one eases back to its base.
+    stepTurnCue(dt);
+    // Last-shot indicator (P2 #6): a short-lived bobbing halo over the most recent
+    // marker per side, so players + spectators can follow the volley.
+    stepLastShot(dt);
+    // Locked-target confirm punch on the just-fired reticle (P2 #10).
+    stepReticleLock();
     // Ported missile flight + particle/debris/damage systems (cosmetic).
     missiles.update(dt);
     fx.update(dt);
@@ -1068,6 +1147,57 @@ export function createGame(ctx) {
     for (const m of enemyShotMarks.values()) group.remove(m);
     oceanShotMarks.clear();
     enemyShotMarks.clear();
+  }
+
+  // ── Last-shot halo (P2 #6) ────────────────────────────────────────────────
+  // Record the newest shot for `side`, rendered on `which` grid in THIS view. The
+  // halo is a single reusable ring per side; stepLastShot bobs + fades it. Cosmetic
+  // and derived purely from the public shot just rendered — no state, no sync.
+  function markLastShot(side, x, y, which) {
+    if (!inGrid(x, y)) return;
+    lastShot[side] = { x, y, which, born: nowMs() };
+    startLoop();
+  }
+
+  function ensureLastShotHalo(side) {
+    let h = lastShotHalos[side];
+    if (h) return h;
+    h = new THREE.Mesh(G.ring, M.lastShot.clone());
+    h.rotation.x = Math.PI / 2;
+    h.renderOrder = 4;
+    h.visible = false;
+    group.add(h);
+    lastShotHalos[side] = h;
+    return h;
+  }
+
+  function stepLastShot() {
+    for (const side of ["host", "guest"]) {
+      const s = lastShot[side];
+      const h = lastShotHalos[side];
+      if (!s) { if (h) h.visible = false; continue; }
+      const age = nowMs() - s.born;
+      if (age >= LAST_SHOT_MS) {
+        lastShot[side] = null;
+        if (h) h.visible = false;
+        continue;
+      }
+      const halo = ensureLastShotHalo(side);
+      const k = age / LAST_SHOT_MS;        // 0→1 over its life
+      const baseY = PEG_Y + CELL * 0.2;
+      halo.position.set(cellX(s.x), baseY + Math.sin(nowMs() * 0.012) * CELL * 0.08, cellZView(s.y, s.which));
+      halo.scale.setScalar(1.1 + 0.7 * k); // grows as it fades, like a sonar ping
+      halo.material.opacity = (1 - k) * 0.85;
+      halo.visible = true;
+    }
+  }
+
+  function clearLastShot() {
+    lastShot.host = lastShot.guest = null;
+    for (const side of ["host", "guest"]) {
+      const h = lastShotHalos[side];
+      if (h) h.visible = false;
+    }
   }
 
   // ===========================================================================
@@ -1216,6 +1346,11 @@ export function createGame(ctx) {
       block.position.set(cellX(cell.x), HULL_Y, cellZ(cell.y, "ocean"));
       g.add(block);
     }
+    // Purely a preview — never intercept a placement click. Without this the ghost
+    // blocks can steal the raycast at grazing angles (their front face sits in front
+    // of the cell collider), _resolveCell finds no userData.cell on the ghost, and
+    // the placement click silently drops (P1 #1). Mirror buildHull's treatment.
+    g.traverse((c) => { if (c.isMesh) c.raycast = () => {}; });
     group.add(g);
     ghostMesh = g;
     startLoop(); // animate the ghost pulse (I2)
@@ -1334,10 +1469,44 @@ export function createGame(ctx) {
     clearReticle();
     refreshEnemyLive();
     refreshHud();
+    // Locked-target confirm flash at the fired cell (P2 #10) — set up AFTER
+    // refreshEnemyLive (which hides the reticle for the now-not-my-turn state) so the
+    // punch survives; stepAnim animates + retires it.
+    startReticleLock(x, y);
     // Ported missile: arc a guided projectile from my side onto the enemy cell.
     // Purely cosmetic — the shot result still arrives over the wire ("result").
     launchMissile(x, y, "enemy", fireLaunchOrigin(), null);
     try { ctx.net.sendMove({ type: "fire", x, y }); } catch { /* transport optional */ }
+  }
+
+  // Briefly hold the crosshair (red + scale-punch) at the just-fired cell, then hide
+  // it. Reuses the persistent reticle mesh; purely cosmetic (P2 #10).
+  function startReticleLock(x, y) {
+    const r = ensureReticle();
+    M.reticleBad.opacity = 0.95; // start from the authored opacity each lock
+    for (const p of r.userData.parts) p.material = M.reticleBad;
+    r.position.set(cellX(x), SURF_Y + CELL * 0.16, cellZView(y, "enemy"));
+    r.rotation.z = 0;
+    r.scale.setScalar(1.5);
+    r.visible = true;
+    reticleLock = { until: nowMs() + RETICLE_LOCK_MS };
+    startLoop();
+  }
+
+  function stepReticleLock() {
+    if (!reticleLock) return;
+    const left = reticleLock.until - nowMs();
+    if (left <= 0 || !reticle) {
+      reticleLock = null;
+      M.reticleBad.opacity = 0.95; // restore the shared material opacity (I6-style)
+      // Only hide if a fresh aim hasn't re-shown it for a new turn.
+      if (reticle && !myTurnNow()) reticle.visible = false;
+      return;
+    }
+    const k = 1 - left / RETICLE_LOCK_MS; // 0→1
+    // Snap in big then settle: a quick punch from 1.5→1.0 with a brief recoil.
+    reticle.scale.setScalar(1.5 - 0.6 * easeOut(k) + Math.sin(k * Math.PI) * 0.12);
+    M.reticleBad.opacity = 0.95 * (1 - k * 0.5);
   }
 
   function resolveMyResult(x, y, outcome, sunkId) {
@@ -1345,6 +1514,7 @@ export function createGame(ctx) {
     tracking[mySide].set(key, { outcome, sunk: sunkId });
     shots[mySide].push({ x, y, outcome, sunk: sunkId });
     placeMarker(x, y, outcome, "enemy", enemyShotMarks);
+    markLastShot(mySide, x, y, "enemy"); // last-shot halo (P2 #6)
     // The firer doesn't know the enemy ship's orientation; playImpact falls back
     // to "horizontal" (B3). Damage tiles are capped inside playImpact (B2).
     playImpact(x, y, "enemy", outcome, sunkId, "horizontal");
@@ -1354,7 +1524,6 @@ export function createGame(ctx) {
     flashPanelRow(mySide, sunkId); // sink-flourish on the enemy placard (I3)
     if (sunkBy[mySide].size === FLEET.length) {
       endGame(mySide, "fleet-sunk");
-      sendReveal();
       return;
     }
     if (role === "host") pushSnapshot();
@@ -1370,6 +1539,7 @@ export function createGame(ctx) {
     shots[oppSide].push({ x, y, outcome: res.outcome, sunk: res.sunk });
     tracking[oppSide].set(x + "," + y, { outcome: res.outcome, sunk: res.sunk });
     placeMarker(x, y, res.outcome, "ocean", oceanShotMarks);
+    markLastShot(oppSide, x, y, "ocean"); // last-shot halo (P2 #6)
     // Cosmetic impact rides the missile's arrival (~1s later) so the blast lines up
     // with the projectile landing — but the STATE + reply below are resolved NOW
     // (B1) so the turn handback never waits on an animation. The true ship
@@ -1386,7 +1556,6 @@ export function createGame(ctx) {
 
     if (res.allSunk) {
       endGame(oppSide, "fleet-sunk");
-      sendReveal();
       return;
     }
     myTurn = true;
@@ -1430,8 +1599,11 @@ export function createGame(ctx) {
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     if (!myTurnNow()) { clearReticle(); return; }
 
-    // Faint live tint over the whole enemy grid (this grid is now active).
-    enemyLivePlate = new THREE.Mesh(new THREE.BoxGeometry(GRID_SPAN + CELL * 0.2, 0.001, GRID_SPAN + CELL * 0.2), M.enemyLive);
+    // Faint live tint over the whole enemy grid (this grid is now active). Sized a
+    // hair INSIDE the grid span (was GRID_SPAN + CELL*0.2, whose half-width 0.337
+    // poked ~0.007 past the frame rail at HALF=0.330, leaving a thin blue halo
+    // outside the border on your turn — P1 #3).
+    enemyLivePlate = new THREE.Mesh(new THREE.BoxGeometry(GRID_SPAN - CELL * 0.1, 0.001, GRID_SPAN - CELL * 0.1), M.enemyLive);
     enemyLivePlate.position.set(0, SURF_Y + 0.0015, ENEMY_CZ);
     enemyLivePlate.renderOrder = 1;
     group.add(enemyLivePlate);
@@ -1673,10 +1845,6 @@ export function createGame(ctx) {
         resolveMyResult(move.x, move.y, move.outcome, move.outcome === "sunk" ? move.sunk : null);
         return true;
       }
-      case "reveal": {
-        validLayout(move.layout); // verified-or-not; harmless either way
-        return true;
-      }
       default:
         return false;
     }
@@ -1692,11 +1860,13 @@ export function createGame(ctx) {
     blooms.length = 0;
     fx.clear();
     missiles.clear();
+    reticleLock = null; M.reticleBad.opacity = 0.95; // cancel any pending lock punch (P2 #10)
     clearReticle();
     for (const t of targetRings) group.remove(t); // shared material — don't dispose (I6)
     targetRings.length = 0;
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     clearMarkers();
+    clearLastShot(); // markers are about to be rebuilt; drop any stale last-shot halo (P2 #6)
 
     if (!state) {
       phase = "placement";
@@ -1736,7 +1906,15 @@ export function createGame(ctx) {
       return;
     }
 
+    const prevPhase = phase;
     phase = state.phase === "playing" ? "playing" : state.phase === "over" ? "over" : "placement";
+    // P3 #11: if a snapshot moves us OUT of "over" (a fresh game that didn't route
+    // through applyState(null) first), re-arm the one-shot victory flourish so it can
+    // replay. Resets normally pass null and clear it there; this is the latent guard.
+    if (prevPhase === "over" && phase !== "over") {
+      flourishFired = false;
+      flourishQueue.length = 0;
+    }
     first = state.first === "host" || state.first === "guest" ? state.first : null;
     winner = state.winner === "host" || state.winner === "guest" ? state.winner : null;
     ready.host = !!(state.ready && state.ready.host);
@@ -1784,7 +1962,9 @@ export function createGame(ctx) {
       for (const side of ["host", "guest"]) {
         if (specNew[side].length === 1) {
           const s = specNew[side][0];
-          playImpact(s.x, s.y, side === "host" ? "enemy" : "ocean", s.outcome, s.sunk, "horizontal");
+          const which = side === "host" ? "enemy" : "ocean";
+          playImpact(s.x, s.y, which, s.outcome, s.sunk, "horizontal");
+          markLastShot(side, s.x, s.y, which); // last-shot halo (P2 #6)
           if (s.sunk) flashPanelRow(side, s.sunk);
         }
       }
@@ -1929,11 +2109,11 @@ export function createGame(ctx) {
     return flourishQueue.length > 0;
   }
 
-  function sendReveal() {
-    if (!mySide || myPlacements.length !== FLEET.length) return;
-    const layout = myPlacements.map((s) => ({ id: s.id, x: s.x, y: s.y, orientation: s.orientation }));
-    try { ctx.net.sendMove({ type: "reveal", layout }); } catch { /* transport optional */ }
-  }
+  // (Removed the redundant {type:"reveal"} public-move send. The spectator fleet
+  // reveal travels on the dedicated, fairness-gated sendReveal/applyReveal channel
+  // — published from doReady() the moment a player deploys — so relaying the full
+  // layout over the public move stream at end-of-game was both duplicative and a
+  // hidden-info smell. P1 #2.)
 
   // ===========================================================================
   // Role / seat changes — switch in place. applyState NEVER recomputes role; only
@@ -1990,6 +2170,12 @@ export function createGame(ctx) {
     if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
     for (const t of targetRings) group.remove(t); // M.targetShared disposed via M loop below
     targetRings.length = 0;
+    // Last-shot halos: shared G.ring geometry, but each owns a cloned M.lastShot
+    // material (P2 #6) — free those clones here.
+    for (const side of ["host", "guest"]) {
+      const h = lastShotHalos[side];
+      if (h) { group.remove(h); h.material?.dispose?.(); lastShotHalos[side] = null; }
+    }
     if (reticle) {
       // Parts share M.reticleOk/M.reticleBad (disposed via the M loop) — only free
       // the cloned geometry here, never the shared materials (I6).
