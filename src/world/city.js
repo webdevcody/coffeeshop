@@ -67,6 +67,9 @@ export function buildCity(scene) {
     const streets = buildStreets();
     if (streets && streets.group) group.add(streets.group);
     if (streets && typeof streets.update === "function") updates.push(streets.update);
+    // Street-prop colliders are already in WORLD space (built around absolute road
+    // coords), so merge them directly — do NOT offset like the per-tile district ones.
+    if (streets && Array.isArray(streets.colliders)) for (const c of streets.colliders) colliders.push(c);
   } catch (e) {
     console.warn("[city] streets failed", e);
   }

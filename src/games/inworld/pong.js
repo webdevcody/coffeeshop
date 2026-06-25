@@ -63,11 +63,25 @@ const REMATCH_MS = 4000;    // host auto-returns to lobby this long after a win
 const PADDLE_DEADZONE = 0.5; // canonical units: guest stops easing inside this gap
 const HIT_POP_MS = 130;     // ball squash-pop duration on a paddle reflect
 const SCORE_POP_MS = 450;   // canvas score-digit flash duration on a point
+const WALL_POP_MS = 160;    // gold side-rail flash duration on a wall bounce
+const LASTTOUCH_MS = 170;   // ball tint-toward-last-paddle duration after a hit
+const WIN_RING_MS = 1100;   // expanding gold floor ring on a match win
+const TRAIL_N = 4;          // ball motion-trail ghost count
 
 // Map field units -> local board metres (court inscribed in the playable square).
 const COURT_W = BOARD_SIZE * 0.9;             // lateral extent (x -> world X)
 const COURT_H = BOARD_SIZE * 0.9;             // length extent  (y -> world Z)
 const SX = COURT_W / W, SZ = COURT_H / H;
+// Side-rail geometry: the gold rails are 0.01 m wide boxes centred on ±COURT_W/2.
+// We push them OUTWARD by their own half-width so their inner face sits exactly on
+// the court edge ±COURT_W/2 (rather than straddling it), and we clamp the paddle a
+// matching margin in so its outer face meets — but never pokes through — that inner
+// rail face. Both fixes are purely positional (no gameplay/extent change).
+const RAIL_W = 0.01;
+const RAIL_HALF = RAIL_W / 2;
+// Canonical-x margin the paddle must keep from each wall so its rendered outer face
+// (PADDLE_HALF*SX beyond its centre) lands at most on the rail's inner face.
+const PADDLE_WALL_MARGIN = RAIL_HALF / SX;
 
 export function createGame(ctx) {
   const THREE = ctx.THREE;
@@ -134,9 +148,14 @@ export function createGame(ctx) {
   // One-shot flourish counters streamed to guests/spectators so all three views
   // animate the same pops. hitSeq bumps on every paddle reflect; scoreSeq bumps on
   // every point. Each client compares against a locally-remembered value.
-  let hitSeq = 0, scoreSeq = 0;
-  let seenHitSeq = 0, seenScoreSeq = 0;
+  let hitSeq = 0, scoreSeq = 0, wallSeq = 0;
+  let seenHitSeq = 0, seenScoreSeq = 0, seenWallSeq = 0;
   let hitAt = 0;                  // local ms timestamp of the last hit pop
+  let tintAt = 0;                 // local ms timestamp driving the last-touch ball tint
+  let hitSide = null;             // canonical side ("A"/"B") of the paddle that last hit
+  let wallAt = 0;                 // local ms timestamp of the last wall-bounce flash
+  let wallSide = null;            // which rail flashed: "L" (x=0) or "R" (x=W)
+  let winFlashAt = 0;             // local ms timestamp the match-over celebration began
   let scoreFlashAt = 0;           // local ms timestamp of the last score flash
   let scoreFlashSide = null;      // which canonical side ("A"/"B") just scored
   // guest local prediction + reconciliation
@@ -221,7 +240,18 @@ export function createGame(ctx) {
     shadow: keep(standard(THREE, "#000000", {
       roughness: 1, metalness: 0, transparent: true, opacity: 0.28, depthWrite: false,
     })),
+    // Fading ghost spheres trailing the ball on fast volleys. One shared material;
+    // each ghost fades via its own per-mesh scale (opacity stays constant, cheap).
+    trail: keep(standard(THREE, "#ffffff", {
+      emissive: "#ffffff", emissiveIntensity: 0.5, transparent: true, opacity: 0.22, depthWrite: false,
+    })),
+    // Expanding gold ring on the floor when a match is won (winner-coloured glow).
+    winRing: keep(standard(THREE, PALETTE.gold, {
+      emissive: PALETTE.gold, emissiveIntensity: 0.9, transparent: true, opacity: 0.0, depthWrite: false,
+    })),
   };
+  // Reused colour scratch (no per-frame allocation) for the last-touch ball tint.
+  const WHITE_C = new THREE.Color("#ffffff");
 
   const plankH = 0.018;
   const TOP = plankH;
@@ -239,11 +269,17 @@ export function createGame(ctx) {
 
   // side walls (lateral bounds at x=0 and x=W) — gold rails for readability. Widened
   // and lifted a touch so they're legible from both seats without z-fighting.
-  const wallGeo = keep(new THREE.BoxGeometry(0.01, 0.014, COURT_H));
-  const wallL = meshOf(THREE, wallGeo, M.line, false);
-  const wallR = meshOf(THREE, wallGeo, M.line, false);
-  wallL.position.set(-COURT_W / 2, TOP + 0.007, 0);
-  wallR.position.set(COURT_W / 2, TOP + 0.007, 0);
+  const wallGeo = keep(new THREE.BoxGeometry(RAIL_W, 0.014, COURT_H));
+  // Each rail uses its OWN material instance (cloned from M.line) so a wall-bounce
+  // spark can flash one rail's emissive without lighting the midline/other rail.
+  M.lineL = keep(M.line.clone());
+  M.lineR = keep(M.line.clone());
+  const wallL = meshOf(THREE, wallGeo, M.lineL, false);
+  const wallR = meshOf(THREE, wallGeo, M.lineR, false);
+  // Push each rail OUTWARD by its half-width so its INNER face sits on ±COURT_W/2
+  // (the court edge) instead of straddling it — the rail no longer pokes inward.
+  wallL.position.set(-COURT_W / 2 - RAIL_HALF, TOP + 0.007, 0);
+  wallR.position.set(COURT_W / 2 + RAIL_HALF, TOP + 0.007, 0);
   wallL.renderOrder = 2; wallR.renderOrder = 2;
   group.add(wallL, wallR);
 
@@ -273,11 +309,35 @@ export function createGame(ctx) {
   ballShadow.renderOrder = 1;
   group.add(ballShadow);
 
+  // Ball motion trail: a small ring of ghost spheres positioned behind the ball
+  // along its travel axis in render(). Purely local (keyed off speed), never wired.
+  const trailGeo = keep(new THREE.SphereGeometry(BALL_RADIUS, 10, 8));
+  const trail = [];
+  for (let i = 0; i < TRAIL_N; i++) {
+    const g = meshOf(THREE, trailGeo, M.trail, false);
+    g.position.y = BALL_Y;
+    g.renderOrder = 0; // behind the ball
+    g.visible = false;
+    group.add(g);
+    trail.push(g);
+  }
+
+  // Expanding gold ring on the floor, shown only during the match-over celebration.
+  // A flat thin annulus; scaled/faded in render() while phase==="over" & winFlashAt.
+  const winRing = meshOf(THREE, keep(new THREE.RingGeometry(0.9, 1.0, 40)), M.winRing, false);
+  winRing.rotation.x = -Math.PI / 2;
+  winRing.position.y = TOP + 0.0025;
+  winRing.renderOrder = 4;
+  winRing.visible = false;
+  group.add(winRing);
+
   // ----- IDENTITY CUE: glowing home strip + halo under MY paddle -----
   // Always built; visibility is toggled by whether this client owns a paddle, so
   // a live spectator<->seat role change can show/hide the cue without rebuilding.
   let homeStrip = null, myHalo = null;
-  homeStrip = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W, 0.002, PADDLE_T * SZ * 0.5)), M.mine, false);
+  // Inset the home strip inside the gold rails (COURT_W - 2*RAIL_W) so its ends tuck
+  // under the rails instead of butting their inner faces at a shared pixel seam.
+  homeStrip = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W - 2 * RAIL_W, 0.002, PADDLE_T * SZ * 0.5)), M.mine, false);
   homeStrip.position.set(0, TOP + 0.003, -COURT_H / 2 + PADDLE_T * SZ * 0.4); // always near (-Z) = my side
   homeStrip.visible = !!myColor;
   group.add(homeStrip);
@@ -307,12 +367,19 @@ export function createGame(ctx) {
     scoreTex = new THREE.CanvasTexture(scoreCanvas);
     if (THREE.SRGBColorSpace) scoreTex.colorSpace = THREE.SRGBColorSpace;
     const mat = keep(new THREE.MeshBasicMaterial({ map: scoreTex, transparent: true, depthWrite: false }));
-    const geo = keep(new THREE.PlaneGeometry(COURT_W * 0.85, COURT_W * 0.85 * (128 / 512)));
+    // Narrowed a touch (0.78 vs 0.85) so that, with the placard pushed fully clear of
+    // the plank, its outer CORNERS still stay inside the ~0.55 m table radius.
+    const placardW = COURT_W * 0.78;
+    const placardD = placardW * (128 / 512);
+    const geo = keep(new THREE.PlaneGeometry(placardW, placardD));
     scoreMesh = new THREE.Mesh(geo, mat);
     scoreMesh.rotation.x = -Math.PI / 2; // lay flat
-    // Place just beyond MY near (-Z) edge, text upright from my seat. Because we
-    // self-orient (own paddle always at -Z), this is the same for host & guest.
-    scoreMesh.position.set(0, TOP + 0.004, -COURT_H / 2 - COURT_W * 0.085);
+    // Place fully BEYOND MY near (-Z) edge so the whole pill clears the floor plank
+    // (the plank extends to -COURT_H/2 - 0.025), text upright from my seat. Its inner
+    // edge sits a hair past the plank's near edge: centre = plankNearEdge - halfDepth.
+    // Because we self-orient (own paddle always at -Z), this is the same host & guest.
+    const plankNearEdge = -COURT_H / 2 - 0.025;
+    scoreMesh.position.set(0, TOP + 0.004, plankNearEdge - placardD / 2 - 0.006);
     scoreMesh.renderOrder = 5;
     group.add(scoreMesh);
     keep(scoreTex);
@@ -372,6 +439,21 @@ export function createGame(ctx) {
     g.font = "bold 40px sans-serif";
     g.fillText("–", 256, 50);
 
+    // Score pips: a TARGET-slot row per side under each digit (filled = points won)
+    // for an at-a-glance match-progress read. Purely derived from the synced scores.
+    const drawPips = (cx, n, hex, dir) => {
+      const slot = 13, r = 3.5;
+      for (let i = 0; i < TARGET; i++) {
+        const px = cx + dir * i * slot;
+        g.beginPath();
+        g.arc(px, 22, r, 0, Math.PI * 2);
+        g.fillStyle = i < n ? hex : "rgba(220,226,240,0.20)";
+        g.fill();
+      }
+    };
+    drawPips(40, myScore, myHex, 1);    // left side fills rightward from the left digit
+    drawPips(472, oppScore, opHex, -1); // right side fills leftward from the right digit
+
     // labels / status line
     g.font = "bold 26px sans-serif";
     let status;
@@ -382,8 +464,21 @@ export function createGame(ctx) {
       g.restore();
     };
     if (isSpectator) {
-      status = "SPECTATING  (A vs B)";
-      g.fillStyle = "#cdd6e8";
+      // Spectators get a meaningful status so a paused (opponent-away) court doesn't
+      // read as a silently-frozen game; over/lobby/play each get their own line.
+      if (phase === "over") {
+        status = winner === "A" ? "A WINS" : winner === "B" ? "B WINS" : "MATCH OVER";
+        g.fillStyle = PALETTE.gold;
+      } else if (paused) {
+        status = "Opponent away…";
+        g.fillStyle = "#e3b34a";
+      } else if (phase === "lobby") {
+        status = "Waiting for players…";
+        g.fillStyle = "#9fb0c8";
+      } else {
+        status = "SPECTATING  (A vs B)";
+        g.fillStyle = "#cdd6e8";
+      }
       g.textAlign = "center";
       g.fillText(status, 256, 100);
     } else if (phase === "over") {
@@ -449,7 +544,12 @@ export function createGame(ctx) {
   buildScoreboard();
 
   function clampPaddle(x) {
-    return Math.max(PADDLE_HALF, Math.min(W - PADDLE_HALF, x));
+    // Keep the paddle's rendered outer face inside the rail's inner face: clamp by
+    // PADDLE_HALF (ball-collision extent) plus the rail half-width margin so the gold
+    // rail can never poke through the paddle at full travel. The tiny margin doesn't
+    // change ball/paddle collision since the ball still reflects off the wall first.
+    const m = PADDLE_HALF + PADDLE_WALL_MARGIN;
+    return Math.max(m, Math.min(W - m, x));
   }
 
   // ----- serve / match flow -----
@@ -493,9 +593,15 @@ export function createGame(ctx) {
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
 
-    // lateral walls
-    if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); }
-    if (ball.x > W - BALL_R) { ball.x = W - BALL_R; ball.vx = -Math.abs(ball.vx); }
+    // lateral walls — bump a synced wallSeq so every viewer flashes the same rail.
+    if (ball.x < BALL_R) {
+      ball.x = BALL_R; ball.vx = Math.abs(ball.vx);
+      wallSeq = (wallSeq + 1) & 0xffff; triggerWall("L");
+    }
+    if (ball.x > W - BALL_R) {
+      ball.x = W - BALL_R; ball.vx = -Math.abs(ball.vx);
+      wallSeq = (wallSeq + 1) & 0xffff; triggerWall("R");
+    }
 
     // paddle crossings along the court-length (y) axis.
     // A at y=HOST_Y (ball moving -y crosses it), B at y=GUEST_Y (ball moving +y).
@@ -530,8 +636,9 @@ export function createGame(ctx) {
         else if (ball.x > W - BALL_R) { ball.x = W - BALL_R; ball.vx = -Math.abs(ball.vx); }
         // One-shot hit flourish: bump the synced counter so every viewer pops the
         // ball + paddle on the same reflect; locally trigger it now for the host.
+        // dirToward<0 = host paddle (side A) struck, else guest paddle (side B).
         hitSeq = (hitSeq + 1) & 0xffff;
-        triggerHit();
+        triggerHit(dirToward < 0 ? "A" : "B");
         return true;
       }
       return false;
@@ -558,6 +665,7 @@ export function createGame(ctx) {
       // Schedule an automatic return to the lobby so a finished court isn't dead
       // forever — the guest-presence gate then re-serves a fresh match.
       rematchAt = nowMs() + REMATCH_MS;
+      triggerWin();
       paintScore();
       try { ctx.onGameOver({ winner: winner === "A" ? "host" : "guest", reason: "score" }); } catch { /* */ }
     } else {
@@ -574,7 +682,9 @@ export function createGame(ctx) {
   }
 
   // ----- flourish triggers (local; counters in the snapshot keep all viewers synced) -----
-  function triggerHit() { hitAt = nowMs(); }
+  function triggerHit(side) { hitAt = nowMs(); tintAt = hitAt; hitSide = side || null; }
+  function triggerWall(side) { wallAt = nowMs(); wallSide = side || null; }
+  function triggerWin() { winFlashAt = nowMs(); }
   function triggerScore(side) {
     scoreFlashAt = nowMs();
     scoreFlashSide = side;
@@ -593,9 +703,14 @@ export function createGame(ctx) {
       phase, winner,
       bx: ball.x, by: ball.y, bvx: ball.vx, bvy: ball.vy,
       pA, pB, sA: scoreA, sB: scoreB,
-      // One-shot flourish counters: a guest/spectator pops the ball/score when these
-      // change vs the last applied value. Pure cosmetics; never affect simulation.
+      // Mid-match pause flag so a non-host viewer can (a) freeze its predicted paddle
+      // instead of drifting against a frozen authority and (b) show "Opponent away…"
+      // instead of a silently-frozen ball. Backward-compatible: older/absent => false.
+      paused,
+      // One-shot flourish counters: a guest/spectator pops the ball/score/wall when
+      // these change vs the last applied value. Pure cosmetics; never affect sim.
       hit: hitSeq, scr: scoreSeq, scrSide: scoreFlashSide,
+      wall: wallSeq, wallSide,
     };
   }
   function pushState() {
@@ -618,12 +733,15 @@ export function createGame(ctx) {
       padB.position.set(fX(pB), padB.position.y, fZ(GUEST_Y));
     }
 
-    // ball
+    // ball — position + canonical velocity (host reads sim, others read view)
     const bx = isHost ? ball.x : view.x;
     const by = isHost ? ball.y : view.y;
+    const bvx = isHost ? ball.vx : view.vx;
+    const bvy = isHost ? ball.vy : view.vy;
     const bX = fX(bx), bZ = fZ(by);
-    // Hit pop: an eased squash-and-rebound on a paddle reflect (1 -> 1.32 -> 1).
     const now = nowMs();
+    const speed = Math.hypot(bvx, bvy);
+    // Hit pop: an eased squash-and-rebound on a paddle reflect (1 -> 1.32 -> 1).
     let pop = 1;
     if (hitAt) {
       const h = (now - hitAt) / HIT_POP_MS;
@@ -633,12 +751,79 @@ export function createGame(ctx) {
         pop = 1 + 0.32 * Math.sin(Math.min(1, h) * Math.PI);
       }
     }
-    ballMesh.position.set(bX, BALL_Y, bZ);
-    ballMesh.scale.setScalar(pop);
+    // Idle/lobby attract: when the ball is parked (lobby/over, ~zero speed) give it a
+    // gentle local bob + slow spin so a waiting court feels alive. Purely cosmetic —
+    // never touches sim/view, identical-ish for all viewers (keyed off shared speed).
+    let bobY = 0;
+    if (phase !== "play" && speed < 1) {
+      bobY = Math.sin(now / 620) * BALL_RADIUS * 0.5;
+      ballMesh.rotation.y = now / 1400;
+    } else {
+      ballMesh.rotation.y = 0;
+    }
+    ballMesh.position.set(bX, BALL_Y + bobY, bZ);
+    // Speed-line stretch: scale the ball along its travel axis as it speeds up so fast
+    // volleys read with motion. Stretch factor eases from 1 (slow) up to ~1.5 at BALL_MAX,
+    // squashed on the cross axis to conserve volume. Applied via a per-axis world scale
+    // by rotating the stretch into the local-view X/Z plane.
+    if (phase === "play" && speed > BALL_START * 1.2) {
+      const st = Math.min(1, (speed - BALL_START) / (BALL_MAX - BALL_START));
+      const along = 1 + 0.5 * st, across = 1 - 0.18 * st;
+      // travel direction in LOCAL view space (apply the same axis flips as fX/fZ)
+      const dirX = (viewFlip ? -bvx : bvx);
+      const dirZ = (viewFlip ? -bvy : bvy);
+      const len = Math.hypot(dirX, dirZ) || 1;
+      const ux = dirX / len, uz = dirZ / len;
+      // scale = across*I + (along-across)*(u u^T) on the XZ plane; Y stays at pop
+      ballMesh.scale.set(
+        pop * (across + (along - across) * ux * ux),
+        pop,
+        pop * (across + (along - across) * uz * uz),
+      );
+    } else {
+      ballMesh.scale.setScalar(pop);
+    }
+    // Last-touch tint: for ~LASTTOUCH_MS after a hit, blend the ball's emissive toward
+    // the color of the paddle that struck it so players can read whose shot is incoming.
+    // Keyed off its own window (tintAt) so it outlives the shorter squash pop.
+    const tintT = (tintAt && hitSide) ? Math.max(0, 1 - (now - tintAt) / LASTTOUCH_MS) : 0;
+    if (tintT > 0) {
+      M.ball.emissive.set(hitSide === "A" ? PALETTE.pongLeft : PALETTE.pongRight);
+      M.ball.emissive.lerp(WHITE_C, 1 - tintT); // tinted at t=1, white as it decays
+      M.ball.emissiveIntensity = 0.55 + 0.5 * tintT;
+    } else {
+      if (tintAt) tintAt = 0;
+      M.ball.emissive.set("#ffffff");
+      M.ball.emissiveIntensity = 0.55;
+    }
     // soft contact shadow tracks the ball; grows a touch with the pop
     ballShadow.position.x = bX;
     ballShadow.position.z = bZ;
     ballShadow.scale.setScalar(pop);
+
+    // Ball motion trail: lay ghost spheres behind the ball along its travel axis,
+    // fading with distance, only on fast play. Hidden when slow/parked.
+    if (phase === "play" && speed > BALL_START * 1.1) {
+      const len = speed || 1;
+      const ux = (viewFlip ? -bvx : bvx) / len;
+      const uz = (viewFlip ? -bvy : bvy) / len;
+      const fade = Math.min(1, (speed - BALL_START) / (BALL_MAX - BALL_START) + 0.35);
+      for (let i = 0; i < TRAIL_N; i++) {
+        const g = trail[i];
+        const back = (i + 1) * BALL_RADIUS * 1.5;
+        g.position.set(bX - ux * back, BALL_Y, bZ - uz * back);
+        g.scale.setScalar((1 - (i + 1) / (TRAIL_N + 1)) * fade);
+        g.visible = true;
+      }
+    } else {
+      for (let i = 0; i < TRAIL_N; i++) trail[i].visible = false;
+    }
+
+    // Win celebration progress (0..1 over WIN_RING_MS); 0 when not celebrating.
+    let winT = 0;
+    const celebrating = phase === "over" && winFlashAt && (now - winFlashAt) < WIN_RING_MS;
+    if (celebrating) winT = (now - winFlashAt) / WIN_RING_MS;
+    else if (winFlashAt && phase !== "over") winFlashAt = 0; // clear on phase exit
 
     // identity halo follows MY paddle (which is always at -Z near edge)
     if (myHalo && myColor) {
@@ -646,7 +831,12 @@ export function createGame(ctx) {
       myHalo.position.x = myMesh.position.x;
       myHalo.position.z = myMesh.position.z;
       const t = now / 1000;
-      M.mine.emissiveIntensity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3));
+      let mineI = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3));
+      // If I'm the winner, flash my home cue gold-bright in time with the celebration.
+      if (celebrating && ((winner === "A" && mySide === "A") || (winner === "B" && mySide === "B"))) {
+        mineI = 0.8 + 0.8 * (0.5 + 0.5 * Math.sin(now / 90));
+      }
+      M.mine.emissiveIntensity = mineI;
     }
     // steady opponent grounding ring: for a seated player it follows the OPP paddle
     // (the +Z far one); for a spectator we hide it (both paddles already coloured).
@@ -671,6 +861,42 @@ export function createGame(ctx) {
     } else {
       M.colorA.emissiveIntensity = 0.35;
       M.colorB.emissiveIntensity = 0.35;
+    }
+
+    // Win celebration: a rising emissive pulse on the WINNER's paddle (everyone sees
+    // the same paddle glow since winner is in the snapshot) + an expanding gold ring
+    // on the floor at the winner's end. All local, gated on phase==="over".
+    if (celebrating && winner) {
+      const pulse = 0.6 + 1.0 * (0.5 + 0.5 * Math.sin(now / 90)) * (1 - winT * 0.4);
+      if (winner === "A") M.colorA.emissiveIntensity = pulse;
+      else M.colorB.emissiveIntensity = pulse;
+      // Expanding fading ring centred on the court (stays within the table radius as
+      // it grows). The winner READ comes from the paddle pulse above; the ring is a
+      // shared "match won" burst all three viewers see identically.
+      const ease = 1 - Math.pow(1 - winT, 2); // ease-out
+      winRing.position.set(0, winRing.position.y, 0);
+      winRing.scale.setScalar(0.05 + ease * 0.28); // outer radius 0.05 -> 0.33 m
+      M.winRing.opacity = 0.7 * (1 - winT);
+      winRing.visible = true;
+    } else {
+      winRing.visible = false;
+      if (M.winRing.opacity !== 0) M.winRing.opacity = 0;
+    }
+
+    // Wall-bounce spark: a one-shot gold flash on the rail the ball just struck.
+    // Each rail owns its own material clone so only the hit rail brightens. The
+    // canonical side ("L"=x0, "R"=xW) maps to a LOCAL rail mesh: in the guest's
+    // 180°-flipped view, canonical x0 renders on the +X (wallR) mesh, so swap.
+    if (wallAt) {
+      const wt = (now - wallAt) / WALL_POP_MS;
+      if (wt >= 1) { wallAt = 0; M.lineL.emissiveIntensity = 0.25; M.lineR.emissiveIntensity = 0.25; }
+      else {
+        const flash = 0.25 + 1.1 * Math.sin(Math.min(1, wt) * Math.PI);
+        // local mesh that should light: "L" canonical -> wallL unless flipped
+        const litIsLocalL = viewFlip ? (wallSide === "R") : (wallSide === "L");
+        M.lineL.emissiveIntensity = litIsLocalL ? flash : 0.25;
+        M.lineR.emissiveIntensity = !litIsLocalL && wallSide ? flash : 0.25;
+      }
     }
   }
 
@@ -724,19 +950,27 @@ export function createGame(ctx) {
 
     if (isGuest) {
       const dir = localDirCanonical();
-      // local prediction
-      myPredX = clampPaddle(myPredX + dir * PADDLE_SPEED * dt);
-      // reconcile toward authoritative pB
-      if (Number.isFinite(pB)) {
-        const gap = pB - myPredX;
-        if (Math.abs(gap) > RESEED_DIST) myPredX = pB;
-        // Dead-zone: skip the ease when settled & idle so a stationary paddle stops
-        // dead instead of asymptotically creeping toward a slightly-lagged authority.
-        else if (dir !== 0 || Math.abs(gap) > PADDLE_DEADZONE) {
-          myPredX = clampPaddle(myPredX + gap * Math.min(1, dt * RECONCILE_RATE));
+      if (paused) {
+        // Host has frozen physics (opponent-away mid-match): its authoritative pB is
+        // not advancing, so STOP predicting and pin to authority. Otherwise local
+        // input would creep myPredX away from a frozen pB and visibly rubber-band.
+        if (Number.isFinite(pB)) myPredX = pB;
+      } else {
+        // local prediction
+        myPredX = clampPaddle(myPredX + dir * PADDLE_SPEED * dt);
+        // reconcile toward authoritative pB
+        if (Number.isFinite(pB)) {
+          const gap = pB - myPredX;
+          if (Math.abs(gap) > RESEED_DIST) myPredX = pB;
+          // Dead-zone: skip the ease when settled & idle so a stationary paddle stops
+          // dead instead of asymptotically creeping toward a slightly-lagged authority.
+          else if (dir !== 0 || Math.abs(gap) > PADDLE_DEADZONE) {
+            myPredX = clampPaddle(myPredX + gap * Math.min(1, dt * RECONCILE_RATE));
+          }
         }
       }
-      // stream intent (canonical dir) on change or throttle tick
+      // stream intent (canonical dir) on change or throttle tick. Keep streaming even
+      // while paused so the host's presence gate sees us and un-pauses on our return.
       inputAcc += dt;
       if (dir !== lastSentDir || inputAcc >= 0.05) {
         inputAcc = 0;
@@ -788,8 +1022,9 @@ export function createGame(ctx) {
       view = { x: W / 2, y: H / 2, vx: 0, vy: 0 };
       auth = null;
       paused = false; rematchAt = 0;
-      hitAt = 0; scoreFlashAt = 0; scoreFlashSide = null;
-      seenHitSeq = 0; seenScoreSeq = 0;
+      hitAt = 0; tintAt = 0; hitSide = null; wallAt = 0; wallSide = null; winFlashAt = 0;
+      scoreFlashAt = 0; scoreFlashSide = null;
+      seenHitSeq = 0; seenScoreSeq = 0; seenWallSeq = 0;
       paintScore();
       render();
       return;
@@ -802,19 +1037,30 @@ export function createGame(ctx) {
     winner = state.winner || null;
     scoreA = state.sA | 0;
     scoreB = state.sB | 0;
+    // Mirror the host's pause flag so the placard/prediction match (absent => false).
+    paused = !!state.paused;
     if (Number.isFinite(state.pA)) pA = state.pA;
     if (Number.isFinite(state.pB)) pB = state.pB;
 
-    // One-shot flourishes: replay the host's hit/score pops when their counters
+    // One-shot flourishes: replay the host's hit/score/wall pops when their counters
     // advance, so guest + spectator animate identically. Pure cosmetics.
     if (Number.isFinite(state.hit) && state.hit !== seenHitSeq) {
       seenHitSeq = state.hit;
-      triggerHit();
+      // Derive which paddle hit from the freshly-reflected ball y (the host parks it
+      // right at the struck paddle): low y = host (A), high y = guest (B). No new wire.
+      triggerHit(Number.isFinite(state.by) && state.by < H / 2 ? "A" : "B");
     }
     if (Number.isFinite(state.scr) && state.scr !== seenScoreSeq) {
       seenScoreSeq = state.scr;
       triggerScore(state.scrSide || null);
     }
+    if (Number.isFinite(state.wall) && state.wall !== seenWallSeq) {
+      seenWallSeq = state.wall;
+      triggerWall(state.wallSide || null);
+    }
+    // Match-over celebration: fire once when the phase transitions into "over" so
+    // guest + spectator run the same win flourish the host already started.
+    if (prevPhase !== "over" && phase === "over") triggerWin();
 
     auth = { x: state.bx, y: state.by, vx: state.bvx, vy: state.bvy };
     // On a non-play phase (lobby / over) the ball isn't being integrated, so snap

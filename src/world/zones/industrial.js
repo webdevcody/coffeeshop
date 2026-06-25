@@ -451,8 +451,11 @@ export function buildIndustrial() {
   // filling a good share of its corner quadrant rather than a thin slab. The
   // collider always matches the body footprint exactly (see addCollider calls).
 
-  // NW warehouse, runs along Z (deep shed). Footprint x∈[-26,-12] z∈[-23,-5].
-  const WH1 = { w: 14, h: 7, d: 18, x: -19, z: -14 };
+  // NW warehouse, runs along Z (deep shed). Set BACK from the seam roads so its
+  // body + dock + catwalk all clear the kerb/sidewalk: footprint x∈[-22,-8],
+  // z∈[-21,-5] (dock apron reaches z≈-3.4, catwalk reaches x≈-7.2 — both inward
+  // toward the open centre). Nothing reaches past ±23 on any tile edge.
+  const WH1 = { w: 14, h: 7, d: 16, x: -15, z: -13 };
   const wh1 = makeWarehouse(WH1.w, WH1.h, WH1.d, steelWall, spinners);
   wh1.position.set(WH1.x, 0, WH1.z);
   group.add(wh1);
@@ -462,8 +465,10 @@ export function buildIndustrial() {
   // (loading dock + roller doors, built on the local +Z face) points toward the
   // open center lane (−Z) the player approaches from, not the cramped south
   // perimeter strip. Footprint is symmetric so the collider stays centred.
-  // Footprint x∈[-26,-6] z∈[11,23].
-  const WH2 = { w: 20, h: 6.5, d: 12, x: -16, z: 17 };
+  // Pulled IN off the south + west seam roads: footprint x∈[-21.5,-3.5],
+  // z∈[10,22]; with the 180° flip the catwalk pokes to x≈-22.3 and the dock to
+  // z≈8.4 (both inside ±23). Nothing sits in the kerb/sidewalk.
+  const WH2 = { w: 18, h: 6.5, d: 12, x: -12.5, z: 16 };
   const wh2 = makeWarehouse(WH2.w, WH2.h, WH2.d, steelWallRust, spinners);
   wh2.position.set(WH2.x, 0, WH2.z);
   wh2.rotation.y = Math.PI;
@@ -471,15 +476,17 @@ export function buildIndustrial() {
   addCollider(colliders, WH2.x, WH2.z, WH2.w, WH2.d);
 
   // NE warehouse, runs along X (deepened so its back is a real wall, not a card).
-  // Footprint x∈[8,26] z∈[-24,-12]; the +X catwalk reaches x≈26.8 (< tile 30).
-  const WH3 = { w: 18, h: 6.5, d: 12, x: 17, z: -18 };
+  // Set BACK from the north + east seam roads: footprint x∈[4,22], z∈[-21,-10];
+  // the +X catwalk reaches x≈22.85 and the +Z dock apron reaches z≈-8.4 (toward
+  // the open centre) — all inside ±23, clear of the kerb/sidewalk.
+  const WH3 = { w: 18, h: 6.5, d: 11, x: 13, z: -15.5 };
   const wh3 = makeWarehouse(WH3.w, WH3.h, WH3.d, steelWall, spinners);
   wh3.position.set(WH3.x, 0, WH3.z);
   group.add(wh3);
   addCollider(colliders, WH3.x, WH3.z, WH3.w, WH3.d);
 
   // --- Silos cluster (NE quadrant, south of wh3) ---------------------------
-  const siloSpots = [[10, -7], [14.6, -8]];
+  const siloSpots = [[10, -6], [14.5, -6.3]];
   for (const [x, z] of siloSpots) {
     const s = makeSilo();
     s.position.set(x, 0, z);
@@ -496,23 +503,25 @@ export function buildIndustrial() {
     addCollider(colliders, x, z, 5, 5);
   }
 
-  // --- Water tower (SE corner, prominent) ----------------------------------
+  // --- Water tower (SE quadrant, prominent) --------------------------------
+  // Pulled IN from the SE corner so its tank/roof (radius ≈2.6) clear the seam
+  // roads: at (20,20) the widest part reaches ±22.6 in X,Z — inside ±23.
   const tower = makeWaterTower();
-  tower.position.set(24, 0, 24);
+  tower.position.set(20, 0, 20);
   group.add(tower);
-  addCollider(colliders, 24, 24, 3.6, 3.6); // tight to the leg spread
+  addCollider(colliders, 20, 20, 3.6, 3.6); // tight to the leg spread
 
   // --- Two smokestacks rising off the NW warehouse ROOF --------------------
   // Mounted on the roof (baseY ≈ ridge height of wh1) so the chimneys sit ON the
   // shed instead of punching through its mass. No ground colliders: they're up
   // on the roof, not blocking the yard floor. Both stack feet land inside wh1's
-  // footprint (x∈[-26,-12], z∈[-23,-5]).
+  // (set-back) footprint (x∈[-22,-8], z∈[-21,-5]).
   // Emitters at the stack tips; each owns a pool of reusable puff blobs.
   const smokeSystems = [];
   const wh1RoofY = WH1.h + WH1.h * 0.28; // wh1 gable ridge height
   const stackSpots = [
-    { x: -19, z: -15, h: 8, baseY: wh1RoofY - 0.6 },
-    { x: -16, z: -11, h: 6.5, baseY: wh1RoofY - 0.6 },
+    { x: -16, z: -15, h: 8, baseY: wh1RoofY - 0.6 },
+    { x: -13, z: -10, h: 6.5, baseY: wh1RoofY - 0.6 },
   ];
   for (const sp of stackSpots) {
     const stack = makeStack(sp.h, sp.baseY);

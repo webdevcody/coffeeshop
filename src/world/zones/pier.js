@@ -194,10 +194,12 @@ export function buildPier() {
     group.add(seam);
   }
 
-  // --- Pier deck on pilings, running out along X=0 (Z from -4 to 28) ------
+  // --- Pier deck on pilings, running out along X=0 (Z from -4 to 23) ------
+  // The seaward tip is held at Z=23 (was 28) so the deck + its collider clear the
+  // ~7 m road+sidewalk setback at the +Z tile seam; nothing reaches past +23.
   const DECK_W = 6;       // 6 m wide: a clear lane a car could drive onto
   const DECK_Z0 = -4;
-  const DECK_Z1 = 28;
+  const DECK_Z1 = 23;
   const deckLen = DECK_Z1 - DECK_Z0;
   const deckCz = (DECK_Z0 + DECK_Z1) / 2;
   const deck = box(DECK_W, 0.3, deckLen, plankMat);
@@ -342,8 +344,10 @@ export function buildPier() {
 
   // --- ARCADE (a full hall, left of the pier) -----------------------------
   // 11 m wide × 8 m deep × 5 m tall — a real city-block volume, solid from all
-  // sides, well clear of the promenade lane (front wall at Z=-16, lane ends -12).
-  const arcX = -15, arcZ = -20, arcW = 11, arcD = 8, arcH = 5;
+  // sides. Pulled in to centre (-14,-18.5) so its footprint sits in LOCAL
+  // X[-19.5,-8.5], Z[-22.5,-14.5] — well inside the [-23,23] road+sidewalk
+  // setback — while its front wall (Z=-14.5) still clears the lane (ends -12).
+  const arcX = -14, arcZ = -18.5, arcW = 11, arcD = 8, arcH = 5;
   const arcFrontZ = arcD / 2;
   const arcade = new THREE.Group();
   arcade.position.set(arcX, 0, arcZ);
@@ -379,8 +383,12 @@ export function buildPier() {
 
   // --- PIER HALL / ticket office (a full hall, right of the pier) ----------
   // 12 m wide × 9 m deep × 6 m tall — the district's main building, a substantial
-  // volume that reads solid from every angle. Front wall at Z=-16.5 (lane ends -12).
-  const hallX = 15, hallZ = -21, hallW = 12, hallD = 9, hallH = 6;
+  // volume that reads solid from every angle. Pulled in to centre (10,-18) so its
+  // footprint sits in LOCAL X[4,16], Z[-22.5,-13.5] — fully inside the [-23,23]
+  // road+sidewalk setback (even its overhanging roof eave stops at Z≈-22.95) —
+  // with its front wall (Z=-13.5) still clearing the lane, and leaving the
+  // back-right corner clear for the ferris wheel.
+  const hallX = 10, hallZ = -18, hallW = 12, hallD = 9, hallH = 6;
   const hallFrontZ = hallD / 2;
   const hall = new THREE.Group();
   hall.position.set(hallX, 0, hallZ);
@@ -439,13 +447,15 @@ export function buildPier() {
   addCollider(colliders, hallX, hallZ, hallW, hallD);
 
   // --- Ferris-wheel silhouette in the back-right corner -------------------
-  // Pulled into the corner so its legs clear the pier-hall footprint (which now
-  // reaches X≈21) and nothing interpenetrates the building.
-  const wheelX = 24, wheelZ = -24;
+  // Tucked into the back-right corner at centre (19.8,-19), just right of the
+  // pulled-in pier hall (which now ends at X=16). Its radius was trimmed (5.2→2.6)
+  // and its legs narrowed so the WHOLE wheel — outer cabins reach X≈22.85 — stays
+  // inside the [-23,23] setback and never interpenetrates the hall (clear of X=16).
+  const wheelX = 19.8, wheelZ = -19;
   const wheel = new THREE.Group();
   wheel.position.set(wheelX, 0, wheelZ);
   // Support A-frame legs.
-  for (const sx of [-2.4, 2.4]) {
+  for (const sx of [-1.5, 1.5]) {
     const leg = box(0.35, 9, 0.35, steelMat);
     leg.position.set(sx, 4.3, 0);
     leg.rotation.z = sx > 0 ? 0.22 : -0.22;
@@ -454,7 +464,7 @@ export function buildPier() {
   // The rotating ring with spokes + cabins.
   const ring = new THREE.Group();
   ring.position.y = 8.2;
-  const R = 5.2;
+  const R = 2.6;
   const rimGeo = new THREE.TorusGeometry(R, 0.16, 6, 28);
   const rim = new THREE.Mesh(rimGeo, steelMat);
   rim.castShadow = true;
@@ -478,7 +488,8 @@ export function buildPier() {
   }
   wheel.add(ring);
   group.add(wheel);
-  addCollider(colliders, wheelX, wheelZ, 5, 1.6);
+  // Collider covers the wheel's leg base; X[17.8,21.8], Z[-19.8,-18.2] — inside [-23,23].
+  addCollider(colliders, wheelX, wheelZ, 4, 1.6);
 
   // --- Mooring buoys floating near the pier (decorative, no collider) ------
   const buoyGeo = new THREE.SphereGeometry(0.5, 10, 8);

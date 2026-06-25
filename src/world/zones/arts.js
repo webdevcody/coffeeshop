@@ -467,9 +467,11 @@ export function buildArts() {
 
   // --- Gallery buildings (with big exterior murals) ------------------------
   // Two galleries placed in opposite corners so the lanes stay open.
-  // Gallery A — back-left corner. Footprint ~16 x 12, faces +Z and +X lanes.
+  // Gallery A — back-left corner. Footprint 15 x 11, faces +Z and +X lanes.
+  // Pulled inward (gx,gz) so wall edges land at -22 on the tile-edge sides,
+  // clearing the seam road + sidewalk (everything stays within local +-23).
   {
-    const gx = -19, gz = -19, w = 16, d = 12, h = 9;
+    const gx = -14.5, gz = -16.5, w = 15, d = 11, h = 9;
     const b = box(w, h, d, galleryWall);
     b.position.set(gx, h / 2, gz);
     group.add(b);
@@ -560,9 +562,11 @@ export function buildArts() {
     group.add(makeSpotlight(gx + 4.5, 7.6, gz + d / 2 + 0.2, 0));
   }
 
-  // Gallery B — front-right corner. Footprint ~14 x 11, faces -Z and -X lanes.
+  // Gallery B — front-right corner. Footprint 14 x 11, faces -Z and -X lanes.
+  // Pulled inward so wall edges land at +22 on the tile-edge sides, clearing
+  // the seam road + sidewalk (footprint + collider stay within local +-23).
   {
-    const gx = 19, gz = 19, w = 14, d = 11, h = 8;
+    const gx = 15, gz = 16.5, w = 14, d = 11, h = 8;
     const b = box(w, h, d, galleryWall2);
     b.position.set(gx, h / 2, gz);
     group.add(b);
@@ -620,10 +624,12 @@ export function buildArts() {
   }
 
   // --- Cafe building — front-right corner (+x,-z), a FULL VOLUME (15x12x7.5) ---
-  // Storefront FRONT faces the plaza (-Z, along the E-W lane); a second active
+  // Storefront FRONT faces the plaza (+Z, along the E-W lane); a second active
   // frontage faces the N-S lane (-X). Real depth + height, not a facade card.
+  // Pulled inward (cx 19.5->14.5, cz -19.5->-16) so the +X wall edge lands at
+  // +22 and the -Z wall edge at -22, clearing the seam road (within local +-23).
   addShopBuilding(group, colliders, {
-    cx: 19.5, cz: -19.5, w: 15, d: 12, h: 7.5,
+    cx: 14.5, cz: -16, w: 15, d: 12, h: 7.5,
     wall: cafeWall, trim: trimMat2, awning: awningMat2,
     dir: new THREE.Vector3(0, 0, 1),    // primary face +Z -> E-W lane / plaza
     side: new THREE.Vector3(-1, 0, 0),  // secondary face -X -> N-S lane / plaza
@@ -631,9 +637,11 @@ export function buildArts() {
   });
 
   // --- Studio / print shop — back-left corner (-x,+z), FULL VOLUME (15x12x7.5) -
-  // Storefront FRONT faces the plaza (+Z); second frontage faces the N-S lane (+X).
+  // Storefront FRONT faces the plaza (-Z); second frontage faces the N-S lane (+X).
+  // Pulled inward (cx -19.5->-14.5, cz 19.5->16) so the -X wall edge lands at -22
+  // and the +Z wall edge at +22, clearing the seam road (within local +-23).
   addShopBuilding(group, colliders, {
-    cx: -19.5, cz: 19.5, w: 15, d: 12, h: 7.5,
+    cx: -14.5, cz: 16, w: 15, d: 12, h: 7.5,
     wall: studioWall, trim: trimMat, awning: awningMat,
     dir: new THREE.Vector3(0, 0, -1),   // primary face -Z -> E-W lane / plaza
     side: new THREE.Vector3(1, 0, 0),   // secondary face +X -> N-S lane / plaza
@@ -644,14 +652,15 @@ export function buildArts() {
   // Placed in the open corner quadrants, clear of BOTH through-lanes
   // (|x| and |z| both well over the ~4 m lane half-width). Tiny colliders.
   const flagSwayers = [];
-  // Moved off the corners (now occupied by the Cafe / Studio buildings): the
-  // flags line the plaza-facing frontage of each new building, clear of both
-  // footprints (|x|<12) AND the through-lanes (|x|,|z| > ~4.5).
+  // The flags line the plaza-facing frontage of the Cafe / Studio buildings,
+  // clear of BOTH footprints (the pulled-in colliders front at |z|≈9.8) AND the
+  // through-lanes (|x|,|z| > ~4.5). Set at |z|=8.5 so they sit in the open band
+  // between each building's plaza face and the central lanes.
   const flagSpots = [
-    { x: 10, z: -13, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
-    { x: 6, z: -13, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
-    { x: -10, z: 13, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
-    { x: -6, z: 13, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
+    { x: 10, z: -8.5, c1: "#e2483a", c2: "#f4efe0", top: "ART", bottom: "FEST" },
+    { x: 6, z: -8.5, c1: "#3b7fd4", c2: "#f4efe0", top: "OPEN", bottom: "DAILY" },
+    { x: -10, z: 8.5, c1: "#2bb7a3", c2: "#f4efe0", top: "CAFE", bottom: "CITY" },
+    { x: -6, z: 8.5, c1: "#d24a96", c2: "#f4efe0", top: "NEW", bottom: "SHOW" },
   ];
   for (let i = 0; i < flagSpots.length; i++) {
     const f = flagSpots[i];

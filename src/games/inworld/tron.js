@@ -112,15 +112,18 @@ export function createGame(ctx) {
   // any in-place seat/role change.
   function applyFacing() { group.rotation.y = orientFor(seatRy); }
   // STEERING handedness. In the self-oriented frame the viewer always looks from
-  // the near (-Z) edge, so screen-left = -X(rendered), screen-right = +X(rendered).
-  // The canonical turn helpers turnLeft=(d+3)%4 / turnRight=(d+1)%4 are named the
-  // OPPOSITE way round from screen intent here: a physical "left" press must apply
-  // canonical turnRight, and "right" must apply turnLeft — and (because a 180° view
-  // flip preserves chirality) this swap is IDENTICAL for both seats. So we swap the
-  // physical intent to a turn-intent at the SENDER (each client knows its own seat)
-  // before buffering (host) or streaming (guest). The host trusts the guest's
-  // already-swapped intent in onInput.
-  const turnIntentFor = (physical) => (physical === "left" ? "right" : "left");
+  // the near (-Z) edge toward +Z(local), so the camera's screen-LEFT world axis is
+  // local +X and screen-RIGHT is local -X. The canonical turn helpers
+  // (turnLeft=(d+3)%4 / turnRight=(d+1)%4) compose with the gx/gz view mapping —
+  // which already bakes in the per-seat handedness via viewSign — so a physical
+  // "left" press maps DIRECTLY to canonical turnLeft and "right" to turnRight for
+  // BOTH seats and ALL FOUR chairs. (Verified: with viewSign+1 host dir2->turnLeft
+  // gives local +X = screen-left; with viewSign-1 guest dir0->turnLeft gives local
+  // +X = screen-left too. The prior swap double-counted the flip already in viewSign
+  // and inverted steering for everyone — this matches pong.js, which converts intent
+  // with viewSign alone and NO name swap.) Identity here; the host trusts the
+  // guest's intent verbatim in onInput.
+  const turnIntentFor = (physical) => physical;
 
   // ---- authoritative / mirrored game state ----
   let grid = makeArena();
@@ -188,6 +191,7 @@ export function createGame(ctx) {
     // strip in the local colour. Spectators get none (myColor == null).
     myHead: null,
     mine: null,
+    warn: null, // imminent-crash halo (built in buildIdentityMaterials)
     grid: keep(standard(THREE, "#0f2a40", { roughness: 0.85 })),
   };
   function buildIdentityMaterials() {
@@ -197,10 +201,18 @@ export function createGame(ctx) {
     if (myColor) {
       M.myHead = standard(THREE, "#ffffff", { emissive: myColor, emissiveIntensity: 1.8 });
       M.mine = standard(THREE, myColor, { emissive: myColor, emissiveIntensity: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
-      ownedIdentity.push(M.myHead, M.mine);
+      // IMMINENT-CRASH WARNING halo material (I7): a red variant of the local halo.
+      // update() swaps myHalo.material to this and pulses its emissive when the local
+      // cycle's NEXT canonical cell is a wall/trail — a purely render-side "you're
+      // about to die" cue computed from the synced grid (no authority change). Built
+      // here (not in the seat-fixed block) because it's only meaningful for a seated
+      // player and must be disposed/rebuilt with the rest of the identity pair.
+      M.warn = standard(THREE, "#ff3b30", { emissive: "#ff3b30", emissiveIntensity: 1.2, transparent: true, opacity: 0.6, depthWrite: false });
+      ownedIdentity.push(M.myHead, M.mine, M.warn);
     } else {
       M.myHead = null;
       M.mine = null;
+      M.warn = null;
     }
   }
   buildIdentityMaterials();
@@ -322,6 +334,7 @@ export function createGame(ctx) {
   // the synced snapshot so host, guests, and spectators all read the same cue.
   let bannerTex = null, bannerMat = null, bannerSprite = null, bannerCanvas = null, bannerCtx = null;
   let lastBannerText = "";
+  let lastBannerSub = "";
   // Banner "pop": when the displayed text changes (each countdown tick / GO / a
   // round or match result) we kick a quick overshoot-then-settle scale animation
   // instead of re-uploading the canvas texture every frame. baseScale is captured
@@ -348,47 +361,74 @@ export function createGame(ctx) {
     } catch { bannerSprite = null; }
   })();
 
-  function drawBanner(text, color) {
+  function drawBanner(text, color, sub) {
     if (!bannerCtx || !bannerTex) return;
     const c = bannerCtx;
     c.clearRect(0, 0, bannerCanvas.width, bannerCanvas.height);
     if (text) {
+      // With a subtitle the headline shifts up so both lines fit the 128px canvas;
+      // without one it stays vertically centred as before.
+      const headY = sub ? 46 : 64;
       c.font = "bold 84px system-ui, sans-serif";
       c.textAlign = "center";
       c.textBaseline = "middle";
       c.lineWidth = 10;
       c.strokeStyle = "rgba(0,0,0,0.85)";
-      c.strokeText(text, 256, 64);
+      c.strokeText(text, 256, headY);
       c.fillStyle = color || "#ffffff";
-      c.fillText(text, 256, 64);
+      c.fillText(text, 256, headY);
+      if (sub) {
+        // Persistent score line (I9): a late-arriving spectator reads the running
+        // best-of even though the edge pips are easy to miss from a seat.
+        c.font = "bold 34px system-ui, sans-serif";
+        c.lineWidth = 6;
+        c.strokeStyle = "rgba(0,0,0,0.85)";
+        c.strokeText(sub, 256, 104);
+        c.fillStyle = "#e8eef2";
+        c.fillText(sub, 256, 104);
+      }
     }
     bannerTex.needsUpdate = true;
   }
 
+  // Running best-of as a short score line, from the LOCAL viewer's perspective
+  // (your score first), or canonical CYAN:ORANGE for a spectator. Shown under the
+  // round/match banner so the final tally is readable without finding the edge pips.
+  function scoreLine() {
+    if (myColorIdx == null) return `BEST OF ${WIN_SCORE * 2 - 1}   CYAN ${scores[0] | 0} : ${scores[1] | 0} ORANGE`;
+    const mine = scores[myColorIdx] | 0, opp = scores[myColorIdx === 0 ? 1 : 0] | 0;
+    return `BEST OF ${WIN_SCORE * 2 - 1}   YOU ${mine} : ${opp} OPP`;
+  }
+
   function bannerFor() {
-    // Returns { text, color }. From the LOCAL player's perspective where relevant.
+    // Returns { text, color, sub? }. From the LOCAL player's perspective where
+    // relevant. `sub` is an optional persistent second line (the running score).
     if (phase === "countdown") {
       return { text: countdown > 0 ? String(countdown) : "GO", color: "#ffffff" };
     }
     if (phase === "roundover") {
-      if (roundWinner == null) return { text: "DRAW", color: "#ffd166" };
+      const sub = scoreLine();
+      if (roundWinner == null) return { text: "DRAW", color: "#ffd166", sub };
       const won = myColorIdx != null && roundWinner === myColorIdx;
       return {
         text: myColorIdx == null
           ? `${roundWinner === 0 ? "CYAN" : "ORANGE"} WINS ROUND`
           : (won ? "ROUND: YOU WIN" : "ROUND: YOU LOSE"),
         color: roundWinner === 0 ? COLORS[0] : COLORS[1],
+        sub,
       };
     }
     if (phase === "matchover") {
       const w = matchWinner;
-      if (w == null) return { text: "MATCH OVER", color: "#ffd166" };
+      const sub = scoreLine();
+      if (w == null) return { text: "MATCH OVER", color: "#ffd166", sub };
       const won = myColorIdx != null && w === myColorIdx;
       return {
         text: myColorIdx == null
           ? `${w === 0 ? "CYAN" : "ORANGE"} WINS!`
           : (won ? "YOU WIN!" : "YOU LOSE"),
         color: w === 0 ? COLORS[0] : COLORS[1],
+        sub,
       };
     }
     return { text: "", color: "#ffffff" };
@@ -397,7 +437,11 @@ export function createGame(ctx) {
   // ---- score pips ----
   // Small glowing pips on each side edge: cyan near the near edge, orange near the
   // far edge, lit up to the round count so the running best-of is readable in-world.
-  const pipGeo = keep(new THREE.BoxGeometry(cw * 0.9, 0.01, chh * 0.9));
+  // Pip is shallow along the near/far (Z) axis so it tucks into the THIN band of
+  // bare floor between the play area edge (AH/2) and the floor plank edge
+  // ((AH+0.03)/2) — see PIP_MARGIN below. Width (X) stays generous so the row of
+  // pips reads at a glance.
+  const pipGeo = keep(new THREE.BoxGeometry(cw * 0.9, 0.01, chh * 0.5));
   const pipOnMat = [
     keep(standard(THREE, COLORS[0], { emissive: COLORS[0], emissiveIntensity: 1.1 })),
     keep(standard(THREE, COLORS[1], { emissive: COLORS[1], emissiveIntensity: 1.1 })),
@@ -406,8 +450,13 @@ export function createGame(ctx) {
   const pips = [[], []];
   // Place pips just OUTSIDE the play area on each near/far edge so they never
   // share a cell (XZ + height) with cycle trails, heads, or the home strip — those
-  // can run across rows 0 / ROWS-1 and z-fight a pip parked on the spawn row.
-  const PIP_MARGIN = chh * 1.2;
+  // can run across rows 0 / ROWS-1 and z-fight a pip parked on the spawn row. The
+  // margin centres the pip in the narrow band of bare floor between the play-area
+  // edge (AH/2) and the floor-plank edge ((AH+0.03)/2): with a chh*0.5-deep pip the
+  // inner edge stays just past AH/2 (no trail overlap) and the outer edge lands on
+  // the plank (no overhang onto bare tabletop). The previous chh*1.2 margin floated
+  // the pips ~0.02m past the plank onto the wood, reading as detached from the arena.
+  const PIP_MARGIN = chh * 0.34;
   for (let side = 0; side < 2; side++) {
     for (let k = 0; k < WIN_SCORE; k++) {
       const p = meshOf(THREE, pipGeo, pipOffMat, false);
@@ -416,6 +465,13 @@ export function createGame(ctx) {
       pips[side].push(p);
     }
   }
+  // SCORE-PIP FILL POP (I8): per-pip local-ms timestamp of when it most recently lit
+  // up, plus a cache of the last-seen scores so renderGrid can detect a fresh
+  // increment (works on host AND on snapshot-fed guests/spectators). When a pip
+  // newly lights, update() kicks a brief scale/emissive overshoot. Render-side only.
+  const PIP_POP_MS = 360;
+  const pipPopAt = [new Array(WIN_SCORE).fill(-1e9), new Array(WIN_SCORE).fill(-1e9)];
+  const prevScores = [0, 0];
   // Pip XZ is view-dependent: side 0 (cyan / host) sits beyond the canonical near
   // edge, side 1 (orange / guest) beyond the far edge. viewSign flips both so the
   // LOCAL player's own-colour pips read on THEIR near side from either chair.
@@ -494,9 +550,14 @@ export function createGame(ctx) {
       if (myHomeStrip) myHomeStrip.visible = phase === "countdown";
     }
 
-    // score pips
+    // score pips. Detect a fresh increment per side (vs prevScores) and stamp the
+    // newly-lit pip(s) so update() can pop them. A reset (applyState(null)) lowers
+    // the score; we just resync prevScores without popping.
     for (let side = 0; side < 2; side++) {
       const s = scores[side] | 0;
+      const was = prevScores[side] | 0;
+      if (s > was) for (let k = was; k < s && k < pips[side].length; k++) pipPopAt[side][k] = nowMs();
+      prevScores[side] = s;
       for (let k = 0; k < pips[side].length; k++) {
         pips[side][k].material = k < s ? pipOnMat[side] : pipOffMat;
       }
@@ -506,10 +567,15 @@ export function createGame(ctx) {
     // digit changes once per second, the result text once) — no per-frame GPU
     // texture upload. The visual "tick" comes from a sprite-scale pop (see update).
     const b = bannerFor();
-    if (b.text !== lastBannerText) {
+    const sub = b.sub || "";
+    if (b.text !== lastBannerText || sub !== lastBannerSub) {
+      const headlineChanged = b.text !== lastBannerText;
       lastBannerText = b.text;
-      drawBanner(b.text, b.color);
-      if (b.text) bannerPopAt = nowMs(); // kick the overshoot-then-settle pop
+      lastBannerSub = sub;
+      drawBanner(b.text, b.color, sub);
+      // Pop only on a headline change (countdown tick / result), not when just the
+      // score subtitle updates, so the banner doesn't re-punch on every pip fill.
+      if (b.text && headlineChanged) bannerPopAt = nowMs();
     }
     if (bannerSprite) bannerSprite.visible = !!b.text;
   }
@@ -577,6 +643,18 @@ export function createGame(ctx) {
       c.y = targets[i].y;
       grid[c.y][c.x] = c.colorIdx;
     }
+  }
+
+  // RENDER-SIDE danger probe (I7): is the cell DIRECTLY ahead of a cycle a wall or
+  // an existing trail? Used only to drive the imminent-crash warning halo — it reads
+  // the same synced grid every client already has, mirrors stepCycles' wall/trail
+  // test, and never mutates authority. (It can't see a head-on shared-target crash,
+  // which is fine — the cue is a "you're driving into a wall" hint, not a predictor.)
+  function nextCellBlocked(c) {
+    if (!c || !c.alive) return false;
+    const nx = c.x + DV[c.dir][0], ny = c.y + DV[c.dir][1];
+    if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return true;
+    return grid[ny][nx] >= 0;
   }
 
   function aliveCount() {
@@ -686,6 +764,14 @@ export function createGame(ctx) {
     if (myHalo && myHalo.visible && myColorIdx != null) {
       myHalo.position.x = headMeshes[myColorIdx].position.x;
       myHalo.position.z = headMeshes[myColorIdx].position.z;
+      // IMMINENT-CRASH WARNING (I7): during live play, if the local cycle's NEXT
+      // cell is a wall/trail, swap the halo to the red warn material and pulse it
+      // fast; otherwise keep the normal "this is me" halo. Render-side only — read
+      // from the synced grid, no authority touched. Spectators (myColorIdx null) and
+      // non-playing phases skip this and keep the steady identity glow.
+      const danger = phase === "playing" && M.warn && nextCellBlocked(cycles[myColorIdx]);
+      myHalo.material = danger ? M.warn : M.mine;
+      if (danger) M.warn.emissiveIntensity = 1.0 + 0.8 * (0.5 + 0.5 * Math.sin(now / 1000 * 22));
     }
 
     // CRASH FLOURISH (I2a): expanding, fading emissive ring at the death cell.
@@ -715,6 +801,23 @@ export function createGame(ctx) {
         k = 1 + 0.25 * Math.sin(Math.PI * t * 1.5) * (1 - t);
       }
       bannerSprite.scale.set(bannerBaseX * k, bannerBaseY * k, 1);
+    }
+
+    // SCORE-PIP FILL POP (I8): per-pip scale overshoot when it newly lights. Scale is
+    // per-mesh (the on/off MATERIAL is shared, so we don't pulse emissive — that would
+    // brighten every lit pip of that side). Only touches pips with a live pop window,
+    // and resets the rest to unit scale cheaply.
+    for (let side = 0; side < 2; side++) {
+      for (let k = 0; k < pips[side].length; k++) {
+        const age = now - pipPopAt[side][k];
+        let s = 1;
+        if (age >= 0 && age < PIP_POP_MS) {
+          const t = age / PIP_POP_MS;
+          s = 1 + 0.6 * Math.sin(Math.PI * t * 1.4) * (1 - t); // damped overshoot
+        }
+        const p = pips[side][k];
+        if (p.scale.x !== s) p.scale.set(s, 1, s);
+      }
     }
 
     // WIN FLOURISH (I2b): pulse the survivor's trail glow on round/match end so the

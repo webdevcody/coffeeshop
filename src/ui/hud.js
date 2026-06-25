@@ -109,6 +109,18 @@ export class HUD {
       </div>
       <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
+      <div class="minimap" id="minimap">
+        <canvas class="minimap-canvas" id="minimap-canvas" width="180" height="180"></canvas>
+        <div class="minimap-legend">
+          <span class="mm-leg mm-leg-you">▲ You</span>
+          <span class="mm-leg mm-leg-them">● Others</span>
+          <span class="mm-leg mm-leg-car">● Car</span>
+        </div>
+      </div>
+      <div class="drive-hud hidden" id="drive-hud">
+        <div class="speedo"><span class="speedo-num" id="speedo-num">0</span><span class="speedo-unit">km/h</span></div>
+        <div class="drive-hint" id="drive-hint">WASD to drive · E to exit</div>
+      </div>
       <form class="chat-bar" id="chat-bar" autocomplete="off">
         <input id="chat-input" class="chat-input" maxlength="200" placeholder="Press Enter to say something…" />
         <button class="send-btn" type="submit">Send</button>
@@ -133,6 +145,15 @@ export class HUD {
     this.heldEl = ui.querySelector("#held-item");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
+
+    // City minimap + driving HUD. The canvas + 2D context are grabbed once and
+    // reused every frame (no per-frame allocation). _initMinimap precomputes the
+    // static road/district geometry into world->canvas mapping constants.
+    this.driveHud = ui.querySelector("#drive-hud");
+    this.speedoNum = ui.querySelector("#speedo-num");
+    this.driveHint = ui.querySelector("#drive-hint");
+    this.minimapCanvas = ui.querySelector("#minimap-canvas");
+    this._initMinimap();
 
     this.peopleBtn.addEventListener("click", () => {
       const visible = !this.peoplePanel.classList.toggle("hidden");
@@ -470,6 +491,201 @@ export class HUD {
       row.append(dot, name, btn);
       this.peopleList.appendChild(row);
     }
+  }
+
+  // --- City minimap --------------------------------------------------------
+  // The world spans x[-122,122], z[13,277] with the cafe near z~0..11. We frame a
+  // slightly padded square so the cafe and the city both fit, and cache the 2D
+  // context + world->canvas scale once. Everything in updateMinimap() draws into
+  // this same canvas/context — no per-frame allocation.
+  _initMinimap() {
+    const cv = this.minimapCanvas;
+    if (!cv) return;
+    this._mmCtx = cv.getContext("2d");
+    this._mmW = cv.width;
+    this._mmH = cv.height;
+    // World extent we map onto the canvas (a touch of padding around the city).
+    const PAD = 8;
+    this._mmWorld = { minX: -122 - PAD, maxX: 122 + PAD, minZ: -14, maxZ: 277 + PAD };
+    const w = this._mmWorld;
+    this._mmInset = 6; // canvas margin so the border ring isn't clipped
+    const usableW = this._mmW - this._mmInset * 2;
+    const usableH = this._mmH - this._mmInset * 2;
+    // Uniform scale (keep aspect) — the z span is larger than x, so z drives it.
+    this._mmScale = Math.min(usableW / (w.maxX - w.minX), usableH / (w.maxZ - w.minZ));
+    // Center the mapped world inside the canvas.
+    this._mmOffX = this._mmInset + (usableW - (w.maxX - w.minX) * this._mmScale) / 2;
+    this._mmOffZ = this._mmInset + (usableH - (w.maxZ - w.minZ) * this._mmScale) / 2;
+    // Static city geometry (drawn fresh each frame but the arrays are built once).
+    this._mmAvenues = [-60, 0, 60]; // vertical roads (constant x)
+    this._mmStreets = [35, 95, 155, 215]; // horizontal roads (constant z)
+    // 16 district blocks: 4 columns (between/outside avenues) x 4 rows (between
+    // streets). Each is a cell label + tint; computed once and reused.
+    this._mmDistricts = this._buildDistricts();
+    // Reusable point object so the per-frame world->canvas mapping allocates nothing.
+    this._mmPt = { x: 0, y: 0 };
+  }
+
+  // Build the 16 district cells from the avenue/street grid. Columns are the x
+  // bands split by the avenues; rows are the z bands split by the cross-streets.
+  _buildDistricts() {
+    const w = this._mmWorld;
+    const xs = [w.minX, -60, 0, 60, w.maxX];
+    const zs = [13, 35, 95, 155, 215, w.maxZ];
+    // Use the 4 z-bands between the 4 cross-streets plus city edges → pick 4 rows.
+    const rows = [[13, 35], [35, 95], [95, 155], [155, 215]];
+    const cols = [[w.minX, -60], [-60, 0], [0, 60], [60, w.maxX]];
+    const tints = [
+      "rgba(224,150,107,0.10)", "rgba(120,180,140,0.10)",
+      "rgba(120,160,210,0.10)", "rgba(210,170,110,0.10)",
+    ];
+    const names = ["NW", "N", "NE", "W", "C", "E", "SW", "S", "SE"];
+    const out = [];
+    let i = 0;
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < cols.length; c++) {
+        out.push({
+          minX: cols[c][0], maxX: cols[c][1],
+          minZ: rows[r][0], maxZ: rows[r][1],
+          tint: tints[(r + c) % tints.length],
+          label: names[i % names.length] + (Math.floor(i / names.length) + 1),
+        });
+        i++;
+      }
+    }
+    return out;
+  }
+
+  // World (x,z) -> canvas (px,py). Reuses one point object; +z (north into the
+  // city) is "up" so the map matches the player's intuition of the street ahead.
+  _mmProject(x, z) {
+    const w = this._mmWorld;
+    const p = this._mmPt;
+    p.x = this._mmOffX + (x - w.minX) * this._mmScale;
+    // Flip z so larger z (deeper into the city) is toward the TOP of the minimap.
+    p.y = this._mmOffZ + (w.maxZ - z) * this._mmScale;
+    return p;
+  }
+
+  // Redraw the whole minimap from this frame's positions. Called once per frame
+  // from main.js. `local` = { x, z, facing } | null. `remotes` = [{x,z}].
+  // `car` = { x, z, active } | null (active true while someone is driving it).
+  updateMinimap(local, remotes, car) {
+    const ctx = this._mmCtx;
+    if (!ctx) return;
+    const W = this._mmW, H = this._mmH;
+    ctx.clearRect(0, 0, W, H);
+
+    // Backdrop.
+    ctx.fillStyle = "rgba(24,16,10,0.82)";
+    ctx.fillRect(0, 0, W, H);
+
+    // District cells (tinted blocks + tiny labels).
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const d of this._mmDistricts) {
+      const a = this._mmProject(d.minX, d.maxZ); // top-left
+      const x0 = a.x, y0 = a.y;
+      const b = this._mmProject(d.maxX, d.minZ); // bottom-right
+      const w = b.x - x0, h = b.y - y0;
+      ctx.fillStyle = d.tint;
+      ctx.fillRect(x0, y0, w, h);
+      if (w > 22 && h > 14) {
+        ctx.fillStyle = "rgba(246,239,224,0.35)";
+        ctx.font = "9px system-ui, sans-serif";
+        ctx.fillText(d.label, x0 + w / 2, y0 + h / 2);
+      }
+    }
+
+    // Roads: avenues (vertical) + cross-streets (horizontal).
+    ctx.strokeStyle = "rgba(255,234,200,0.34)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const w = this._mmWorld;
+    for (const ax of this._mmAvenues) {
+      const t = this._mmProject(ax, w.maxZ);
+      const bt = this._mmProject(ax, 13);
+      ctx.moveTo(t.x, t.y);
+      ctx.lineTo(bt.x, bt.y);
+    }
+    for (const sz of this._mmStreets) {
+      const l = this._mmProject(w.minX, sz);
+      const r = this._mmProject(w.maxX, sz);
+      ctx.moveTo(l.x, l.y);
+      ctx.lineTo(r.x, r.y);
+    }
+    ctx.stroke();
+
+    // Cafe marker near z~0..11 (south edge of the city, by the spawn).
+    const cafe = this._mmProject(0, 5);
+    ctx.fillStyle = "rgba(224,162,58,0.9)";
+    ctx.beginPath();
+    ctx.arc(cafe.x, cafe.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(246,239,224,0.7)";
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillText("☕", cafe.x, cafe.y - 8);
+
+    // The car (if it exists) as a dot — brighter while being driven.
+    if (car) {
+      const c = this._mmProject(car.x, car.z);
+      ctx.fillStyle = car.active ? "#ff5a45" : "rgba(210,59,52,0.65)";
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, car.active ? 3.6 : 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Remote players as small dots.
+    if (remotes && remotes.length) {
+      ctx.fillStyle = "#7fd1ff";
+      for (const r of remotes) {
+        const p = this._mmProject(r.x, r.z);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // The local player as an arrow (position + facing). facing convention is the
+    // same as the world's: forward = (sin f, cos f). +z is up on the map, so the
+    // canvas heading is measured from "up" and clamped to the projected frame.
+    if (local) {
+      const p = this._mmProject(local.x, local.z);
+      const px = Math.max(this._mmInset, Math.min(W - this._mmInset, p.x));
+      const py = Math.max(this._mmInset, Math.min(H - this._mmInset, p.y));
+      // World forward (sin f, cos f) → canvas (dx = sin f, dy = -cos f because +z is up).
+      const f = local.facing || 0;
+      const dx = Math.sin(f);
+      const dy = -Math.cos(f);
+      const ang = Math.atan2(dy, dx);
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(ang + Math.PI / 2); // arrow tip drawn pointing up at angle 0
+      ctx.fillStyle = "#ffe08a";
+      ctx.strokeStyle = "rgba(40,26,16,0.9)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, -6);
+      ctx.lineTo(4, 5);
+      ctx.lineTo(0, 2.5);
+      ctx.lineTo(-4, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // --- Driving HUD ---------------------------------------------------------
+  // Show the speedometer + drive hint while driving (mode "drive"); hide it
+  // otherwise. `speed` is the car's signed m/s; we show absolute km/h.
+  setDriveHud(active, speed = 0) {
+    if (!this.driveHud) return;
+    this.driveHud.classList.toggle("hidden", !active);
+    if (!active) return;
+    const kmh = Math.round(Math.abs(speed) * 3.6);
+    const txt = String(kmh);
+    if (this.speedoNum.textContent !== txt) this.speedoNum.textContent = txt;
   }
 
   addChatLog(name, text, color) {

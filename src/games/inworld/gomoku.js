@@ -114,6 +114,7 @@ export function createGame(ctx) {
   let winner = null; // "black" | "white" | null (draw / in-play)
   let winLine = null;
   let lastDrop = null;
+  let announced = false; // game-over banner fired exactly once per over state
   let disposed = false; // set in dispose(); gates update/onPointer/setHover
 
   // ---- Materials ------------------------------------------------------------
@@ -134,6 +135,11 @@ export function createGame(ctx) {
       emissiveIntensity: 0.05,
     })),
     white: keep(standard(THREE, PALETTE.stoneWhite, { roughness: 0.3, metalness: 0.0 })),
+    // I10 — dimmed variants used for the NON-winning stones once the game is over,
+    // so the red winning run pops. Darker + rougher + no rim emissive than the live
+    // stones; swapped in/out by setStone/highlightWin, never mutated in place.
+    blackDim: keep(standard(THREE, "#0d0d0d", { roughness: 0.7, metalness: 0.05 })),
+    whiteDim: keep(standard(THREE, "#8f8f8f", { roughness: 0.6, metalness: 0.0 })),
     win: keep(standard(THREE, "#e23b4e", { emissive: "#e23b4e", emissiveIntensity: 0.7 })),
     // Last-move marker: a thin accent ring parked at the most recent drop so both
     // seats (and spectators) can follow the game from across the table.
@@ -255,7 +261,9 @@ export function createGame(ctx) {
   const ringGeo = keep(new THREE.RingGeometry(STONE_R * 1.05, STONE_R * 1.35, 28));
   const ghostRing = new THREE.Mesh(ringGeo, M.ghostRing);
   ghostRing.rotation.x = -Math.PI / 2;
-  ghostRing.position.y = TOP + 0.0014;
+  // Layered ~0.4 mm clear of the grid lines (TOP+0.001), hoshi (TOP+0.0012) and
+  // the last-move ring (TOP+0.0024) so co-located rings/dots don't z-fight (C7).
+  ghostRing.position.y = TOP + 0.002;
   ghostRing.raycast = () => {};
   ghostRing.visible = false;
   ghostRing.renderOrder = 2;
@@ -265,7 +273,9 @@ export function createGame(ctx) {
   const lastRingGeo = keep(new THREE.RingGeometry(STONE_R * 1.08, STONE_R * 1.3, 28));
   const lastRing = new THREE.Mesh(lastRingGeo, M.last);
   lastRing.rotation.x = -Math.PI / 2;
-  lastRing.position.y = TOP + 0.0016;
+  // Highest of the ground rings (~0.4 mm over the ghost ring) so it never z-fights
+  // the hover ring, grid lines or hoshi when they co-locate (C7).
+  lastRing.position.y = TOP + 0.0024;
   lastRing.raycast = () => {};
   lastRing.visible = false;
   lastRing.renderOrder = 2;
@@ -308,7 +318,7 @@ export function createGame(ctx) {
     }
     const newlyShown = !ghost.visible;
     ghost.position.set(ix(c), TOP + 0.007, ix(r));
-    ghostRing.position.set(ix(c), TOP + 0.0014, ix(r));
+    ghostRing.position.set(ix(c), TOP + 0.002, ix(r));
     if (newlyShown) {
       // Reset the pulse so the first visible frame isn't a random dim/bright flash
       // (the per-frame update leaves opacity at an arbitrary value when hidden).
@@ -330,7 +340,10 @@ export function createGame(ctx) {
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   const drops = []; // active settle tweens: { mesh, t, dur, baseY }
   let winT = 0; // running clock for the win flourish (0 when no win)
+  let winSweepT = 0; // running clock for the staggered win-line reveal (I9)
+  const WIN_SWEEP_DUR = 0.4; // total time for the run to light up end-to-end
   let lampClock = 0; // running clock for the turn-lamp breathe
+  let lastBreatheClock = 0; // running clock for the last-move ring breathe (I11)
   let rafId = 0;
   let lastT = 0;
 
@@ -343,7 +356,12 @@ export function createGame(ctx) {
   }
 
   function animActive() {
-    return drops.length > 0 || phase === "over" || (phase === "play" && myColor != null);
+    return (
+      drops.length > 0 ||
+      phase === "over" ||
+      lastRing.visible || // keep the last-move breathe (I11) live, even for spectators
+      (phase === "play" && myColor != null)
+    );
   }
 
   function startClock() {
@@ -381,6 +399,12 @@ export function createGame(ctx) {
     if (phase === "over" && winLine) {
       winT += dt;
       M.win.emissiveIntensity = 0.65 + 0.25 * Math.sin(winT * 3.4);
+      // I9 — staggered reveal: advance the sweep clock and re-light the run/loser
+      // dim along it. Re-run highlightWin every frame until the sweep completes.
+      if (winSweepT < WIN_SWEEP_DUR) {
+        winSweepT += dt;
+        highlightWin(Math.min(1, winSweepT / WIN_SWEEP_DUR));
+      }
       const lift = Math.max(0, 0.004 * (1 - winT / 0.5)); // one-shot settle
       for (const [r, c] of winLine) {
         const s = stones[r] && stones[r][c];
@@ -388,6 +412,14 @@ export function createGame(ctx) {
         // stone) so the two tweens don't fight on position.y; it joins next frame.
         if (s && !drops.some((d) => d.mesh === s)) s.position.y = STONE_REST_Y + lift;
       }
+    }
+    // I11 — last-move "drop shadow" breathe: gently pulse the accent ring's emissive
+    // while a most-recent move exists so it's easy to find across the 15×15 grid
+    // from the opposite seat. Runs in both play and over phases (the deciding move
+    // hides its ring via C6, so this only breathes a non-winning last move).
+    if (lastRing.visible) {
+      lastBreatheClock += dt;
+      M.last.emissiveIntensity = 0.55 + 0.25 * (0.5 + 0.5 * Math.sin(lastBreatheClock * 2.0));
     }
     // I6 — turn-lamp breathe: the to-move side's lamp gently pulses.
     if (phase === "play") {
@@ -412,11 +444,25 @@ export function createGame(ctx) {
   // Black home = -Z edge (canonical near edge, host/moves-first); white home = +Z.
   // applyFacing() rotates the whole group by orientFor(seatRy)(+PI for white) so
   // each client's OWN colour home bar ends up directly in front of them.
-  const cue = { black: { bar: null, lamp: null }, white: { bar: null, lamp: null } };
+  const cue = {
+    black: { bar: null, lamp: null, tally: null },
+    white: { bar: null, lamp: null, tally: null },
+  };
+  // C5 — keep the home bar + lamp INSIDE the plank rim (outer half-extent 0.375)
+  // so the bar no longer straddles the rim onto bare table; the bar (12 mm deep
+  // in Z, centred at edgeZ) spans 0.362..0.374, all on the plank. The lamp is
+  // lifted so its underside clears the plank top (TOP) instead of intersecting it.
+  const edgeZ = BOARD_HALF + 0.018; // 0.368 — inside the 0.375 plank rim
+  // I8 — a slim "tally" bar per side whose length tracks that colour's stone count
+  // (derived locally from `board`, never the wire). Purely cosmetic progress cue.
+  const TALLY_LEN = BOARD_SIZE * 0.5; // length at a full 225-stone board
+  const MAX_STONES = SIZE * SIZE;
   {
     const barGeo = keep(new THREE.BoxGeometry(BOARD_SIZE * 0.7, 0.006, 0.012));
     const lampGeo = keep(new THREE.SphereGeometry(0.012, 18, 14));
-    const edgeZ = BOARD_HALF + 0.028;
+    // Unit-length tally bar; scale.x in updateIdentityCues sets the fill, anchored
+    // at its left end (group via a parent so we scale without moving the anchor).
+    const tallyGeo = keep(new THREE.BoxGeometry(TALLY_LEN, 0.004, 0.006));
     const sides = [
       { color: "black", z: -edgeZ, barMat: M.homeBlack, lampMat: M.lampBlack },
       { color: "white", z: edgeZ, barMat: M.homeWhite, lampMat: M.lampWhite },
@@ -426,10 +472,20 @@ export function createGame(ctx) {
       bar.position.set(0, TOP + 0.004, s.z);
       group.add(bar);
       const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
-      lamp.position.set(BOARD_SIZE * 0.42, TOP + 0.008, s.z);
+      lamp.position.set(BOARD_SIZE * 0.42, TOP + 0.014, s.z);
       group.add(lamp);
+      // Anchor pivot at the inner end of the tally so scale.x grows it toward the
+      // board centre's far side without shifting its origin (no per-frame alloc).
+      const tallyPivot = new THREE.Group();
+      tallyPivot.position.set(-BOARD_SIZE * 0.34, TOP + 0.003, s.z);
+      const tally = meshOf(THREE, tallyGeo, s.barMat, false);
+      tally.position.x = TALLY_LEN / 2; // left edge sits on the pivot
+      tally.scale.x = 0.0001; // empty board → effectively zero length
+      tallyPivot.add(tally);
+      group.add(tallyPivot);
       cue[s.color].bar = bar;
       cue[s.color].lamp = lamp;
+      cue[s.color].tally = tally;
     }
   }
 
@@ -437,6 +493,16 @@ export function createGame(ctx) {
   // bar is static; the to-move lamp's base level is set here and then breathed by
   // the idle clock (stepAnim) while it runs.
   function updateIdentityCues() {
+    // I8 — count each colour's stones locally for the progress tallies.
+    let nBlack = 0;
+    let nWhite = 0;
+    for (let r = 0; r < SIZE; r++)
+      for (let c = 0; c < SIZE; c++) {
+        const v = board[r][c];
+        if (v === "black") nBlack++;
+        else if (v === "white") nWhite++;
+      }
+    const counts = { black: nBlack, white: nWhite };
     for (const color of ["black", "white"]) {
       const c = cue[color];
       if (!c.bar || !c.lamp) continue;
@@ -444,6 +510,11 @@ export function createGame(ctx) {
       const isTurn = phase === "play" && turn === color;
       c.bar.material.emissiveIntensity = isMine ? 0.7 : 0.0;
       c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
+      if (c.tally) {
+        // Scale the unit-length tally to fill toward the board; clamp to a tiny
+        // floor so an empty side keeps a non-degenerate (invisible) sliver.
+        c.tally.scale.x = Math.max(0.0001, counts[color] / MAX_STONES);
+      }
     }
     // (Re)arm or release the idle clock now that turn/phase may have changed.
     if (animActive()) startClock();
@@ -462,7 +533,11 @@ export function createGame(ctx) {
       group.add(s);
       stones[r][c] = s;
     }
-    s.material = color === "black" ? M.black : M.white;
+    const baseMat = color === "black" ? M.black : M.white;
+    s.material = baseMat;
+    // Remember the un-highlighted material so the win-sweep can light/un-light
+    // the stone (I9) and the loser-dim restore (I10) can find it again.
+    s.userData.baseMat = baseMat;
     if (created && animate && RAF_OK) {
       // I1 — settle pop: ease in from just above the surface with a small overshoot.
       s.position.y = STONE_REST_Y + 0.03;
@@ -476,18 +551,65 @@ export function createGame(ctx) {
   // Move the last-move accent ring under the most recent drop (or hide it).
   function paintLastMarker() {
     if (lastDrop && board[lastDrop.r] && board[lastDrop.r][lastDrop.c]) {
-      lastRing.position.set(ix(lastDrop.c), TOP + 0.0016, ix(lastDrop.r));
-      lastRing.visible = true;
+      lastRing.position.set(ix(lastDrop.c), TOP + 0.0024, ix(lastDrop.r));
+      // C6 — hide the accent ring when the most-recent drop is also part of the
+      // winning run, so the red win highlight reads cleanly instead of stacking a
+      // second emissive ring at the same intersection.
+      const onWin =
+        winLine != null &&
+        winLine.some(([wr, wc]) => wr === lastDrop.r && wc === lastDrop.c);
+      lastRing.visible = !onWin;
     } else {
       lastRing.visible = false;
     }
   }
 
-  function highlightWin() {
+  // Map a colour to its dimmed end-state variant (I10).
+  const dimOf = (color) => (color === "black" ? M.blackDim : M.whiteDim);
+  let loserDimDone = false; // I10 one-shot guard so the dim pass runs once per win
+
+  // Is (r,c) part of the current winning run? Small linear scan (winLine length
+  // is typically 5) so the per-frame sweep stays allocation-free.
+  function onWinLine(r, c) {
+    if (!winLine) return false;
+    for (let i = 0; i < winLine.length; i++)
+      if (winLine[i][0] === r && winLine[i][1] === c) return true;
+    return false;
+  }
+
+  // End-state styling pass for a WIN. `progress` (0..1) staggers two effects along
+  // the same clock: the winning run lights to M.win end-to-end (I9), and the
+  // non-winning stones fade to their dim variant as the sweep passes (I10), so the
+  // red run pops. progress >= 1 (default) applies the full styling at once — used
+  // by the snapshot path so a resync/late-join shows the finished look immediately,
+  // never a mid-sweep frame; the live deciding move ramps progress from 0.
+  // Allocation-free: no Set/map per call so stepAnim can ramp it every frame.
+  function highlightWin(progress = 1) {
     if (!winLine) return;
-    for (const [r, c] of winLine) {
-      const s = stones[r][c];
-      if (s) s.material = M.win;
+    const len = winLine.length;
+    // Winning stones: light in order along the run.
+    for (let i = 0; i < len; i++) {
+      const r = winLine[i][0];
+      const c = winLine[i][1];
+      const s = stones[r] && stones[r][c];
+      if (!s) continue;
+      const lit = progress >= 1 || i / len <= progress;
+      const want = lit ? M.win : s.userData.baseMat || s.material;
+      if (s.material !== want) s.material = want;
+    }
+    // Non-winning stones: dim them in once the sweep is well underway so the win
+    // run is already lighting when the rest settles back. One-shot per win.
+    if (progress >= 0.5 && !loserDimDone) {
+      loserDimDone = true;
+      for (let r = 0; r < SIZE; r++)
+        for (let c = 0; c < SIZE; c++) {
+          const v = board[r][c];
+          if (!v || onWinLine(r, c)) continue;
+          const s = stones[r] && stones[r][c];
+          if (!s) continue;
+          const want = dimOf(v);
+          if (s.material !== want) s.material = want;
+        }
     }
   }
 
@@ -516,6 +638,10 @@ export function createGame(ctx) {
     // "over" state highlights the same five — without trusting any wire line.
     winLine = null;
     winT = 0;
+    // A snapshot-driven over-state shows the FINISHED look at once (no re-sweep):
+    // mark the sweep complete so stepAnim's I9 ramp doesn't briefly un-light it.
+    winSweepT = WIN_SWEEP_DUR;
+    loserDimDone = false; // re-arm so highlightWin(1) re-applies the loser-dim
     M.win.emissiveIntensity = 0.7;
     if (phase === "over" && winner && lastDrop) {
       const { r, c } = lastDrop;
@@ -523,10 +649,28 @@ export function createGame(ctx) {
         winLine = winningLine(board, r, c, winner);
       }
     }
-    highlightWin();
+    highlightWin(); // progress=1: full highlight + loser-dim immediately
     paintLastMarker();
     hideGhost();
     updateIdentityCues();
+  }
+
+  // Fire ctx.onGameOver exactly once per over state. Called by BOTH the
+  // incremental performMove() path AND applyState/paint when a terminal snapshot
+  // lands without us having played the deciding move (every spectator, any late
+  // joiner, or a guest whose relayed deciding move was dropped by board.js's
+  // hydration/resync gating — for whom the snapshot is the ONLY convergence path
+  // to "over"). Guarded by `announced`, which applyState re-arms whenever it
+  // ingests a live/reset state. `reason` reflects the actual outcome ("five" for
+  // a win, "draw" for a full board) so a snapshot-driven draw never mis-reports.
+  function announceOver() {
+    if (announced || phase !== "over") return;
+    announced = true;
+    try {
+      ctx.onGameOver({ winner, reason: winner ? "five" : "draw" });
+    } catch {
+      /* never let a host callback crash play */
+    }
   }
 
   // ---- Move application (shared by local click and relayed move) ------------
@@ -543,13 +687,19 @@ export function createGame(ctx) {
       winner = color;
       phase = "over";
       winT = 0; // start the win flourish from the top
-      highlightWin();
-      updateIdentityCues();
-      try {
-        ctx.onGameOver({ winner, reason: "five" });
-      } catch {
-        /* never let a callback throw break the move */
+      loserDimDone = false; // re-arm the I10 loser-dim one-shot for this win
+      // I9 — live deciding move: start the sweep from 0 and let stepAnim ramp it.
+      // Headless (no rAF): light the full run at once so a sync check sees the win.
+      if (RAF_OK) {
+        winSweepT = 0;
+        highlightWin(0);
+      } else {
+        winSweepT = WIN_SWEEP_DUR;
+        highlightWin(1);
       }
+      paintLastMarker(); // re-evaluate now winLine is set (C6: hide ring on a win)
+      updateIdentityCues();
+      announceOver();
       return;
     }
 
@@ -565,11 +715,7 @@ export function createGame(ctx) {
       phase = "over";
       winner = null;
       updateIdentityCues();
-      try {
-        ctx.onGameOver({ winner: null, reason: "draw" });
-      } catch {
-        /* ignore */
-      }
+      announceOver();
       return;
     }
 
@@ -663,6 +809,7 @@ export function createGame(ctx) {
       winner = null;
       winLine = null;
       lastDrop = null;
+      announced = false; // fresh game / reset: re-arm the game-over announcement
     } else {
       const b = Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
       const src = Array.isArray(state.board) ? state.board : [];
@@ -680,8 +827,16 @@ export function createGame(ctx) {
         state.lastDrop && Number.isInteger(state.lastDrop.r) && Number.isInteger(state.lastDrop.c)
           ? { r: state.lastDrop.r, c: state.lastDrop.c }
           : null;
+      // A live (non-over) snapshot re-arms the announcement so a subsequent over
+      // state — incremental or snapshot-driven — fires the banner exactly once.
+      if (phase !== "over") announced = false;
     }
     paint();
+    // The wire may already say the game is over (a spectator, a late joiner, or a
+    // guest whose relayed deciding move was dropped by board.js's gating so only
+    // the terminal snapshot reached it). The incremental performMove() path never
+    // ran for those clients, so announce the game-over here — exactly once.
+    if (phase === "over") announceOver();
   }
 
   // ---- Hover routing --------------------------------------------------------

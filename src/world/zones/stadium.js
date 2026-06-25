@@ -67,9 +67,11 @@ export function buildStadium() {
   const colliders = [];
   const ground = [{ minX: -30, maxX: 30, minZ: -30, maxZ: 30 }];
 
-  // Pitch is an oval; stands ring it. Use elliptical radii.
-  const PITCH_RX = 18;   // pitch half-width (X)
-  const PITCH_RZ = 13;   // pitch half-depth (Z)
+  // Pitch is an oval; stands ring it. Use elliptical radii. SHRUNK in step with
+  // the set-back bowl so the seating tiers still ring the pitch without the bowl
+  // reaching past LOCAL ±23.
+  const PITCH_RX = 13.5;  // pitch half-width (X)
+  const PITCH_RZ = 10;    // pitch half-depth (Z)
 
   // --- Ground slab: concrete apron under everything --------------------------
   const apron = box(60, 0.2, 60, concreteDark, false);
@@ -149,7 +151,10 @@ export function buildStadium() {
   // (radius WALL_R* - THICK), a flat TOP deck capping the gap between them, and a
   // BASE plinth at the bottom. So the wall is a genuine ~2 m-thick concrete band
   // that reads solid from the front, the side, and the BACK — not a curved card.
-  const WALL_RX = 26, WALL_RZ = 21;   // outer-face elliptical radii
+  // SETBACK: outer radii pulled inward so the bowl (incl. its outer buttress
+  // columns at WALL_R*+0.5) clears the seam road + sidewalk and stays within
+  // LOCAL X,Z in [-23, 23]. Buttress outer edge ≈ WALL_RX+0.5+0.8 ≈ 22.6 ≤ 23.
+  const WALL_RX = 21.3, WALL_RZ = 20.5;   // outer-face elliptical radii
   const THICK = 2.0;                  // radial wall thickness (m)
   const WALL_H = 8.0;                  // wall height (m)
   const WALL_Y = WALL_H / 2;           // shell center height
@@ -241,8 +246,8 @@ export function buildStadium() {
   const seatMats = [seatMatA, seatMatB, seatMatC, seatMatA];
   const TIER_THICK = 1.5;  // radial depth of each tread
   for (let t = 0; t < 4; t++) {
-    const rx = 24 - t * 1.7;          // outer radius of this tier
-    const rz = 19 - t * 1.4;
+    const rx = 19.0 - t * 1.3;        // outer radius of this tier (inside inner wall)
+    const rz = 18.0 - t * 1.4;
     const topY = 0.5 + t * 1.4;        // tread top height
     const tierH = topY;                // riser face runs to the ground for solidity
     const inRx = rx - TIER_THICK, inRz = rz - TIER_THICK;
@@ -277,8 +282,10 @@ export function buildStadium() {
   }
 
   // --- Floodlight towers at the four corners ---------------------------------
+  // SETBACK: towers pulled inward so each mast + its ±0.9 collider stays within
+  // LOCAL [-23, 23] (max |X| = 21.5 + 0.9 = 22.4 ≤ 23).
   const towerPositions = [
-    [-24, -19], [24, -19], [-24, 19], [24, 19],
+    [-21.5, -18.5], [21.5, -18.5], [-21.5, 18.5], [21.5, 18.5],
   ];
   for (const [tx, tz] of towerPositions) {
     const t = new THREE.Group();
@@ -325,17 +332,17 @@ export function buildStadium() {
   signBox(12, 3.2, 1.0, "sign", {
     text: "CAFE FC", bg: "#9b1f2a", fg: "#ffe14d",
     emissiveIntensity: 0.5, file: "stadium-cafefc.png",
-  }, [0, 5.0, -18.6], 0);
+  }, [0, 5.0, -18.0], 0);
   // North sign-box collider (full footprint of the new solid box).
-  colliders.push({ minX: -6.3, maxX: 6.3, minZ: -19.1, maxZ: -18.1 });
+  colliders.push({ minX: -6.3, maxX: 6.3, minZ: -18.5, maxZ: -17.5 });
 
   // South-stand banner: mounted on the inner face of the south arc (z≈+19),
   // FRONT faces -Z toward the pitch (rotated 180°).
   signBox(12, 3.2, 1.0, "sign", {
     text: "CAFE FC", bg: "#1f3a9b", fg: "#ffffff",
     emissiveIntensity: 0.5, file: "stadium-cafefc-b.png",
-  }, [0, 5.0, 18.6], Math.PI);
-  colliders.push({ minX: -6.3, maxX: 6.3, minZ: 18.1, maxZ: 19.1 });
+  }, [0, 5.0, 18.0], Math.PI);
+  colliders.push({ minX: -6.3, maxX: 6.3, minZ: 17.5, maxZ: 18.5 });
 
   // Scoreboard: a chunky billboard cabinet mounted on the north-stand inner
   // wall, offset to the west of the central banner and FRONT facing +Z toward
@@ -344,9 +351,9 @@ export function buildStadium() {
   signBox(8, 4.5, 1.2, "billboard", {
     title: "CAFE FC", sub: "HOME 2 — 1 AWAY", a: "#13243f", b: "#070d1a",
     accent: "#ffd24a", glyph: "⚽", emissiveIntensity: 0.5, file: "stadium-score.png",
-  }, [-13.0, 6.0, -18.4], 0);
+  }, [-13.0, 6.0, -18.0], 0);
   // scoreboard cabinet collider (8.6 wide in X, 1.2 deep in Z) on the north wall.
-  colliders.push({ minX: -17.3, maxX: -8.7, minZ: -19.0, maxZ: -17.8 });
+  colliders.push({ minX: -17.3, maxX: -8.7, minZ: -18.6, maxZ: -17.4 });
 
   // --- Floodlight tint / blimp animation -------------------------------------
   // Blimp circling above the pitch.

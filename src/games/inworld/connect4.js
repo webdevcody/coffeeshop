@@ -141,7 +141,12 @@ function cellY(r) {
 }
 
 // Y of the slot mouth above a column where a freshly dropped disc enters.
-const MOUTH_Y = cellY(0) + CELL * 1.25;
+// Kept close above row 0 so the hover ghost (radius DISC_R + idle bob) clears the
+// down-arrow cone parked higher up (whose tip descends to ~cellY(0)+1.275*CELL):
+// at 1.05*CELL the ghost top reaches ~cellY(0)+1.5*CELL only on the local-turn bob,
+// and the arrow itself sits at cellY(0)+1.55*CELL, so the two no longer interpenetrate
+// at rest. The drop still visibly falls from above the rack into the lowest hole (I4).
+const MOUTH_Y = cellY(0) + CELL * 1.05;
 
 // Drop physics tuning (local metres, seconds).
 const GRAVITY = -3.4; // m/s² (snappy but readable across a table)
@@ -205,6 +210,18 @@ export function createGame(ctx) {
   const matGhostYellow = keep(new THREE.MeshStandardMaterial({ color: "#f2c14e", roughness: 0.4, transparent: true, opacity: 0.34, emissive: "#7fd1ff", emissiveIntensity: 0.3, depthWrite: false }));
 
   const matAccent = keep(new THREE.MeshStandardMaterial({ color: "#7fd1ff", roughness: 0.4, metalness: 0.0, emissive: "#7fd1ff", emissiveIntensity: 0.95, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
+  // Last-move accent ring (item #8): a thin, dimmer cyan ring parked over the disc
+  // that JUST landed so "what just happened" is instantly readable for a watcher who
+  // looked away. Its own material (a dimmer variant of matAccent) so it never shares /
+  // fights the breathing hover rim above. Hidden once the game is over (the win halo
+  // owns the read at that point).
+  const matLast = keep(new THREE.MeshStandardMaterial({ color: "#aee6ff", roughness: 0.5, metalness: 0.0, emissive: "#7fd1ff", emissiveIntensity: 0.55, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }));
+  // Full-column "no entry" flash (item #10): a dedicated red ring with its OWN
+  // material, parked over the topmost hole of a full column the player tries to
+  // hover. Its own material so the flash never tints the shared frame (I3). Faded
+  // out by the clock; opacity is driven live so the keep()'d base value is only a
+  // ceiling.
+  const matFull = keep(new THREE.MeshStandardMaterial({ color: "#ff5566", roughness: 0.4, metalness: 0.0, emissive: "#ff3344", emissiveIntensity: 1.1, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
   const matHalo = keep(new THREE.MeshStandardMaterial({ color: "#fff1b8", roughness: 0.3, metalness: 0.2, emissive: "#ffd24a", emissiveIntensity: 1.4, side: THREE.DoubleSide }));
 
   // Turn arrow — recoloured live to the side-to-move (clone of base, recolourable).
@@ -325,9 +342,14 @@ export function createGame(ctx) {
   }
 
   // -- base / feet ------------------------------------------------------------
+  // Centred on the back-plate (z=0), NOT shifted forward to DISC_Z/2 (item #7): the
+  // base is structural and its depth (FRAME_D+BACK_T+0.06) is symmetric about z=0, so
+  // its front face no longer protrudes ~0.03 ahead of the disc plane where it could
+  // occlude the bottom row's lower bezel arc from a low seated angle. Symmetry also
+  // keeps it reading from the open -Z back side.
   const baseGeo = keep(new THREE.BoxGeometry(SLAB_W + 0.06, BASE_H, FRAME_D + BACK_T + 0.06));
   const base = mesh(baseGeo, matBase);
-  base.position.set(0, FOOT_Y + BASE_H / 2, DISC_Z / 2);
+  base.position.set(0, FOOT_Y + BASE_H / 2, 0);
   rack.add(base);
 
   // -- top brass rail ---------------------------------------------------------
@@ -400,6 +422,57 @@ export function createGame(ctx) {
   rim.visible = false;
   fxRoot.add(rim);
 
+  // ---- last-move marker (item #8) -------------------------------------------
+  // A flat ring sitting just proud of the disc face on the disc that most recently
+  // landed. Driven purely off `lastDrop` in paintLastMarker(); not raycastable.
+  const lastRingGeo = keep(new THREE.RingGeometry(DISC_R * 0.62, DISC_R * 0.82, 26));
+  const lastRing = mesh(lastRingGeo, matLast, false);
+  lastRing.raycast = () => {};
+  lastRing.visible = false;
+  fxRoot.add(lastRing);
+  function paintLastMarker() {
+    // Hide during "over": the golden win halo / draw beat owns the end-state read.
+    if (phase === "play" && lastDrop && board[lastDrop.r] && board[lastDrop.r][lastDrop.c]) {
+      lastRing.position.set(cellX(lastDrop.c), cellY(lastDrop.r), DISC_Z + DISC_T / 2 + 0.003);
+      lastRing.visible = true;
+    } else {
+      lastRing.visible = false;
+    }
+  }
+
+  // ---- full-column flash (item #10) -----------------------------------------
+  const fullRingGeo = keep(new THREE.RingGeometry(DISC_R * 0.96, DISC_R * 1.22, 28));
+  const fullRing = mesh(fullRingGeo, matFull, false);
+  fullRing.raycast = () => {};
+  fullRing.visible = false;
+  fxRoot.add(fullRing);
+  let fullFlash = 0; // seconds of flash remaining
+  let fullFlashCol = -1; // column the flash is anchored to (de-dupes re-trigger)
+  const FULL_FLASH_DUR = 0.5;
+  function triggerFullFlash(col) {
+    if (col === fullFlashCol && fullFlash > 0) return; // already flashing this column
+    fullFlashCol = col;
+    fullFlash = FULL_FLASH_DUR;
+    // Park over the topmost hole (row 0) of the full column.
+    fullRing.position.set(cellX(col), cellY(0), DISC_Z + DISC_T / 2 + 0.0035);
+    fullRing.visible = true;
+    ensureClock();
+  }
+  function stepFullFlash(dt) {
+    if (fullFlash <= 0) return;
+    fullFlash -= dt;
+    if (fullFlash <= 0) {
+      fullFlash = 0;
+      fullFlashCol = -1;
+      fullRing.visible = false;
+      matFull.opacity = 0;
+      return;
+    }
+    const f = fullFlash / FULL_FLASH_DUR; // 1 → 0
+    // quick double-blink that fades: bright pulse riding a linear fade-out.
+    matFull.opacity = 0.85 * f * (0.55 + 0.45 * Math.sin(f * Math.PI * 3));
+  }
+
   let hoverCol = -1;
   // Hover animation state: the ghost eases in (scale+opacity) when a new column is
   // picked, then gently bobs at the mouth; the cyan landing rim breathes so the
@@ -422,9 +495,17 @@ export function createGame(ctx) {
   let lampPulse = false;
   let lampPhase = 0;
   let arrowPhase = 0;
+  // Turn-arrow colour cross-fade (item #12): on a turn flip refreshLamps() sets a new
+  // target colour and stepArrow() eases matArrow's colour/emissive from the previous
+  // hue over ARROW_FADE seconds so the handoff feels intentional, not a hard snap.
+  // Pre-allocated scratch colours (no per-frame alloc).
+  const ARROW_FADE = 0.22;
+  const _arrowFrom = new THREE.Color("#e23b4e");
+  const _arrowTo = new THREE.Color("#e23b4e");
+  let arrowFade = 1; // 0 at flip → 1 when settled (1 ⇒ no fade in progress)
 
   function needsAnim() {
-    return bodies.length > 0 || winAnim.active || lampPulse || ghost.visible || (phase === "play" && arrow.visible);
+    return bodies.length > 0 || winAnim.active || lampPulse || ghost.visible || fullFlash > 0 || (phase === "play" && arrow.visible);
   }
   function now() {
     return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
@@ -447,6 +528,7 @@ export function createGame(ctx) {
     stepLamps(dt);
     stepArrow(dt);
     stepHover(dt);
+    stepFullFlash(dt);
 
     if (needsAnim()) rafId = requestAnimationFrame(tick);
   }
@@ -528,11 +610,25 @@ export function createGame(ctx) {
         halo.scale.setScalar(1 + 0.12 * Math.sin(winAnim.t * 6));
       }
     }
-    // ease the winning discs forward out of the rack.
+    // ease the winning discs forward out of the rack, and sweep a small staggered
+    // scale "shimmer" cell-by-cell along the run as the halo front passes each disc
+    // (item #11). winLine is spatially sorted, so indexing by run order makes the win
+    // read end-to-end. Per-mesh scale ONLY — the shared win materials are untouched
+    // (I3-safe), so no other disc is affected.
     const lift = Math.min(1, winAnim.t / 0.5) * (DISC_T * 1.2);
-    for (const [r, c] of winLine) {
+    const sweepFront = (winAnim.t / sweepDur) * (n - 1); // index the halo has reached
+    for (let i = 0; i < n; i++) {
+      const [r, c] = winLine[i];
       const d = discs[r][c];
-      if (d) d.position.z = DISC_Z + lift;
+      if (!d) continue;
+      d.position.z = DISC_Z + lift;
+      // distance (in run-index units) of this disc behind the sweep front; a short
+      // raised-cosine bump gives each disc a single pop as the front crosses it.
+      const dx = sweepFront - i;
+      let pop = 0;
+      if (dx >= 0 && dx < 1) pop = Math.sin(dx * Math.PI); // 0→1→0 over one index
+      const s = 1 + 0.16 * pop;
+      d.scale.set(s, s, s);
     }
   }
 
@@ -541,11 +637,25 @@ export function createGame(ctx) {
   // glow is the winner's hue, never the black/dim that refreshLamps leaves behind
   // when it runs before lampPulse flips true). Here we only modulate the intensity
   // so the heartbeat is a visible coloured pulse rather than an invisible black one.
+  //
+  // DRAW (item #9): on a full board there is no winner, so the old code armed no
+  // pulse and stepLamps no-op'd — the end-state read as a dropped turn. announceOver
+  // now also lights BOTH lamps for a draw and arms lampPulse; here we drive a gentle
+  // ANTI-PHASE shimmer (red up while yellow down) so a draw reads unmistakably as a
+  // shared, deliberate "nobody won" beat rather than a crash. Per-material emissive
+  // only on the dedicated lamp materials (no shared-disc material touched).
   function stepLamps(dt) {
     if (!lampPulse) return;
     lampPhase += dt;
-    const winMat = winner === "red" ? matLampRed : winner === "yellow" ? matLampYellow : null;
-    if (winMat) winMat.emissiveIntensity = 0.65 + 0.65 * (0.5 + 0.5 * Math.sin(lampPhase * 3));
+    if (winner === "red" || winner === "yellow") {
+      const winMat = winner === "red" ? matLampRed : matLampYellow;
+      winMat.emissiveIntensity = 0.65 + 0.65 * (0.5 + 0.5 * Math.sin(lampPhase * 3));
+    } else {
+      // draw: both lit, breathing in opposition.
+      const s = 0.5 + 0.5 * Math.sin(lampPhase * 2.4);
+      matLampRed.emissiveIntensity = 0.4 + 0.5 * s;
+      matLampYellow.emissiveIntensity = 0.4 + 0.5 * (1 - s);
+    }
   }
 
   // ---- turn arrow bob -------------------------------------------------------
@@ -555,6 +665,12 @@ export function createGame(ctx) {
   function stepArrow(dt) {
     if (phase !== "play" || !arrow.visible) return;
     arrowPhase += dt;
+    // advance the turn-flip colour cross-fade (item #12), if any is in progress.
+    if (arrowFade < 1) {
+      arrowFade = Math.min(1, arrowFade + dt / ARROW_FADE);
+      matArrow.color.copy(_arrowFrom).lerp(_arrowTo, arrowFade);
+      matArrow.emissive.copy(matArrow.color);
+    }
     const mine = canPlayLocally();
     const amp = mine ? CELL * 0.14 : CELL * 0.06;
     const speed = mine ? 4.2 : 2.6;
@@ -618,6 +734,11 @@ export function createGame(ctx) {
     winAnim.active = false;
     halo.visible = false;
     halo.scale.setScalar(1);
+    lastRing.visible = false;
+    fullFlash = 0;
+    fullFlashCol = -1;
+    fullRing.visible = false;
+    matFull.opacity = 0;
     clearHover();
   }
 
@@ -631,6 +752,7 @@ export function createGame(ctx) {
       }
     }
     if (phase === "over" && winLine) startWinFx(/*instant*/ true);
+    paintLastMarker();
     refreshLamps();
   }
 
@@ -684,6 +806,7 @@ export function createGame(ctx) {
       winner = color;
       phase = "over";
       startWinFx(false);
+      paintLastMarker(); // hides the ring now that phase==="over" (halo takes over)
       refreshLamps();
       announceOver();
       // The logical resolution (turn/winner/winLine/phase) only exists NOW —
@@ -697,12 +820,14 @@ export function createGame(ctx) {
       winner = null;
       winLine = null;
       phase = "over";
+      paintLastMarker(); // hides during the draw beat
       refreshLamps();
       announceOver();
       pushState();
       return;
     }
     turn = other(turn);
+    paintLastMarker(); // surface the just-landed disc for both players + spectators
     refreshLamps();
     pushState();
   }
@@ -715,6 +840,11 @@ export function createGame(ctx) {
     }
     halo.visible = true;
     if (instant) {
+      // INTENT (item #5): the winning run deliberately "pops out" of the rack — its
+      // front face (DISC_Z + DISC_T*1.2 ≈ 0.046) clears the front frame ribs (front
+      // ≈ 0.037) so the run reads as lifted ABOVE the lattice, not z-fighting inside
+      // it. This is the celebration beat, not a clipping bug; the animated path eases
+      // to the same depth in stepWinAnim().
       const n = winLine.length;
       const [rm, cm] = winLine[Math.floor(n / 2)];
       halo.position.set(cellX(cm), cellY(rm), DISC_Z + DISC_T);
@@ -734,14 +864,21 @@ export function createGame(ctx) {
   function announceOver() {
     if (overAnnounced) return;
     overAnnounced = true;
-    lampPulse = !!winner;
-    if (lampPulse) {
-      // Light the winner's lamp at its OWN colour as the pulse base. refreshLamps()
-      // ran earlier (while lampPulse was still false) and dimmed both lamps to a
-      // black emissive; without re-lighting here, stepLamps would modulate the
-      // intensity of an emissive that is still #000000 → an invisible "black" pulse.
+    // Pulse on EITHER a win OR a draw (item #9). refreshLamps() ran earlier while
+    // lampPulse was still false and left both lamps in their black/dim tint, so we
+    // re-light the pulse base here before stepLamps modulates intensity.
+    lampPulse = phase === "over";
+    if (winner) {
+      // Light the winner's lamp at its OWN colour as the pulse base. Without this the
+      // emissive would still be #000000 → an invisible "black" pulse.
       const winColor = winner === "red" ? "#e23b4e" : "#f2c14e";
       setLamp(winner === "red" ? matLampRed : matLampYellow, winColor, true);
+      ensureClock();
+    } else if (lampPulse) {
+      // Draw: light BOTH lamps at their own colour so the anti-phase shimmer in
+      // stepLamps reads as a deliberate shared "nobody won" beat.
+      setLamp(matLampRed, "#e23b4e", true);
+      setLamp(matLampYellow, "#f2c14e", true);
       ensureClock();
     }
     try {
@@ -765,10 +902,19 @@ export function createGame(ctx) {
     }
     setLamp(matLampRed, "#e23b4e", turn === "red");
     setLamp(matLampYellow, "#f2c14e", turn === "yellow");
-    // arrow tracks the side-to-move's colour and stays visible during play.
+    // arrow tracks the side-to-move's colour and stays visible during play. Cross-fade
+    // to the new hue (item #12) only when it actually changed; a repaint that lands on
+    // the same colour settles instantly (no spurious fade on hydration).
     const col = turn === "red" ? "#e23b4e" : "#f2c14e";
-    matArrow.color.set(col);
-    matArrow.emissive.set(col);
+    _arrowTo.set(col);
+    if (!_arrowTo.equals(matArrow.color)) {
+      _arrowFrom.copy(matArrow.color);
+      arrowFade = 0; // stepArrow eases color+emissive from _arrowFrom → _arrowTo
+    } else {
+      matArrow.color.copy(_arrowTo);
+      matArrow.emissive.copy(_arrowTo);
+      arrowFade = 1;
+    }
     arrow.visible = true;
     ensureClock();
   }
@@ -792,6 +938,10 @@ export function createGame(ctx) {
     // Connect-4 only needs the column: accept either shape.
     const col = (cell && typeof cell === "object") ? cell.c : cell;
     if (!canPlayLocally() || !isLegalCol(col) || dropRow(board, col) < 0) {
+      // Full-column feedback (item #10): if it IS our turn and the player is pointing
+      // at a real but FULL column, flash that column's top hole red so the "no entry"
+      // reads instantly. Off-turn / off-grid hovers stay silent.
+      if (canPlayLocally() && isLegalCol(col) && dropRow(board, col) < 0) triggerFullFlash(col);
       clearHover();
       return;
     }
@@ -1055,6 +1205,14 @@ export function createGame(ctx) {
   return {
     group,
     orientPolicy: "self",
+    // Explicit contract (item #1): this is a full-info, turn-based module whose
+    // spectator/guest applyMove actually APPLIES + animates the relayed move (the
+    // drop falls, then resolveAfter flips the turn). board.js arms its one-shot
+    // post-move snapshot-swallow window only when spectatorAnimates !== false, so the
+    // animation isn't snapped away by the host's redundant echo snapshot. The old
+    // instance omitted this flag and relied on `undefined !== false` being truthy;
+    // stating it explicitly keeps the contract from silently flipping in a refactor.
+    spectatorAnimates: true,
     applyState,
     applyMove,
     onPointer,

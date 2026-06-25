@@ -18,7 +18,7 @@
 
 import * as THREE from "three";
 
-const NEAR = 8, FAR = 277, LEFT = -122, RIGHT = 122;
+const NEAR = 13, FAR = 277, LEFT = -122, RIGHT = 122; // match cityStreets: keep traffic out of the cafe (front wall z=11)
 const VROADS = [-60, 0, 60];          // avenues — run along Z
 const HROADS = [35, 95, 155, 215];    // cross streets — run along X
 const HALFR = 6;                      // half the ~12m road width

@@ -455,8 +455,10 @@ export function buildPark() {
   }
 
   // --- Bushes (instanced, decorative, no colliders): squashed foliage blobs --
+  // (The first two sit on the lawn EAST of the pavilion's porch — kept clear of
+  // the pavilion footprint X∈[-21.85,-14.15], Z∈[-10.35,-3.65] after its setback.)
   const bushSpots = [
-    [-20, -8], [-16, -4], [16, -6], [20, -2], [-8, 18], [8, 18],
+    [-12, -9], [-12, -3], [16, -6], [20, -2], [-8, 18], [8, 18],
     [-22, 18], [22, 8], [-14, 22], [14, 22], [-4, -22], [6, -22],
     [22, -16], [-22, -16],
   ];
@@ -573,14 +575,21 @@ export function buildPark() {
   group.add(gazebo);
   addCollider(colliders, gx, gz, 6, 6);
 
-  // --- Park Visitor Pavilion (W edge): a REAL full-volume building -----------
+  // --- Park Visitor Pavilion (W side): a REAL full-volume building -----------
   // A substantial little lodge (≈7.2 m wide × 6.2 m deep × 3.6 m tall) with
   // plaster walls, a stone base, an overhanging hipped roof, a porch entrance
   // and warm-lit windows wrapped on every face — solid from front, back AND
   // sides, never a flat card. Its detailed FRONT (porch + door + sign) faces
   // +X, i.e. east toward the central green/plaza and the nearest avenue.
+  //
+  // SETBACK: the pavilion sits on the west of the green but is pulled ~7 m in
+  // from the tile edge so its whole footprint — base (±3.85 X), overhanging
+  // roof eaves (≈±4.2 X / ±3.6 Z) and the +X porch (reaches px+5.1) — clears the
+  // seam road + sidewalk that runs along the tile edges. Centre at x=-18 keeps
+  // the back roof at x≈-22.2 (> -23) and the porch front at x≈-12.9 (< 23), and
+  // z=-7 keeps the roof within z∈[-10.6, -3.4], all inside the [-23,23] build box.
   const pavW = 7.2, pavD = 6.2, pavWallH = 3.6;
-  const px = -25, pz = -7;
+  const px = -18, pz = -7;
   const pav = makePavilion(pavW, pavD, pavWallH);
   pav.group.position.set(px, 0, pz);
   group.add(pav.group);

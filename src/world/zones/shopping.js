@@ -17,11 +17,13 @@
 //   update(dt)— cheap ambient animation (flickering neon, spinning pylon sign)
 //
 // Layout (metres, +X east / +Z south, up +Y):
-//   Storefronts:  back wall along z ≈ -22, fronts facing +Z, x ∈ [-24, 24]
-//   Arcade:       columns at z ≈ -19.4 (covered walkway, gaps clear to walk)
-//   Sidewalk:     z ∈ [-18, -8]   (planters, benches, bins, bollards, bus stop)
+//   Storefronts:  fronts at z = -18 facing +Z, bodies run back to z = -23, with
+//                 unit X-spans inside [-23, 23] — a ~7m SETBACK from every tile
+//                 edge (±30) so no block clips into the seam-road grid + sidewalk.
+//   Arcade:       columns at z ≈ -15.6 (covered walkway, gaps clear to walk)
+//   Sidewalk:     z ∈ [-16, -8]   (planters, benches, bins, bollards, bus stop)
 //   Open street:  z ∈ [-7, 14]    (>= 6m clear lane through the tile, no colliders)
-//   South verge:  z ∈ [14, 30]    (a couple of planters near the far corners)
+//   South verge:  z ∈ [14, 23]    (a couple of planters near the corners, in setback)
 //
 // Performance: upper-floor windows and the arcade colonnade use THREE.InstancedMesh;
 // all repeated dressing reuses a small palette of shared geometries + materials.
@@ -282,13 +284,23 @@ export function buildShopping() {
   // --- Row of connected storefront BAYS along the back (fronts face +Z) ------
   // Each "unit" is a branded block; we further split each block into several
   // identical shop bays so the facade reads as a row of individual shops.
-  const Z_FRONT = -21.8;   // front face of the storefront walls
+  // Front face of the storefront walls. Chosen with DEPTH below so the REAR wall
+  // lands at exactly z = -23 — the back tile-edge setback that clears the seam
+  // road + sidewalk (tile back edge is z = -30; road covers the outer ~6m, kerb
+  // + walk a bit more). So the whole block stays inside Z ∈ [-23, 23].
+  const Z_FRONT = -18.0;   // front face of the storefront walls
   // entranceBay (optional): index of the bay replaced by the glass mall portal,
   // so the portal is the ONLY mass there (no shop bay sharing the same volume).
+  // Unit X-spans are kept inside the SETBACK window X ∈ [-23, 23] (a ~7m pull-in
+  // from each tile edge at ±30) so no block clips into the seam-road grid:
+  //   MALL  x=-14.5 w=16 → [-22.5, -6.5]
+  //   MART  x=  1   w=13 → [ -5.5,  7.5]
+  //   CAFE  x= 15.5 w=14 → [  8.5, 22.5]
+  const MALL_X = -14.5;        // MALL centre (portal/pylon track this)
   const units = [
-    { x: -16, w: 16, wall: wallA, awn: awnRed,   sign: "MALL", bg: "#b8402f", emis: "#ff5a3c", bays: 3, entranceBay: 1 },
-    { x:   1, w: 13, wall: wallB, awn: awnTeal,  sign: "MART", bg: "#1f7a73", emis: "#3fe0d4", bays: 3 },
-    { x:  16, w: 14, wall: wallC, awn: awnAmber, sign: "CAFE", bg: "#caa24a", emis: "#ffd070", bays: 3 },
+    { x: MALL_X, w: 16, wall: wallA, awn: awnRed,   sign: "MALL", bg: "#b8402f", emis: "#ff5a3c", bays: 3, entranceBay: 1 },
+    { x:    1,   w: 13, wall: wallB, awn: awnTeal,  sign: "MART", bg: "#1f7a73", emis: "#3fe0d4", bays: 3 },
+    { x:  15.5,  w: 14, wall: wallC, awn: awnAmber, sign: "CAFE", bg: "#caa24a", emis: "#ffd070", bays: 3 },
   ];
 
   const signPanels = []; // collected for ambient glow flicker
@@ -312,8 +324,11 @@ export function buildShopping() {
   let wi = 0, ci = 0;
 
   const H = 8;                 // building height (two storeys)
-  const DEPTH = 7.0;           // how far each block runs back from the street face
-  // (rear wall lands at Z_FRONT - DEPTH = -28.8, comfortably inside the tile)
+  const DEPTH = 4.85;          // how far each block runs back from the street face
+  // (rear wall at Z_FRONT - DEPTH = -22.85; the +0.15 roof-lip overhang then lands
+  //  exactly on the z=-23 setback line, so even the cornice clears the seam road.
+  //  ~4.85m deep × 8m tall × full unit width keeps each block a substantial 3D
+  //  volume, not a thin slab.)
 
   for (const u of units) {
     const bayW = u.w / u.bays;
@@ -447,53 +462,57 @@ export function buildShopping() {
   group.add(rooftop);
 
   // --- Mall entrance: a glass portal filling the MALL's open entrance bay ----
-  // The MALL centre bay (entranceBay:1, x=-16) is built wall-only, so this glass
+  // The MALL centre bay (entranceBay:1, x=MALL_X) is built wall-only, so this glass
   // storefront is the SOLE mass in that volume (no shop bay clipping through it).
   const portal = box(4.6, 3.6, 0.25, glass);
-  portal.position.set(-16, 1.8, Z_FRONT + 0.18);
+  portal.position.set(MALL_X, 1.8, Z_FRONT + 0.18);
   portal.castShadow = false;
   group.add(portal);
   // a clean entrance lintel + side jambs framing the glazed portal
   const portalLintel = box(5.0, 0.5, 0.5, trimMat);
-  portalLintel.position.set(-16, 3.85, Z_FRONT + 0.18);
+  portalLintel.position.set(MALL_X, 3.85, Z_FRONT + 0.18);
   group.add(portalLintel);
-  for (const jx of [-16 - 2.35, -16 + 2.35]) {
+  for (const jx of [MALL_X - 2.35, MALL_X + 2.35]) {
     const jamb = box(0.3, 3.9, 0.5, trimMat);
     jamb.position.set(jx, 1.95, Z_FRONT + 0.18);
     group.add(jamb);
   }
   // a low entry step so the portal reads as a real doorway, not floating glass
   const portalStep = box(4.8, 0.18, 1.0, corniceMat);
-  portalStep.position.set(-16, 0.09, Z_FRONT + 0.55);
+  portalStep.position.set(MALL_X, 0.09, Z_FRONT + 0.55);
   group.add(portalStep);
 
-  // Rotating pylon sign (totem) — billboard text on a pole, spins slowly.
+  // Rotating pylon sign (totem) — billboard text on a pole, spins slowly. Stands
+  // on the sidewalk in front of the MALL (z=-13.5, clear of the building front).
   const pylonPole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 6, 10), poleMat);
-  pylonPole.position.set(-16, 3, -16.5);
+  pylonPole.position.set(MALL_X, 3, -13.5);
   pylonPole.castShadow = true;
   group.add(pylonPole);
   const pylonSign = artPanel(2.6, 3.4, "billboard", {
     title: "MALL", sub: "OPEN", a: "#1f3f7a", b: "#0c1830", accent: "#ffcf3f", glyph: "★",
     emissiveIntensity: 0.5, file: "mall-pylon.png",
   });
-  pylonSign.position.set(-16, 5.4, -16.5);
+  pylonSign.position.set(MALL_X, 5.4, -13.5);
   group.add(pylonSign);
-  addCollider(colliders, -16, -16.5, 0.6, 0.6);
+  addCollider(colliders, MALL_X, -13.5, 0.6, 0.6);
 
   // --- Sidewalk planters lining the storefront row --------------------------
-  const planterXs = [-24, 0, 23];
+  // Kept inside X ∈ [-23,23] (allowing for the 0.65m planter half-width) and just
+  // in front of the building line (front face z=-18) so none sits in the seam road.
+  const planterXs = [-22, 0, 22];
   for (const x of planterXs) {
     const p = makePlanter();
-    p.position.set(x, 0, -17.5);
+    p.position.set(x, 0, -15.5);
     group.add(p);
-    addCollider(colliders, x, -17.5, 1.3, 1.3);
+    addCollider(colliders, x, -15.5, 1.3, 1.3);
   }
-  // a couple near the far (south) corners so the open street stays clear
-  for (const x of [-24, 24]) {
+  // a couple near the far (south) corners — pulled in to the setback so the open
+  // street stays clear AND they don't reach the seam road at the tile corners.
+  for (const x of [-22, 22]) {
     const p = makePlanter();
-    p.position.set(x, 0, 24);
+    p.position.set(x, 0, 22);
     group.add(p);
-    addCollider(colliders, x, 24, 1.3, 1.3);
+    addCollider(colliders, x, 22, 1.3, 1.3);
   }
 
   // --- Sidewalk dressing: benches + bins (visual only, kept out of the lanes) -
@@ -514,10 +533,10 @@ export function buildShopping() {
   // Placed on the sidewalk just inside the curb (z≈-7.8), spaced so they line
   // the walk edge without protruding into the z≥-7 driving lane.
   const bollardXs = [];
-  for (let x = -26; x <= 26; x += 4) {
+  for (let x = -22; x <= 22; x += 4) {
     // skip the central span so the open lane reads unobstructed
     if (Math.abs(x) < 4) continue;
-    bollardXs.push(x);
+    bollardXs.push(x);   // x ∈ [-22,22] keeps them inside the setback, off the seam road
   }
   const bollards = new THREE.InstancedMesh(bollardGeo, bollardMat, bollardXs.length);
   bollards.castShadow = true;
@@ -548,19 +567,21 @@ export function buildShopping() {
   seat.position.set(0, 0.5, -0.6);
   shelter.add(seat);
   shelter.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-  shelter.position.set(22, 0, -10.5);
+  // Pulled in to x=20.5 so the 4m-wide shelter spans X∈[18.5,22.5] — inside the
+  // ±23 setback, off the avenue seam road on the east edge.
+  shelter.position.set(20.5, 0, -10.5);
   group.add(shelter);
-  addCollider(colliders, 22, -11, 4, 1.8);
+  addCollider(colliders, 20.5, -11, 4, 1.8);
 
   // Bus-stop sign post by the shelter.
   const stopPole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 3, 8), poleMat);
-  stopPole.position.set(19, 1.5, -9);
+  stopPole.position.set(17.5, 1.5, -9);
   stopPole.castShadow = true;
   group.add(stopPole);
   const stopSign = artPanel(1.1, 1.1, "sign", {
     text: "BUS", bg: "#1f4fa0", fg: "#ffffff", emissiveIntensity: 0.45, file: "bus-stop.png",
   });
-  stopSign.position.set(19, 2.7, -9);
+  stopSign.position.set(17.5, 2.7, -9);
   group.add(stopSign);
 
   // ------------------------------------------------------------------------

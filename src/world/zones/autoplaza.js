@@ -202,18 +202,23 @@ export function buildAutoPlaza() {
   group.add(tarmac);
 
   // Concrete forecourt apron under the gas canopy (front-left) for contrast.
-  const apron = flat(20, 16, matConcrete);
-  apron.position.set(-15, 0.02, -16);
+  // Sized/placed to stay inside the setback so it doesn't read under the seam road.
+  const apron = flat(17, 16, matConcrete);
+  apron.position.set(-13.5, 0.02, -16);
   group.add(apron);
 
   // Concrete pad under the showroom / parking (back, left-of-centre) ----------
-  const lotPad = flat(34, 14, matConcrete);
-  lotPad.position.set(-7, 0.02, 21);
+  // Kept inside the setback so the pad doesn't read under the +Z / -X seam roads.
+  const lotPad = flat(28, 10, matConcrete);
+  lotPad.position.set(-8, 0.02, 17);
   group.add(lotPad);
 
   // === GLASS SHOWROOM (back-right / NE corner) ==============================
-  // Footprint ~16×11, sits at x≈16, z≈22 with its glass front facing -Z.
-  const SHOW = { x: 16, z: 22, w: 16, d: 11, h: 5.6 };
+  // Footprint ~13×9, sits at x≈10, z≈17 with its glass front facing -Z. Pulled
+  // IN from the NE tile corner so it (and the service bay it shares an east wall
+  // with) clear the seam roads: with a 0.4 m collider margin the showroom+bay
+  // mass stays inside local X,Z ∈ [-23,23] (≥7 m setback from each tile edge).
+  const SHOW = { x: 10, z: 17, w: 13, d: 9, h: 5.6 };
   const show = new THREE.Group();
   // Back + side walls (solid), glass curtain front.
   const backWall = box(SHOW.w, SHOW.h, 0.3, matWall);
@@ -316,8 +321,10 @@ export function buildAutoPlaza() {
   const BAY = { w: 5.2, d: 9, h: 4.4 };
   // Showroom solid mass reaches x = SHOW.x + SHOW.w/2 + 0.175 (side wall + east
   // parapet). Seat the bay's left face just clear of that so nothing overlaps.
-  const bayLeft = SHOW.x + SHOW.w / 2 + 0.2; // ≈ 24.2 (world)
-  const bayX = bayLeft + BAY.w / 2;          // ≈ 26.8
+  // With the pulled-in showroom (x=10,w=13) the bay sits at x≈19.3, so its east
+  // collider edge (≈21.9) clears the +X seam road / sidewalk (setback past 23).
+  const bayLeft = SHOW.x + SHOW.w / 2 + 0.2; // ≈ 16.7 (world)
+  const bayX = bayLeft + BAY.w / 2;          // ≈ 19.3
   const bayZ = SHOW.z + (SHOW.d - BAY.d) / 2; // align back walls
   const bay = new THREE.Group();
   const bBack = box(BAY.w, BAY.h, 0.3, matWall2);
@@ -362,7 +369,8 @@ export function buildAutoPlaza() {
   addCollider(colliders, bayX, bayZ, BAY.w, BAY.d + 0.2);
 
   // === TALL PYLON SIGN ("AUTO") — front-right, near the entrance ============
-  const PYL = { x: 22, z: -18 };
+  // Base at x=21 so its 1.6 m footing collider (→ x≈21.8) clears the +X seam road.
+  const PYL = { x: 21, z: -18 };
   const pylon = new THREE.Group();
   const pole = box(0.7, 12, 0.7, matSteel);
   pole.position.y = 6;
@@ -391,7 +399,9 @@ export function buildAutoPlaza() {
   movers.push({ kind: "spin", obj: signSpin, rate: 0.6 });
 
   // === GAS STATION: canopy + pumps (front-left) =============================
-  const GAS = { x: -15, z: -16, w: 16, d: 9, h: 4.6 };
+  // Nudged in from x=-15 to -13.5 so the canopy's left edge (x≈-21.5) and the
+  // outer column colliders (x≈-20.8) clear the -X seam road + sidewalk (≥7 m in).
+  const GAS = { x: -13.5, z: -16, w: 16, d: 9, h: 4.6 };
   const gas = new THREE.Group();
   // Flat canopy deck with a red accent stripe along the front edge.
   const deck = box(GAS.w, 0.5, GAS.d, matCanopy);
@@ -430,15 +440,15 @@ export function buildAutoPlaza() {
   gas.position.set(GAS.x, 0, GAS.z);
   group.add(gas);
 
-  // === CONVENIENCE STORE (kiosk) — left of the canopy, faces the forecourt ===
+  // === CONVENIENCE STORE (kiosk) — west side, faces the central drive lane ===
   // A real, full-volume building (not a facade): four solid walls + roof so it
   // reads solid from the street, the forecourt AND the back. Its glazed
-  // STOREFRONT + "MART" sign face +X toward the pumps / central drive lane; the
-  // back (-X), sides and roof are closed. Footprint X∈[-29.8,-23.8], Z∈[-17.5,-8.5]
-  // (6 m wide × 9 m deep) — its +X front wall sits ~0.8 m clear of the canopy
-  // deck's left edge (x≈-23) so nothing clips the canopy, and the back/roof stay
-  // inside the tile edge (x=-30).
-  const STORE = { x: -26.8, z: -13, w: 6, d: 9, h: 4.2 };
+  // STOREFRONT + "MART" sign face +X toward the central drive lane; the back (-X),
+  // sides and roof are closed. Pulled IN off the west tile edge: footprint
+  // X∈[-22,-16], Z∈[-2.5,6.5] (6 m wide × 9 m deep) so its back/collider west edge
+  // (x≈-22.15) clears the -X seam road + sidewalk, and it sits north of the gas
+  // forecourt (Z≤-11.5) and south of the parking lot, keeping the centre lane open.
+  const STORE = { x: -19, z: 2, w: 6, d: 9, h: 4.2 };
   const store = new THREE.Group();
   // Solid shell: back wall (-X face), two side walls (±Z), thick enough to read.
   const stBack = box(0.3, STORE.h, STORE.d, matWall2);
@@ -501,7 +511,7 @@ export function buildAutoPlaza() {
   // === PARKING LOT: painted stalls + parked cars (back-left) ================
   // Stalls run along the back; cars face -Z toward the open lot. Stripes are
   // flat ground paint (no colliders); the cars themselves get colliders.
-  const STALL_Z = 24; // back-of-lot line for parked cars
+  const STALL_Z = 20; // back-of-lot line for parked cars (pulled in to clear the +Z seam road)
   const stallW = 3.0;
   const startX = -19;
   for (let i = 0; i <= 6; i += 2) {
@@ -562,7 +572,7 @@ export function buildAutoPlaza() {
   // === STRING LIGHTS along the entrance edge (instanced glowing bulbs) ======
   {
     const items = [];
-    const z0 = -27.5;
+    const z0 = -22; // entrance edge pulled in to clear the -Z seam road
     for (let i = 0; i < 14; i++) {
       const x = -13 + i * 2.0;
       const sag = 0.5 * Math.sin((i / 13) * Math.PI);
@@ -587,11 +597,12 @@ export function buildAutoPlaza() {
   // A couple of cross dashes marking the entrance.
   for (const x of [-8, 0, 8]) {
     const dash = box(1.6, 0.02, 0.3, matPaintWhite, false);
-    dash.position.set(x, 0.04, -27);
+    dash.position.set(x, 0.04, -21.5);
     group.add(dash);
   }
 
   // --- Light bollards flanking the entrance lane (slim, with colliders) ------
+  // At z=-22 so their colliders clear the -Z seam road + sidewalk (inside ±23).
   for (const x of [-4, 4]) {
     const bol = new THREE.Group();
     const post = box(0.22, 1.1, 0.22, matSteel);
@@ -599,13 +610,14 @@ export function buildAutoPlaza() {
     const cap = cyl(0.16, 0.18, matLight, false);
     cap.position.y = 1.15;
     bol.add(post, cap);
-    bol.position.set(x, 0, -28);
+    bol.position.set(x, 0, -22);
     group.add(bol);
-    addCollider(colliders, x, -28, 0.4, 0.4);
+    addCollider(colliders, x, -22, 0.4, 0.4);
   }
 
   // --- Street dressing: planters with shrubs + a bin (flank, clear of lanes) -
-  for (const [px, pz] of [[-26, -2], [-26, 8], [10, -26]]) {
+  // All pulled inside the ±23 setback so nothing sits in the seam roads.
+  for (const [px, pz] of [[-22, -8], [-22, 12], [10, -22]]) {
     const planter = new THREE.Group();
     const tub = box(1.0, 0.6, 1.0, matPlanter);
     tub.position.y = 0.3;
@@ -621,9 +633,9 @@ export function buildAutoPlaza() {
   const binBody = cyl(0.32, 0.9, matDark);
   binBody.position.y = 0.45;
   bin.add(binBody);
-  bin.position.set(-24, 0, -24);
+  bin.position.set(-22, 0, -22);
   group.add(bin);
-  addCollider(colliders, -24, -24, 0.7, 0.7);
+  addCollider(colliders, -22, -22, 0.7, 0.7);
 
   // --- Update: rotate the pylon sign + hero turntable; flicker the lights ----
   let t = 0;

@@ -426,10 +426,12 @@ export function buildDowntown() {
   aveEW.position.set(0, 0.031, 0);
   aveEW.receiveShadow = true;
   group.add(aveEW);
-  // Dashed centre lines down both avenues (shared geometries, reused).
+  // Dashed centre lines down both avenues (shared geometries, reused). Kept
+  // within ±21 (dash half-length 1.1 → reaches ±22.1) so even the lane paint
+  // stays inside the ±23 setback and never bleeds onto a tile-seam road.
   const dashNSGeo = new THREE.PlaneGeometry(0.4, 2.2);
   const dashEWGeo = new THREE.PlaneGeometry(2.2, 0.4);
-  for (let s = -24; s <= 24; s += 9) {
+  for (let s = -21; s <= 21; s += 7) {
     const dN = new THREE.Mesh(dashNSGeo, laneMat);
     dN.rotation.x = -Math.PI / 2;
     dN.position.set(0, 0.05, s);
@@ -442,35 +444,51 @@ export function buildDowntown() {
 
   // --- Buildings — full 3D volumes, one per quadrant, all off the avenues. ---
   // Every building below is a SOLID box shaft (real width AND depth AND height),
-  // never a flat facade: the smallest footprint here is 7×7 m, the towers 11-13 m.
-  // Four flagship corner towers ring the central plaza; four secondary mid-rise
-  // blocks fill the outer corner of each quadrant. The towers were pulled inward
-  // to |cx|,|cz|≈15.5 (was 17-19) so the EW avenue's west end is no longer blocked
-  // by a slab — the old [-19,0] infill tower literally straddled z=0 and has been
-  // replaced by the four corner mid-rises that sit well clear of both lanes.
+  // never a flat facade: the smallest footprint here is 7×7 m, the towers 10×10 m.
+  //
+  // ROAD-GRID SETBACK: a 12 m road runs on every tile seam (avenues at world
+  // X=-60,0,60 and cross-streets at world Z=35,95,155,215), so the outer ~6 m of
+  // each tile edge plus a kerb+sidewalk is street, NOT plot. EVERY footprint here
+  // (and its collider) is therefore kept inside LOCAL X,Z ∈ [-23, 23] — a ~7 m
+  // setback from each of the 4 tile edges — so no building sits in the road.
+  // The composition was re-centred toward the plaza to honour that. The corner
+  // pocket between an avenue and a tile edge is small, so each quadrant holds a
+  // tall flagship near the plaza plus a mid-rise block in the outer corner, and
+  // both had to be sized to nest within the setback without overlapping:
+  //   • the four flagship towers were pulled in from ±15.5 to ±10.5 and trimmed
+  //     to 9×9 (still 30–40 m tall — very substantial volumes), so each footprint
+  //     reaches only ±15 (collider ±15.2) and the inner face clears the avenue
+  //     band (inner face at ±6, lanes at |coord|<5.5).
+  //   • the four secondary blocks — which used to STRADDLE the tile edge at ±26
+  //     (footprint reaching ±29.5, deep in the street) — were pulled into the
+  //     outer corners at ±19.2 (footprint ±22.7, collider ±22.9), just inside the
+  //     ±23 setback and clear of the flagship colliders (~0.3 m gap).
   //
   // [cx, cz, w, d, height, glassMat, antenna, helipad, frontZ]
   // frontZ chooses which Z face carries the lobby/canopy/door so the detailed
   // FRONT always faces the central avenue cross (the street), never a back lot.
   const towers = [
-    // Four flagship corner towers (tall glass, ringing the plaza).
-    [-15.5, -15.5, 12, 12, 40, glassA, true,  true,   1], // NW flagship (beacon + helipad)
-    [ 15.5, -15.5, 11, 11, 33, glassB, false, false,  1], // NE
-    [-15.5,  15.5, 11, 13, 30, glassC, true,  false, -1], // SW (beacon)
-    [ 15.5,  15.5, 13, 11, 36, glassA, false, true,  -1], // SE (helipad)
+    // Four flagship corner towers (tall glass, ringing the plaza), at ±10.5 / 9×9
+    // → footprint ±15, collider ±15.2, inside the ±23 setback and off the avenues.
+    [-10.5, -10.5, 9, 9, 40, glassA, true,  true,   1], // NW flagship (beacon + helipad)
+    [ 10.5, -10.5, 9, 9, 33, glassB, false, false,  1], // NE
+    [-10.5,  10.5, 9, 9, 30, glassC, true,  false, -1], // SW (beacon)
+    [ 10.5,  10.5, 9, 9, 36, glassA, false, true,  -1], // SE (helipad)
     // Four secondary mid-rise blocks at the OUTER corner of each quadrant. Full
-    // volumes (7×7 footprint) so they read solid from every side, set hard
-    // against the tile edge and clear of the corner towers + both avenues.
-    [-26.0, -26.0, 7, 7, 20, glassB, false, false,  1], // NW outer block
-    [ 26.0, -26.0, 7, 7, 18, glassC, false, false,  1], // NE outer block
-    [-26.0,  26.0, 7, 7, 22, glassA, false, false, -1], // SW outer block
-    [ 26.0,  26.0, 7, 7, 19, glassB, false, false, -1], // SE outer block
+    // volumes (7×7 footprint) so they read solid from every side, pulled in to
+    // ±19.2 → footprint reaches ±22.7, collider ±22.9, just inside the ±23
+    // setback and clear of the corner towers + both avenues.
+    [-19.2, -19.2, 7, 7, 20, glassB, false, false,  1], // NW outer block
+    [ 19.2, -19.2, 7, 7, 18, glassC, false, false,  1], // NE outer block
+    [-19.2,  19.2, 7, 7, 22, glassA, false, false, -1], // SW outer block
+    [ 19.2,  19.2, 7, 7, 19, glassB, false, false, -1], // SE outer block
   ];
   const litList = []; // lobby/canopy accent mats animated by update (shared mat)
   litList.push(accentLitMat, lobbyGlassMat); // pulse the shared lit accents once
-  // The lobby/canopy projects ~2.4 m off the chosen front face toward the tile
-  // centre, so with every building set back to |cx|,|cz|≥15.5 the canopy stays
-  // far clear of the central cross (lanes at |x|,|z| < 5.5).
+  // The lobby/canopy is a thin overhead element ~3.8 m up that projects off the
+  // chosen front face toward the tile centre; with the towers set in to ±10.5 it
+  // overhangs the outer edge of the wide (11 m) central avenue but leaves the
+  // drivable centre lane (|x|,|z| ≲ 2) fully clear, and never touches a seam road.
   for (const [cx, cz, w, d, h, gm, ant, heli, frontZ] of towers) {
     const t = makeTower(w, h, d, gm, flickerList, ant, litList, { frontZ, helipad: heli });
     t.position.set(cx, 0, cz);
@@ -482,24 +500,24 @@ export function buildDowntown() {
   // Each billboard's lit FRONT faces an avenue; it is offset just proud of the
   // host face so it never sinks into (or floats off) the building.
   // Billboard 1: "SKYLINE TOWERS" on the SE tower's -X face, facing the NS ave.
-  // SE tower is cx15.5,cz15.5,w13 → -X face at x=15.5-6.5=9.0.
-  const bb1 = artPanel(12, 7, "billboard", {
+  // SE tower is cx10.5,cz10.5,w9 → -X face at x=10.5-4.5=6.0.
+  const bb1 = artPanel(8, 6.5, "billboard", {
     title: "SKYLINE TOWERS", sub: "LIVE ABOVE THE CITY",
     a: "#16335f", b: "#0a1428", accent: "#ffcf3f", glyph: "▲",
     emissiveIntensity: 0.5, file: "billboard-skyline.png",
   });
-  bb1.position.set(8.9, 24, 15.5);     // just proud of the SE tower -X face
+  bb1.position.set(5.9, 24, 10.5);     // just proud of the SE tower -X face
   bb1.rotation.y = -Math.PI / 2;        // normal faces -X toward the NS avenue
   group.add(bb1);
 
   // Billboard 2: "FIZZ POP COLA" on the NW flagship's +Z face, facing EW ave.
-  // NW tower is cx-15.5,cz-15.5,d12 → +Z face at z=-15.5+6=-9.5.
-  const bb2 = artPanel(13, 7.5, "billboard", {
+  // NW tower is cx-10.5,cz-10.5,d9 → +Z face at z=-10.5+4.5=-6.0.
+  const bb2 = artPanel(8, 7, "billboard", {
     title: "FIZZ POP COLA", sub: "ICE-COLD & FIZZY",
     a: "#6b1130", b: "#1a0410", accent: "#ff5fa0", glyph: "✦",
     emissiveIntensity: 0.5, file: "billboard-cola.png",
   });
-  bb2.position.set(-15.5, 27, -9.4);   // just proud of the NW tower +Z face
+  bb2.position.set(-10.5, 27, -5.9);   // just proud of the NW tower +Z face
   group.add(bb2);                       // PlaneGeometry default normal +Z (toward EW ave)
 
   // --- A rooftop rotating beacon sign (neon) on the SE tower. ---------------
@@ -508,25 +526,25 @@ export function buildDowntown() {
     emissiveIntensity: 0.9, file: "neon-dt.png",
   });
   // mount it above the SE tower roof (height 36 + crown stack).
-  rooftopSign.position.set(15.5, 41, 15.5);
+  rooftopSign.position.set(10.5, 41, 10.5);
   group.add(rooftopSign);
   spinners.push(rooftopSign);
 
   // --- A couple of lit CROWN SIGNS near tower tops (vertical wall signs) -----
-  // "NOVA" up the NE tower's -X face (cx15.5,cz-15.5,w11 → -X at x=10), high up.
+  // "NOVA" up the NE tower's -X face (cx10.5,cz-10.5,w9 → -X at x=6), high up.
   const crownSign1 = artPanel(3.2, 8, "sign", {
     text: "NOVA", bg: "#0b2c4a", fg: "#7fe0ff",
     emissive: "#1c6fb0", emissiveIntensity: 0.9, file: "sign-nova.png",
   });
-  crownSign1.position.set(9.9, 28, -15.5);
+  crownSign1.position.set(5.9, 24, -10.5);
   crownSign1.rotation.y = -Math.PI / 2; // normal faces -X toward NS avenue
   group.add(crownSign1);
-  // "VERTEX" up the SW tower's +X face (cx-15.5,cz15.5,w11 → +X at x=-10), high up.
+  // "VERTEX" up the SW tower's +X face (cx-10.5,cz10.5,w9 → +X at x=-6), high up.
   const crownSign2 = artPanel(3.0, 7, "sign", {
     text: "VERTEX", bg: "#3a0b2c", fg: "#ff9fe0",
     emissive: "#b01c7f", emissiveIntensity: 0.9, file: "sign-vertex.png",
   });
-  crownSign2.position.set(-9.9, 23, 15.5);
+  crownSign2.position.set(-5.9, 23, 10.5);
   crownSign2.rotation.y = Math.PI / 2; // normal faces +X toward NS avenue
   group.add(crownSign2);
 

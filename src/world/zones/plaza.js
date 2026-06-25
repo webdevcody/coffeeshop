@@ -382,8 +382,10 @@ export function buildPlaza() {
 
   // === FULL-VOLUME BUILDINGS framing the square (north + west edges) ========
   // Each building is a real block (width × depth × height). Fronts face INTO the
-  // square / toward the bordering avenue. Footprints hug the edges so the centre
-  // stays a wide open lane (the closest building face is >= ~10 m from the
+  // square / toward the bordering avenue. Every footprint is SET BACK so it stays
+  // within LOCAL X,Z ∈ [-23,23] — a ~7 m clearance from each tile edge (the tile
+  // is [-30,30]) so nothing clips the seam road + kerb + sidewalk. The centre
+  // stays a wide open lane (the closest building face is >= ~12 m from the
   // fountain edge, leaving plenty of room for the car to cross).
   //
   // Building placement (centre x,z and front-facing rotation ry):
@@ -395,17 +397,21 @@ export function buildPlaza() {
   // so that face points toward the square interior.
 
   const buildings = [
-    // NORTH-EAST block along the back wall (front faces +Z / south, into square).
-    // Sits clear of billboard A (at x=-9): spans x∈[3,23]. Real depth 8 m in Z.
+    // NORTH block along the back (front faces +Z / south, into square). Pulled
+    // SOUTH out of the north-edge road: depth 8 m centred at cz=-19 ⇒ Z∈[-23,-15],
+    // a 7 m setback from the -30 tile edge. Width 20 m at cx=12 ⇒ X∈[2,22], clear
+    // of the +23 limit and of billboard A (x=-9). Full volume kept.
     {
-      cx: 13, cz: -25.5, ry: Math.PI,            // front (local -Z) rotated to face +Z
+      cx: 12, cz: -19, ry: Math.PI,              // front (local -Z) rotated to face +Z
       w: 20, d: 8, h: 9.5, cols: 5, floors: 1, gf: 3.4,
       wallMat: M.wallB, awnMat: M.awnGreen, sign: "TOWN HALL", bg: "#2f6f8f", emis: "#5fc6e8",
     },
-    // WEST-SOUTH café/shop block (front faces +X / east, into square).
-    // Spans z∈[-5,13], depth 8 m in local X. Pulled to the west edge.
+    // WEST café/shop block (front faces +X / east, into square). Pulled EAST out
+    // of the west-edge road: depth 8 m centred at cx=-19 ⇒ X∈[-23,-15], a 7 m
+    // setback from the -30 tile edge. Width 18 m in Z at cz=4 ⇒ Z∈[-5,13]. Full
+    // volume kept.
     {
-      cx: -25.5, cz: 4, ry: -Math.PI / 2,        // front (local -Z) rotated to face +X
+      cx: -19, cz: 4, ry: -Math.PI / 2,          // front (local -Z) rotated to face +X
       w: 18, d: 8, h: 8.5, cols: 5, floors: 1, gf: 3.4,
       wallMat: M.wallC, awnMat: M.awnAmber, sign: "PLAZA CAFE", bg: "#caa24a", emis: "#ffd070",
     },
@@ -433,7 +439,9 @@ export function buildPlaza() {
   // setback belfry stage, a pyramidal roof and a working clock facing the plaza.
   {
     const tower = new THREE.Group();
-    const cx = -24, cz = -24;            // centre of the corner footprint
+    // Pulled IN from the NW corner so its 11×11 footprint clears the corner roads:
+    // centred at (-17.5,-17.5) ⇒ X,Z∈[-23,-12], a 7 m setback from both -30 edges.
+    const cx = -17.5, cz = -17.5;        // centre of the corner footprint
     const W = 11, D = 11, H = 13;
     // main solid shaft (full volume — reads solid from every side)
     const shaft = box(W, H, D, M.wallA);
@@ -563,8 +571,8 @@ export function buildPlaza() {
   // --- Rooftop clutter on the two storefront blocks (visual only) -----------
   // (Instanced AC + vent pipes scattered atop the parapets.)
   const acPlaces = [
-    [9, 9.0, -24.5], [17, 9.0, -25.5],          // atop TOWN HALL roof (h=9.5)
-    [-24.5, 8.0, 0], [-25.5, 8.0, 8],           // atop PLAZA CAFE roof (h=8.5)
+    [8, 9.0, -18.0], [16, 9.0, -20.0],          // atop TOWN HALL roof (X[2,22] Z[-23,-15], h=9.5)
+    [-18.0, 8.0, 0], [-20.0, 8.0, 8],           // atop PLAZA CAFE roof (X[-23,-15] Z[-5,13], h=8.5)
   ];
   for (const [x, y, z] of acPlaces) {
     const ac = mesh(G.acUnit, M.metal);
@@ -572,8 +580,8 @@ export function buildPlaza() {
     group.add(ac);
   }
   const ventPlaces = [
-    [5, 9.5, -25.0], [21, 9.5, -25.0],
-    [-25.5, 8.6, -3], [-24.5, 8.6, 11],
+    [4, 9.5, -19.0], [20, 9.5, -19.0],          // TOWN HALL roof
+    [-20.0, 8.6, -3], [-18.0, 8.6, 11],         // PLAZA CAFE roof
   ];
   for (const [x, y, z] of ventPlaces) {
     const v = mesh(G.ventPipe, M.metal);
@@ -601,13 +609,14 @@ export function buildPlaza() {
   }
 
   // === Planters with flat-shaded shrubs ====================================
-  // Corner planters that USED to overlap the new buildings are relocated to
-  // dress the OPEN south-east area + flank building entrances (clear of every
-  // building footprint and the central lanes).
+  // Corner planters that USED to overlap the (now set-back) buildings are placed
+  // to dress the OPEN south-east area + flank building entrances, clear of every
+  // building footprint and the central lanes. New footprints: hall X[2,22]
+  // Z[-23,-15], café X[-23,-15] Z[-5,13], tower X[-23,-12] Z[-23,-12].
   const planterPlaces = [
-    [22, 22], [22, -2],     // south-east open corner / east edge
-    [-2, 22], [-18, 18],    // south edge / café-entrance flank (clear of café x>=-21.5)
-    [4, -18],               // hall-entrance flank, plaza side (clear of hall z>=-21.5)
+    [21, 21], [21, -2],     // south-east open corner / east edge (clear of hall maxX=22)
+    [-2, 21], [-13, 16],    // south edge / café-entrance flank (café maxZ=13)
+    [9, -13],               // hall-entrance flank, plaza side (hall minZ=-15)
   ];
   for (const [x, z] of planterPlaces) {
     const pl = makePlanter(sway);
@@ -618,7 +627,7 @@ export function buildPlaza() {
 
   // === Lamp posts — spread around the plaza edges ==========================
   const lampPlaces = [
-    [-12, -12], [12, -12], [-12, 12], [12, 12],
+    [-11, -11], [12, -12], [-12, 12], [12, 12],   // NW lamp nudged off the set-back tower (X,Z maxes at -12)
   ];
   for (const [x, z] of lampPlaces) {
     const l = makeLamp();
@@ -635,29 +644,29 @@ export function buildPlaza() {
 
   // Billboard A — SOUTH edge (local +Z), beside the cross street the player
   // approaches from. No Y rotation: broad faces look +Z (toward the street) and
-  // -Z (into the square); both faces are readable. Moved to z=+25 so it borders
-  // the south avenue and stays clear of the north-edge buildings.
+  // -Z (into the square); both faces are readable. Set back to z=+22 so the pole
+  // clears the seam road + sidewalk while still standing broadside to the street.
   const billA = makeBillboard(5.0, 2.8, {
     title: "WELCOME", sub: "TOWN PLAZA", accent: "#ffcf3f",
     a: "#2a6b4f", b: "#10331f", glyph: "☕",
     emissiveIntensity: 0.5, file: "billboard-plaza-welcome.png",
   });
-  billA.position.set(-9, 0, 25);
+  billA.position.set(-9, 0, 22);
   group.add(billA);
-  addCollider(colliders, -9, 25, 0.6, 0.6);
+  addCollider(colliders, -9, 22, 0.6, 0.6);
 
   // Billboard B — EAST edge (local +X), beside the avenue. Rotated +90° so its
   // broad faces look +X (toward the avenue) and -X (into the square); both faces
-  // are readable.
+  // are readable. Set back to x=+22 so the pole clears the seam road + sidewalk.
   const billB = makeBillboard(5.0, 2.8, {
     title: "FRESH BREW", sub: "OPEN DAILY", accent: "#ff9d3f",
     a: "#6b3a2a", b: "#331810", glyph: "★",
     emissiveIntensity: 0.5, file: "billboard-plaza-brew.png",
   });
-  billB.position.set(25, 0, 16);
+  billB.position.set(22, 0, 16);
   billB.rotation.y = Math.PI / 2;
   group.add(billB);
-  addCollider(colliders, 25, 16, 0.6, 0.6);
+  addCollider(colliders, 22, 16, 0.6, 0.6);
 
   // --- Animation state (no per-frame allocation) ---------------------------
   let t = 0;

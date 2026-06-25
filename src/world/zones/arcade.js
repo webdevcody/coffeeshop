@@ -126,17 +126,23 @@ export function buildArcade() {
   // extent (how far the mass reaches back from the avenue). facadeX = b.x +
   // facing*(w/2) is the avenue wall. Annex sits on the tile-edge side (away from
   // the avenue), lower/taller for stepped massing.
+  // SETBACK: a ROAD GRID runs on the tile seams (tile edge = ±30); a road + kerb
+  // + sidewalk covers the outer ~7 m of every tile edge. So every building mass
+  // AND its annex must stay within LOCAL X,Z in [-23, 23] to clear the street.
+  // Centers/depths below are pulled inward (mains z=±16 d=14 => Z∈[±9,±23];
+  // annexes outer edge at ±22.7) so nothing reaches past ±23 while the avenue
+  // wall stays at X=±7 and the plaza cross lane (Z∈[-9,9]) stays open.
   const buildSpots = [
     // Left row (faces +X toward avenue). Avenue wall at x=-7 => b.x = -7 - w/2.
-    { x: -14, z: -19, w: 14, d: 14, facing: 1,
-      annex: { dx: -9.5, dz: 0, w: 5, d: 10, h: 13 } },   // X[-21,-7] Z[-26,-12]
-    { x: -14, z: 19, w: 14, d: 14, facing: 1,
-      annex: { dx: -9.5, dz: 0, w: 5, d: 10, h: 7 } },     // X[-21,-7] Z[12,26]
+    { x: -14, z: -16, w: 14, d: 14, facing: 1,
+      annex: { dx: -6.7, dz: 0, w: 4, d: 10, h: 13 } },   // main X[-21,-7] Z[-23,-9]; annex X[-22.7,-18.7]
+    { x: -14, z: 16, w: 14, d: 14, facing: 1,
+      annex: { dx: -6.7, dz: 0, w: 4, d: 10, h: 7 } },    // main X[-21,-7] Z[9,23]; annex X[-22.7,-18.7]
     // Right row (faces -X toward avenue). Avenue wall at x=7 => b.x = 7 + w/2.
-    { x: 14, z: -19, w: 14, d: 14, facing: -1,
-      annex: { dx: 9.5, dz: 0, w: 5, d: 10, h: 7 } },      // X[7,21] Z[-26,-12]
-    { x: 14, z: 19, w: 14, d: 14, facing: -1,
-      annex: { dx: 9.5, dz: 0, w: 5, d: 10, h: 13 } },     // X[7,21] Z[12,26]
+    { x: 14, z: -16, w: 14, d: 14, facing: -1,
+      annex: { dx: 6.7, dz: 0, w: 4, d: 10, h: 7 } },     // main X[7,21] Z[-23,-9]; annex X[18.7,22.7]
+    { x: 14, z: 16, w: 14, d: 14, facing: -1,
+      annex: { dx: 6.7, dz: 0, w: 4, d: 10, h: 13 } },    // main X[7,21] Z[9,23]; annex X[18.7,22.7]
   ];
 
   // Reusable matrix/objects for InstancedMesh writes (no per-frame allocation).
@@ -370,13 +376,13 @@ export function buildArcade() {
     g.add(band);
     return g;
   }
-  // Sit in the open plaza band (Z∈[-12,12] minus the cross lane Z∈[-6,6]); X=±9.5
-  // is clear of the avenue (X∈[-6,6]) and of the buildings (which start at X=±7
-  // only outside this band), and z=±10 keeps them off the cross lane and out of
-  // the building masses (which begin at Z=±12).
+  // Sit in the open plaza band. After the setback the building masses occupy
+  // Z∈[9,23] and Z∈[-23,-9], so the open band is Z∈[-9,9]; the cross lane is
+  // Z∈[-6,6]. z=±7.5 (collider Z∈[±6.5,±8.5]) clears both the cross lane and the
+  // building masses. X=±9.5 stays clear of the avenue (X∈[-6,6]).
   const boothSpots = [
-    { x: -9.5, z: -10, faceX: 1 },
-    { x: 9.5, z: 10, faceX: -1 },
+    { x: -9.5, z: -7.5, faceX: 1 },
+    { x: 9.5, z: 7.5, faceX: -1 },
   ];
   for (const s of boothSpots) {
     group.add(ticketBooth(s.x, s.z, s.faceX));
@@ -389,7 +395,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ff4fa3", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade.png",
   });
-  arcadeSign.position.set(-6.94, 7, -19);
+  arcadeSign.position.set(-6.94, 7, -16); // on the pulled-in front-left building
   arcadeSign.rotation.y = Math.PI / 2; // face +X (toward avenue)
   arcadeSign.castShadow = false;
   group.add(arcadeSign);
@@ -400,7 +406,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#4fd2ff", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-play.png",
   });
-  playSign.position.set(6.94, 7, 19);
+  playSign.position.set(6.94, 7, 16); // on the pulled-in back-right building
   playSign.rotation.y = -Math.PI / 2; // face -X (toward avenue)
   playSign.castShadow = false;
   group.add(playSign);
@@ -411,7 +417,7 @@ export function buildArcade() {
     lines: ["ARCADE"], color: "#ffd23f", color2: "#ff4fa3",
     emissiveIntensity: 0.9, file: "arcade-neon-arcade2.png",
   });
-  arcade2.position.set(6.94, 7, -19);
+  arcade2.position.set(6.94, 7, -16); // on the pulled-in front-right building
   arcade2.rotation.y = -Math.PI / 2;
   arcade2.castShadow = false;
   group.add(arcade2);
@@ -421,7 +427,7 @@ export function buildArcade() {
     lines: ["PLAY"], color: "#9fff4f", color2: "#4fd2ff",
     emissiveIntensity: 0.9, file: "arcade-neon-play2.png",
   });
-  play2.position.set(-6.94, 7, 19);
+  play2.position.set(-6.94, 7, 16); // on the pulled-in back-left building
   play2.rotation.y = Math.PI / 2;
   play2.castShadow = false;
   group.add(play2);
@@ -433,13 +439,16 @@ export function buildArcade() {
     a: "#3a1f6b", b: "#0c0830", accent: "#ff4fae", glyph: "▶",
     emissiveIntensity: 0.5, file: "arcade-billboard.png",
   });
-  billboard.position.set(0, 9, -27.6);
+  // Pulled in to z=-22.6 so the billboard + its legs/collider clear the seam road
+  // grid on the back tile edge. Panel still faces +Z toward the plaza interior so
+  // "PLAY AT THE CAFE" reads un-mirrored from the avenue.
+  billboard.position.set(0, 9, -22.6);
   billboard.castShadow = false;
   group.add(billboard);
   // Two support legs for the billboard frame.
-  group.add(cyl(0.35, 9, matMetal, -5.5, 4.5, -28.4));
-  group.add(cyl(0.35, 9, matMetal, 5.5, 4.5, -28.4));
-  colliders.push({ minX: -6, maxX: 6, minZ: -28.8, maxZ: -28 });
+  group.add(cyl(0.35, 9, matMetal, -5.5, 4.5, -23.0));
+  group.add(cyl(0.35, 9, matMetal, 5.5, 4.5, -23.0));
+  colliders.push({ minX: -6, maxX: 6, minZ: -23.0, maxZ: -22.3 });
 
   // --- Tall arcade cabinets along the curbs (standalone props) --------------
   // Placed beyond X = ±8 so they don't pinch the avenue. Reuse geometry/mats.
@@ -461,21 +470,18 @@ export function buildArcade() {
     g.add(box(0.06, 3.4, 0.06, matTrimCyan, -0.82, 1.8, 0.5, false));
     return g;
   }
-  // Cabinets line the OPEN plaza band (Z∈[-12,12]) on both sides of the avenue,
-  // at X=±8.5/±11 — clear of the avenue (X∈[-6,6]), clear of the cross lane
-  // (Z∈[-6,6]), and clear of the enlarged building masses (which occupy Z∈[-26,
-  // -12] and Z∈[12,26]). They face the avenue (rotY toward ∓X). Placed in two
-  // gentle rows so the plaza reads as a busy arcade midway.
-  // Cabinets stay in the open plaza band: 7 <= |z| <= 11 (clears the cross lane
-  // at |z|=6 and the building masses at |z|=12), at X=±8.5/±11.5 (clears the
-  // avenue). Booths sit at (∓9.5, ∓10); every cabinet keeps >=1.8 m from them.
+  // Cabinets line the OPEN plaza band on both sides of the avenue. After the
+  // setback the building masses occupy Z∈[9,23] and Z∈[-23,-9], so cabinets must
+  // stay at |z| <= 8 (also clears the cross lane at |z|=6). They face the avenue
+  // (rotY toward ∓X) at X=±8.5/±11.5 (clear of the avenue X∈[-6,6]). Booths sit
+  // at (∓9.5, ∓7.5); every cabinet keeps >=1.8 m from them.
   const cabSpots = [
-    // inner row at X=±8.5
-    [-8.5, -7, Math.PI], [-8.5, 7, Math.PI], [-8.5, 11, Math.PI],
-    [8.5, -7, 0], [8.5, 7, 0], [8.5, -11, 0],
+    // inner row at X=±8.5 (left booth at (-9.5,-7.5), right booth at (9.5,7.5))
+    [-8.5, 7.5, Math.PI], [-8.5, 0, Math.PI], [-8.5, 3.5, Math.PI],
+    [8.5, -7.5, 0], [8.5, 0, 0], [8.5, -3.5, 0],
     // outer row at X=±11.5, further from the avenue
-    [-11.5, -10, Math.PI], [-11.5, 10, Math.PI],
-    [11.5, 10, 0], [11.5, -10, 0],
+    [-11.5, -4, Math.PI], [-11.5, 4, Math.PI],
+    [11.5, 4, 0], [11.5, -4, 0],
   ];
   for (const [x, z, r] of cabSpots) {
     group.add(cabinet(x, z, r));
@@ -510,8 +516,10 @@ export function buildArcade() {
   colliders.push({ minX: -2.4, maxX: 2.4, minZ: -2.4, maxZ: 2.4 });
 
   // --- Neon perimeter poles (decorative pylons at corners) ------------------
+  // Pulled in to ±22.5 so they sit inside the setback and clear the corner road
+  // seams instead of standing in the street.
   const poleSpots = [
-    [-27, -27], [27, -27], [-27, 27], [27, 27],
+    [-22.5, -22.5], [22.5, -22.5], [-22.5, 22.5], [22.5, 22.5],
   ];
   for (const [x, z] of poleSpots) {
     group.add(cyl(0.3, 7, matPole, x, 3.5, z));

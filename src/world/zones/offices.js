@@ -224,9 +224,11 @@ export function buildOffices() {
   box(60, 0.2, 60, plaza, 0, -0.1, 0, false); // base pavement slab (receives shadow)
 
   // Grass quadrant pads (landscaped) sit under each building cluster corner.
-  const grassPads = [[-17, -17], [17, -17], [-17, 17], [17, 17]];
+  // Recentred to ±13 and trimmed to 18 m so they stay within the ±23 setback
+  // (edges reach ±22) — grass no longer spills out onto the seam road grid.
+  const grassPads = [[-13, -13], [13, -13], [-13, 13], [13, 13]];
   for (const [gx, gz] of grassPads) {
-    box(20, 0.06, 20, grass, gx, 0.03, gz, false);
+    box(18, 0.06, 18, grass, gx, 0.03, gz, false);
   }
   // Central cross paths (kept light/flat — NOT colliders, cars drive here).
   box(10, 0.08, 60, pathMat, 0, 0.05, 0, false); // N-S lane paving
@@ -322,18 +324,25 @@ export function buildOffices() {
     colliders.push({ minX: cx - podW / 2, maxX: cx + podW / 2, minZ: colMinZ, maxZ: colMaxZ });
   }
 
-  // Footprints enlarged to fill each quadrant plot. With the wider podium + the
-  // projecting entrance wing, the inner (plaza-facing) edges still leave a clear
-  // central cross: N-S lane ≈ 20 m, E-W lane ≈ 15 m (both well over the 6 m min).
-  makeTower(-18, -18, 14, 12, 20, glassA, "+z"); // SW block (tallest)
-  makeTower(18, -18, 13, 13, 17, glassB, "+z");  // SE block
-  makeTower(-18, 18, 12, 14, 18.5, glassC, "-z"); // NW block (faces plaza)
+  // SETBACK: a ROAD GRID runs on the tile seams (avenues at world X=±60,0 and
+  // cross-streets at world Z=35,95,…), each ~12 m wide + kerb/sidewalk, so the
+  // outer ~7 m of every tile edge is street. Buildings are pulled inward toward
+  // the plaza so that EVERY footprint AND its collider stays within LOCAL
+  // X,Z ∈ [-23,23] (a ~7 m setback from each edge of the [-30,30] tile), clearing
+  // the road + sidewalk. Quadrant centres moved from ±18 to ±15 and footprints
+  // trimmed so the widest mass (podium half-width) + outward face never passes ±23;
+  // the plaza-facing entrance wings project INWARD (toward centre), well clear of
+  // the edges. The central open cross stays clear (N-S lane and E-W lane each ≫6 m).
+  // Verify per building: outward edge = |centre| + (footprint+2.4)/2 ≤ 23.
+  makeTower(-15, -15, 13, 11, 20, glassA, "+z"); // SW block (tallest): X[-23,-7] Z back -22.7
+  makeTower(15, -15, 12, 12, 17, glassB, "+z");  // SE block: X[7,22.2] Z back -22.2
+  makeTower(-15, 15, 11, 13, 18.5, glassC, "-z"); // NW block (faces plaza): X[-21.7,…] Z fwd 22.7
   // ── NE quadrant: a lower-rise office pavilion — a FULL 3-storey volume (not a
   // facade). Solid concrete base + glass upper, projecting glazed entrance toward
   // the plaza (-z). Sized to fill the plot like the towers. ────────────────────
   {
-    const px = 18, pz = 18;          // plot center
-    const pvW = 14, pvD = 13, pvH = 9;  // substantial footprint + height
+    const px = 15, pz = 15;          // plot center (set back from the edge road grid)
+    const pvW = 13, pvD = 12, pvH = 9;  // substantial footprint + height
     const baseH = 3.2;               // solid masonry ground floor
     box(pvW + 1.2, baseH, pvD + 1.2, concrete, px, baseH / 2, pz, true);     // wide solid base
     box(pvW, pvH - baseH, pvD, glassB, px, baseH + (pvH - baseH) / 2, pz, true); // glass upper mass
@@ -429,7 +438,12 @@ export function buildOffices() {
     collide(fx, fz, 0.6, 0.6); // pole base (small)
   }
 
-  // ── Billboard: "BREW HAVEN" on a steel frame, facing the central plaza (+Z) ─
+  // ── Billboard: "BREW HAVEN" on a steel frame, on the SOUTH frontage. ────────
+  // Set back to z=-22 (clears the seam road + sidewalk; collider stays inside ±23)
+  // and rotated 180° so its readable face points OUTWARD toward the southern avenue
+  // (-Z). artPanel's text reads un-mirrored from its +Z face by default, so without
+  // this flip an approaching driver would see the mirrored DoubleSide back of the
+  // panel — i.e. a backwards "BREW HAVEN". The flip makes it read correctly.
   const billboard = artPanel(11, 5.5, "billboard", {
     title: "BREW HAVEN",
     sub: "OPEN DAILY",
@@ -440,14 +454,15 @@ export function buildOffices() {
     emissiveIntensity: 0.5,
     file: "billboard-brewhaven.png",
   });
-  billboard.position.set(0, 8, -27.5);
+  billboard.position.set(0, 8, -22);
+  billboard.rotation.y = Math.PI; // readable face points -Z (outward to the avenue), un-mirrored
   billboard.castShadow = true;
   group.add(billboard);
-  // billboard support legs + crossbar
-  box(0.4, 8, 0.4, metalDark, -4.5, 4, -28.2, true);
-  box(0.4, 8, 0.4, metalDark, 4.5, 4, -28.2, true);
-  box(11.5, 0.4, 0.4, metalDark, 0, 5.4, -28.2, true);
-  collide(0, -28.2, 11.5, 0.6);
+  // billboard support legs + crossbar (behind the panel, toward -Z; stay within ±23)
+  box(0.4, 8, 0.4, metalDark, -4.5, 4, -22.7, true);
+  box(0.4, 8, 0.4, metalDark, 4.5, 4, -22.7, true);
+  box(11.5, 0.4, 0.4, metalDark, 0, 5.4, -22.7, true);
+  collide(0, -22.7, 11.5, 0.6);
 
   // A second small directional sign greeting cars that arrive from the SOUTH (-Z)
   // up the avenue. It sits on the lane SHOULDER (out of the open E-W/N-S corridors)
@@ -471,11 +486,12 @@ export function buildOffices() {
   collide(waySignX, waySignZ, 0.6, 0.6); // small post footprint
 
   // ── Landscaping: trees on the grass pads + low planter hedges ─────────────
-  // A few conifer-ish trees (trunk + 2 foliage cones) reused geometry. Placed in
-  // the OUTER plot corners / tile margins, clear of the enlarged building masses.
+  // A few conifer-ish trees (trunk + 2 foliage cones) reused geometry. Placed on
+  // the plaza margins INSIDE the ±23 setback (so they clear the seam road grid and
+  // sit clear of the building masses), not out in the now-road tile margins.
   const treeSpots = [
-    [-27, -27], [27, -27], [-27, 27], [27, 27], // far quadrant corners
-    [-27, -2], [27, -2],                         // E/W tile-edge margins
+    [-22, -22], [22, -22], [-22, 22], [22, 22], // inner quadrant corners (within setback)
+    [-22, -2], [22, -2],                         // E/W plaza-margin pair (within setback)
   ];
   for (const [tx, tz] of treeSpots) {
     const trunk = new THREE.Mesh(poleGeo, trunkMat);

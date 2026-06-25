@@ -70,9 +70,9 @@ export function createRides(scene, opts) {
         local.character.group.rotation.y = s.facing;
         parkCollider(true);
         mode = "walk";
-        return { mode, prompt: "Press E to drive", overrideWalk: false };
+        return { mode, prompt: "🚗 Press E to drive", overrideWalk: false };
       }
-      return { mode, prompt: "WASD to drive · E to get out", overrideWalk: true };
+      return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
     }
 
     if (mode === "skate") {
@@ -81,7 +81,7 @@ export function createRides(scene, opts) {
         mode = "walk";
         return { mode, prompt: null, overrideWalk: false };
       }
-      return { mode, prompt: "Skating! · E to hop off", overrideWalk: false };
+      return { mode, prompt: "🛹 Skating! · E to hop off", overrideWalk: false };
     }
 
     // mode === "walk"
@@ -90,17 +90,17 @@ export function createRides(scene, opts) {
         parkCollider(false);
         car.resetCamera();
         mode = "drive";
-        return { mode, prompt: "WASD to drive · E to get out", overrideWalk: true };
+        return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
       if (outdoors) {
         mountBoard(local);
         mode = "skate";
-        return { mode, prompt: "Skating! · E to hop off", overrideWalk: false };
+        return { mode, prompt: "🛹 Skating! · E to hop off", overrideWalk: false };
       }
     }
     let prompt = null;
-    if (nearCar) prompt = "Press E to drive";
-    else if (outdoors && !local.sitting) prompt = "Press E to skateboard";
+    if (nearCar) prompt = "🚗 Press E to drive";
+    else if (outdoors && !local.sitting) prompt = "🛹 Press E to skateboard";
     return { mode, prompt, overrideWalk: false };
   }
 

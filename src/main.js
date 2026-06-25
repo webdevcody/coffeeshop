@@ -438,9 +438,13 @@ function frame() {
     const ride = rides.update(dt, camera, controls, local);
     if (ride.mode === "drive") {
       if (local.character?.group) local.character.group.visible = false;
-      hud.setSitPrompt(ride.prompt);
+      // The drive HUD (bottom-right) carries the speedometer + "WASD / E exit"
+      // hint while driving, so suppress the bottom-center sit prompt to avoid
+      // showing the same hint twice.
+      hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
+      hud.setDriveHud(true, rides.car.state.speed); // speedometer + drive hint
     } else {
       const seatedView = syncSeatedCamera();
       local.update(dt, camera, seatedView);
@@ -455,7 +459,11 @@ function frame() {
       // you're holding (and the drop hint) the rest of the time.
       hud.setShopVisible(nearBar() && !local.sitting);
       hud.setHeldItem(local.heldName());
+      hud.setDriveHud(false); // not driving — hide the speedometer
     }
+    // City minimap: redraw from this frame's positions (local arrow + facing,
+    // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
+    updateMinimap();
     maybeSendState();
   } else {
     // Gentle interior orbit of the room while the join card is up.
@@ -478,6 +486,37 @@ function frame() {
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
   requestAnimationFrame(frame);
+}
+
+// Feed the HUD minimap this frame's positions. Reuses scratch objects/array so
+// the per-frame redraw allocates nothing: _mmLocal/_mmCar are mutated in place
+// and _mmRemotes is refilled (length reset, not reallocated) each call.
+const _mmLocal = { x: 0, z: 0, facing: 0 };
+const _mmCar = { x: 0, z: 0, active: false };
+const _mmRemotes = [];
+function updateMinimap() {
+  if (!local) return;
+  _mmLocal.x = local.pos.x;
+  _mmLocal.z = local.pos.z;
+  _mmLocal.facing = local.facing;
+  // Refill the remote-dot list in place (grow lazily; never shrink the backing array).
+  const list = remotes.list();
+  let n = 0;
+  for (const e of list) {
+    const p = e.character.group.position;
+    let slot = _mmRemotes[n];
+    if (!slot) { slot = { x: 0, z: 0 }; _mmRemotes[n] = slot; }
+    slot.x = p.x;
+    slot.z = p.z;
+    n++;
+  }
+  _mmRemotes.length = n;
+  // The car: bright while someone is driving it (rides.mode === "drive").
+  const cs = rides.car.state;
+  _mmCar.x = cs.x;
+  _mmCar.z = cs.z;
+  _mmCar.active = rides.mode === "drive";
+  hud.updateMinimap(_mmLocal, _mmRemotes, _mmCar);
 }
 
 function maybeSendState() {

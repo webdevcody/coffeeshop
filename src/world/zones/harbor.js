@@ -117,13 +117,17 @@ export function buildHarbor() {
     addBox(cylGeo, matPile, -3, -0.9, pz, 0.7, 1.8, 0.7, true);
   }
 
-  // ── Warehouse (north-east corner) ─────────────────────────────────────────
-  const whX = 16, whZ = -22, whW = 18, whD = 12, whH = 7;
+  // ── Warehouse (north-east of the quay) ────────────────────────────────────
+  // SET BACK ~7m from every tile edge: footprint X[9,23] Z[-23,-14] sits clear
+  // of the road grid on the seams (X=±30 → road; Z=-30 → cross-street). Modestly
+  // narrowed (18→14) and shallowed (12→9) from its over-large size so it clears
+  // the road yet stays a full 7m-tall solid mass. Front still faces the quay (+Z).
+  const whX = 16, whZ = -18.5, whW = 14, whD = 9, whH = 7;
   const warehouse = addBox(boxGeo, matWarehouse, whX, whH / 2 - 0.3, whZ, whW, whH, whD);
   // ridged roof
   addBox(boxGeo, matRoof, whX, whH - 0.3, whZ, whW + 0.6, 0.5, whD + 0.6);
   for (let i = 0; i < 6; i++) {
-    addBox(boxGeo, matRoof, whX - whW / 2 + 1.6 + i * 2.9, whH + 0.1, whZ, 0.4, 0.5, whD + 0.6, false);
+    addBox(boxGeo, matRoof, whX - whW / 2 + 1.4 + i * 2.25, whH + 0.1, whZ, 0.4, 0.5, whD + 0.6, false);
   }
   colliders.push({ minX: whX - whW / 2, maxX: whX + whW / 2, minZ: whZ - whD / 2, maxZ: whZ + whD / 2 });
 
@@ -213,19 +217,22 @@ export function buildHarbor() {
     return { minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 };
   }
 
-  // Building 1 — Port Authority / Harbour Master's office (2-storey block) in the
-  // open quay gap between the container stack (west) and the crane/warehouse (east).
-  // Footprint X[-8,2] Z[-28.5,-17.5]: clear of containers (maxX -11.5), the crane
-  // base (X 4.2–7.8) and the warehouse (minX 7); 3.5m walk lane to the pier head.
-  colliders.push(makeDockBuilding(-3, -23, 10, 11, 8, matBldgA, {
+  // Building 1 — Port Authority / Harbour Master's office (2-storey block).
+  // SET BACK onto the quay band Z[-23,-14] (depth trimmed 11→9): footprint
+  // X[-8,2] Z[-23,-14] clears the road grid (north cross-street on the Z=-30
+  // seam) while staying a full 8m-tall solid block. Front faces the quay (+Z).
+  // Sits in the gap between the container stack (west) and the crane (X 4.2–7.8).
+  colliders.push(makeDockBuilding(-3, -18.5, 10, 9, 8, matBldgA, {
     text: "PORT AUTHORITY", bg: "#13414f", fg: "#ffe08a",
     file: "harbor-port-authority.png", emissiveIntensity: 0.5,
   }));
 
   // Building 2 — Ship Chandlery storefront with REAL depth (not a card): a full
-  // 7×12×6.5m volume tucked into the open west end of the quay.
-  // Footprint X[-29.5,-22.5] Z[-28,-16]: snug west of the container stack (minX -22).
-  colliders.push(makeDockBuilding(-26, -22, 7, 12, 6.5, matBldgB, {
+  // 7×9×6.5m volume tucked into the west end of the quay.
+  // SET BACK to footprint X[-23,-16] Z[-23,-14]: hugs the west road kerb (X=-30
+  // seam) at minX -23 and the north cross-street (Z=-30 seam) at minZ -23, fully
+  // clearing both roads + sidewalks. Front faces the quay (+Z).
+  colliders.push(makeDockBuilding(-19.5, -18.5, 7, 9, 6.5, matBldgB, {
     text: "SHIP CHANDLERY", bg: "#5a3a22", fg: "#ffd23f",
     file: "harbor-chandlery.png", emissiveIntensity: 0.5,
   }));
@@ -245,22 +252,23 @@ export function buildHarbor() {
     group.add(inst);
   }
 
-  // ── Stacked shipping containers (north-west, a bright colorful block) ─────
-  // Two ground rows + a partial second tier. Tight collider on the stack base.
-  const stackX = -18, stackZ = -22;
+  // ── Stacked shipping containers (a bright colorful block on the quay) ─────
+  // SET BACK into the quay gap between the Chandlery (maxX -16) and the Port
+  // Authority (minX -8): a compact single-X-column stack at X≈[-15,-9], rows in
+  // Z and tiers in Y, all inside the road-clear band X,Z∈[-23,-14]. Each 6m-long
+  // container (X) faces its door +X toward the lane. Tight collider on the base.
+  const stackX = -12, stackZ = -18.5;
   const place = [
-    // [dx, tier, dz, colorIndex]
-    [0, 0, 0, 0], [0, 0, 3, 1], [0, 0, 6, 2],
-    [7, 0, 0, 3], [7, 0, 3, 4], [7, 0, 6, 0],
-    [0, 1, 0, 4], [0, 1, 3, 3], [0, 1, 6, 1],
-    [7, 1, 1.5, 2], [3.5, 1, 4.5, 0],
-    [0, 2, 1.5, 1], [7, 2, 4.5, 4], // a taller, more jumbled third tier
+    // [dx, tier, dz, colorIndex] — containers are 6(X)×2.5(Y)×2.5(Z)
+    [0, 0, -3, 0], [0, 0, 0, 1], [0, 0, 3, 2],
+    [0, 1, -3, 4], [0, 1, 0, 3], [0, 1, 3, 1],
+    [0, 2, -1.5, 2], [0, 2, 1.5, 4], // a taller, jumbled third tier
   ];
   // Thin recessed end-doors give each container ribbed-box detail cheaply.
   const doorGeo = new THREE.BoxGeometry(0.06, 2.1, 2.1);
   const doorMat = new THREE.MeshStandardMaterial({ color: "#2b2b2b", roughness: 0.85 });
   for (const [dx, tier, dz, ci] of place) {
-    const px = stackX + dx - 3.5, py = 1.25 + tier * 2.55, pz = stackZ + dz - 3;
+    const px = stackX + dx, py = 1.25 + tier * 2.55, pz = stackZ + dz;
     const m = new THREE.Mesh(containerGeo, containerMats[ci]);
     m.position.set(px, py, pz);
     m.castShadow = true;
@@ -273,7 +281,8 @@ export function buildHarbor() {
     door.position.set(px + 3.04, py, pz);
     group.add(door);
   }
-  colliders.push({ minX: stackX - 4, maxX: stackX + 6.5, minZ: stackZ - 4.5, maxZ: stackZ + 5 });
+  // Base footprint collider: X[-15.5,-8.5] Z[-22.5,-14.5] — inside [-23,23].
+  colliders.push({ minX: stackX - 3.5, maxX: stackX + 3.5, minZ: stackZ - 4, maxZ: stackZ + 4 });
 
   // ── Dockside crane (tall): tower + boom + hanging cable & hook ─────────────
   const craneBaseX = 6, craneBaseZ = -14;

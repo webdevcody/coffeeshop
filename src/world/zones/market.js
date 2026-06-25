@@ -217,7 +217,9 @@ export function buildMarket() {
   // every 7 m along X (5 per row) so a car has a clear >=8 m lane down the
   // middle. Counters/tops/posts are built as plain meshes; awnings + produce +
   // bulbs are instanced.
-  const stallX = [-21, -10.5, 0, 10.5, 21];
+  // Outer stalls pulled to |x|=20.5 so their 4.4 m collider (x±2.2) ends at
+  // |x|=22.7 — inside the ±23 setback that clears the seam road + sidewalk.
+  const stallX = [-20.5, -10.5, 0, 10.5, 20.5];
   const rows = [{ z: 9 }, { z: -9 }];
   const stalls = []; // {x,z,color,peak,awnH,umbrella}
   let ci = 0;
@@ -524,7 +526,7 @@ export function buildMarket() {
   // row (|z| ~ 11.5) so the central driving corridor Z∈[-4,4] stays clear.
   const HALL_Y = 7.0;                 // eave height
   const RIDGE_Y = 9.2;                // ridge (peak) height
-  const colXs = [-21, -10.5, 0, 10.5, 21];
+  const colXs = [-20.5, -10.5, 0, 10.5, 20.5]; // match the (set-in) stall columns
   const colZ = 11.6;                  // outside both rows, off the lane
 
   // Support columns (solid mass -> real colliders) at each bay corner.
@@ -621,28 +623,34 @@ export function buildMarket() {
   group.add(bulbs);
 
   // --- Substantial shop buildings flanking the street ---------------------
-  // Four full-volume brick storefronts anchor the tile edges (well back from the
-  // lanes and stall rows). Each is a real 3D block — generous WIDTH, DEPTH and
-  // HEIGHT — with its detailed storefront (sign, awning, door, display windows)
-  // on the FRONT face turned toward the central lane (z≈0):
+  // Four full-volume brick storefronts anchor the tile edges (set BACK from the
+  // seam-road grid). Each is a real 3D block — generous WIDTH, DEPTH and HEIGHT —
+  // with its detailed storefront (sign, awning, door, display windows) on the
+  // FRONT face turned toward the central lane (z≈0):
   //   • north buildings (z>0): front points -Z → ry = π
   //   • south buildings (z<0): front points +Z → ry = 0
-  // Footprints sit at |z| ≈ 21 (back edge ≤ 30, front ≥ 16.5 — clear of the
-  // hall columns at z=±11.6 and the stalls at z=±9).
+  // SETBACK: a road grid runs on the TILE SEAMS (avenues at world X=-60,0,60;
+  // cross-streets at world Z=35,95,155,215), each ~12 m wide + kerb/sidewalk.
+  // To clear that road every footprint (and its collider) must stay within LOCAL
+  // X,Z ∈ [-23,23] — a ~7 m setback from each of the four tile edges ([-30,30]).
+  // X is already inside ±23 for all four; the buildings sat at |z|=21 which let a
+  // d=8 footprint reach z=±25 (into the cross-street). Pull them in to |z|=18.5
+  // so the BACK face sits ≤22.5 (clear of the road+sidewalk) while the FRONT face
+  // (|z|≈14.5) still clears the hall columns at z=±11.6 and the stalls at z=±9.
   makeShopBuilding(group, colliders, dummy, {
-    x: -16, z: 21, ry: Math.PI, w: 11, d: 8, h: 6.6,
+    x: -16, z: 18.5, ry: Math.PI, w: 11, d: 8, h: 6.6,
     text: "FRESH GROCER", bg: "#2f9e6e", accent: "#2f9e6e", wallMat: brickMat,
   });
   makeShopBuilding(group, colliders, dummy, {
-    x: 14, z: 21, ry: Math.PI, w: 10, d: 7.5, h: 7.2,
+    x: 14, z: 18.5, ry: Math.PI, w: 10, d: 7.5, h: 7.2,
     text: "CORNER MART", bg: "#3f7fd0", accent: "#3f7fd0", wallMat: stuccoMat,
   });
   makeShopBuilding(group, colliders, dummy, {
-    x: -14, z: -21, ry: 0, w: 10, d: 7.5, h: 6.2,
+    x: -14, z: -18.5, ry: 0, w: 10, d: 7.5, h: 6.2,
     text: "BAKERY", bg: "#c4302b", accent: "#c4302b", wallMat: brickMat,
   });
   makeShopBuilding(group, colliders, dummy, {
-    x: 16, z: -21, ry: 0, w: 11, d: 8, h: 7.0,
+    x: 16, z: -18.5, ry: 0, w: 11, d: 8, h: 7.0,
     text: "DELI", bg: "#e8a93a", accent: "#e8a93a", wallMat: brickMat2,
   });
 

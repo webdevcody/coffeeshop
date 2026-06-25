@@ -215,6 +215,16 @@ export function createGame(ctx) {
   const gx = (col) => -BOARD_HALF + (col + 0.5) * cell;
   const gz = (row) => -BOARD_HALF + (row + 0.5) * cell;
 
+  // Unit vector from the board centre toward a colour's home quadrant (canonical
+  // layoutRoot frame). Shared by the jail rails (#9) and the die turn-pointer (#1).
+  function dieDirOf(c) {
+    const [qc, qr] = QUAD[c];
+    const dx = gx(qc) - gx(7);
+    const dz = gz(qr) - gz(7);
+    const len = Math.hypot(dx, dz) || 1;
+    return { x: dx / len, z: dz / len };
+  }
+
   // ---- track tiles (visual path) ------------------------------------------
   const tileGeo = keep(new THREE.BoxGeometry(cell * 0.9, 0.004, cell * 0.9));
   function addTile(col, row, mat, y = TOP + 0.002) {
@@ -291,7 +301,7 @@ export function createGame(ctx) {
       base.userData.cell = { color: c, token: i };
       layoutRoot.add(tg);
       tokenMeshes[c].push(tg);
-      tokAnim[c][i] = { x: 0, z: 0, cx: 0, cz: 0, t: 1, moving: false, lift: 0, pop: 0 };
+      tokAnim[c][i] = { x: 0, z: 0, cx: 0, cz: 0, t: 1, moving: false, lift: 0, pop: 0, jailT: 0, jx: 0, jz: 0 };
     }
   }
 
@@ -334,6 +344,53 @@ export function createGame(ctx) {
     slot.mesh.visible = true;
   }
 
+  // ---- captured-token jail rails (steal the checkers tray pattern, #9) -----
+  // A thin per-colour rail seated on the frame just outside each colour's home
+  // corner. On a capture (detected via the prevTokens diff) the struck token arcs
+  // to a jail slot, rests there ~0.6 s, then settles back into its yard — so a
+  // capture reads as a deliberate "sent to jail" beat for host/guest/spectator
+  // alike (pure diff-driven). Rails live in layoutRoot so jail slot coords share
+  // the token meshes' frame; the per-colour quarter-turn carries each rail to its
+  // own corner regardless of which seat is local.
+  const jailMat = {};
+  const jailSlots = {};   // colour -> [{x,z}, x4]  (layoutRoot-local rest spots)
+  const railLen = cell * 1.7;
+  const jailRailGeo = keep(new THREE.BoxGeometry(railLen, 0.004, cell * 0.5));
+  const jailEdge = BOARD_HALF + cell * 0.42;       // on the frame shoulder
+  // Outward radial direction for each colour's home corner (canonical frame).
+  for (const c of COLORS) {
+    jailMat[c] = keep(standard(THREE, PALETTE.ludoDark[c], { roughness: 0.7, emissive: PALETTE.ludo[c], emissiveIntensity: 0.18 }));
+    const dir = dieDirOf(c);                        // unit vector centre -> quad
+    // place the rail on the frame, offset outward along the corner's radial dir.
+    const rx = gx(7) + dir.x * jailEdge;
+    const rz = gz(7) + dir.z * jailEdge;
+    const rail = meshOf(THREE, jailRailGeo, jailMat[c], false);
+    rail.position.set(rx, TOP + 0.004, rz);
+    // orient the long axis perpendicular to the radial so it hugs the corner.
+    rail.rotation.y = Math.atan2(dir.x, dir.z) + Math.PI / 2;
+    layoutRoot.add(rail);
+    // 4 evenly spaced slots along the rail's long axis (perpendicular to radial).
+    const px = -dir.z, pz = dir.x;                  // perpendicular unit vector
+    jailSlots[c] = [];
+    for (let i = 0; i < 4; i++) {
+      const t = (i - 1.5) * (railLen / 4);
+      jailSlots[c].push({ x: rx + px * t, z: rz + pz * t });
+    }
+  }
+
+  // ---- last-move landing ring (#10) ---------------------------------------
+  // One shared flat ring that briefly haloes the tile a token just landed on, so
+  // the eye is drawn to what changed. Driven from the prevTokens diff (lastMoveTok),
+  // so host/guest/spectator all see it. Tinted to the moved token's colour.
+  const lastMoveRingGeo = keep(new THREE.TorusGeometry(cell * 0.5, cell * 0.06, 8, 24));
+  const lastMoveRingMat = keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.85, transparent: true, opacity: 0.0, depthWrite: false }));
+  const lastMoveRing = meshOf(THREE, lastMoveRingGeo, lastMoveRingMat, false);
+  lastMoveRing.rotation.x = Math.PI / 2;
+  lastMoveRing.visible = false;
+  layoutRoot.add(lastMoveRing);
+  let lastMoveT = 0;          // countdown while the landing ring shows
+  let lastMoveColor = "red";  // colour of the token that just moved (tints ring)
+
   // ---- die (cube with pip faces) ------------------------------------------
   const dieSize = cell * 1.3;
   const dieGeo = keep(new THREE.BoxGeometry(dieSize, dieSize, dieSize));
@@ -370,9 +427,19 @@ export function createGame(ctx) {
       pipPool[i].visible = true;
     }
   }
-  // Float the die a little higher than before so its value never visually
-  // collides with the finished-token fan around the centre plate (I5).
-  const dieRestY = TOP + dieSize * 0.95;
+  // Float the die above the board, and slide it OFF the dead-centre toward the
+  // active player's home quadrant (#1/#12). This (a) lifts the die clear of the
+  // finished-token fan around the centre plate, and (b) doubles as an unambiguous
+  // "it's this seat's turn" pointer that reads from every chair. The XZ target is
+  // recomputed each render in dieTarget(); rest Y stays fixed.
+  const dieRestY = TOP + dieSize * 1.05;
+  // Distance from centre toward the active quadrant — large enough to clear the
+  // finish fan (radius cell*0.78 + cone base) but inside the home columns.
+  const DIE_PUSH = cell * 2.1;
+  function dieTarget() {
+    const dir = dieDirOf(curColor(s));
+    return { x: gx(7) + dir.x * DIE_PUSH, z: gz(7) + dir.z * DIE_PUSH };
+  }
   dieGroup.position.set(gx(7), dieRestY, gz(7));
   dieGroup.visible = false;
   layoutRoot.add(dieGroup);
@@ -381,25 +448,27 @@ export function createGame(ctx) {
   let labelCv = null, labelTex = null, labelMat = null, labelMesh = null;
   try {
     labelCv = document.createElement("canvas");
-    labelCv.width = 320; labelCv.height = 72;
+    labelCv.width = 320; labelCv.height = 96;
     labelTex = keep(new THREE.CanvasTexture(labelCv));
     labelTex.colorSpace = THREE.SRGBColorSpace;
     labelMat = keep(new THREE.MeshBasicMaterial({ map: labelTex, transparent: true }));
     const lw = BOARD_SIZE * 0.62;
-    const labelGeo = keep(new THREE.PlaneGeometry(lw, lw * (72 / 320)));
+    const labelGeo = keep(new THREE.PlaneGeometry(lw, lw * (96 / 320)));
     labelMesh = meshOf(THREE, labelGeo, labelMat, false);
     labelMesh.rotation.x = -Math.PI / 2;
     // Placard sits on the canonical near (-Z) edge of the OUTER group, so after
     // orientFor(seatRy) it lands at the local player's near edge. It is NOT a
     // child of layoutRoot, so it never inherits the colour quarter-turn.
-    labelMesh.position.set(0, TOP + 0.004, -BOARD_HALF - 0.05);
+    // Pushed out to -BOARD_HALF-0.067 so the taller (96px) placard's inner edge
+    // still clears the board edge (-0.35) — inner edge ≈ -0.352, ~2 mm of margin.
+    labelMesh.position.set(0, TOP + 0.004, -BOARD_HALF - 0.067);
     group.add(labelMesh);
   } catch { /* no DOM (test/headless) — skip placard */ }
 
   function refreshLabel() {
     if (!labelCv) return;
     const g = labelCv.getContext("2d");
-    g.clearRect(0, 0, 320, 72);
+    g.clearRect(0, 0, 320, 96);
     let text, accent = "#f0e4cf";
     if (myColor == null) {
       text = "Spectating";
@@ -414,30 +483,64 @@ export function createGame(ctx) {
         text = `${name} — ${COLOR_NAME[curColor(s)]}'s turn`;
       }
     }
+    const showBanner = bannerT > 0 && bannerText;
     g.save();
     // The placard is a flat plane on the canonical near (-Z) edge of the OUTER
     // group, which per-seat self-orientation always brings to the seated viewer.
     // After rotation.x = -PI/2 its top face reads 180° rotated from the seat, so
     // text shows upside-down. Pre-rotate the canvas content 180° once so it reads
     // upright for every chair (matches ultimatettt.js / battleship.js).
-    g.translate(160, 36);
+    g.translate(160, 48);
     g.rotate(Math.PI);
-    g.translate(-160, -36);
+    g.translate(-160, -48);
     g.fillStyle = "rgba(26,18,10,0.84)";
     const rr = 14;
     g.beginPath();
-    g.moveTo(rr, 0); g.arcTo(320, 0, 320, 72, rr); g.arcTo(320, 72, 0, 72, rr);
-    g.arcTo(0, 72, 0, 0, rr); g.arcTo(0, 0, 320, 0, rr); g.closePath(); g.fill();
+    g.moveTo(rr, 0); g.arcTo(320, 0, 320, 96, rr); g.arcTo(320, 96, 0, 96, rr);
+    g.arcTo(0, 96, 0, 0, rr); g.arcTo(0, 0, 320, 0, rr); g.closePath(); g.fill();
     g.font = "bold 30px sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = accent;
-    g.fillText(text, 160, 38);
+    // Lift the identity line up a touch when a banner shows so both read clearly.
+    g.fillText(text, 160, showBanner ? 30 : 48);
+    if (showBanner) {
+      // fade the banner over its tail so it dissolves rather than blinks out.
+      const a = Math.min(1, bannerT / 0.35);
+      g.globalAlpha = a;
+      g.font = "bold 22px sans-serif";
+      g.fillStyle = bannerColor;
+      g.fillText(bannerText, 160, 70);
+      g.globalAlpha = 1;
+    }
     g.restore();
     labelTex.needsUpdate = true;
   }
 
   // ---- token placement ----------------------------------------------------
+  const idxKey = (color, idx) => COLORS.indexOf(color) * 4 + idx;
+  // All in-play tokens sharing the SAME visual grid cell as (color,step), as a
+  // stable-ordered list of idxKeys (sorted, so every viewer fans them identically).
+  // Used only to offset z-fighting co-located cones (#5/#6) — never affects rules.
+  function coLocated(color, step) {
+    const cl = cellOf(color, step);
+    if (!cl) return [];
+    const peers = [];
+    for (const c of COLORS) {
+      if (!inPlay(c)) continue;
+      const toks = s.tokens[c];
+      if (!toks) continue;
+      for (let i = 0; i < 4; i++) {
+        const st = toks[i];
+        if (st < 1 || st > 57) continue;
+        const ocl = cellOf(c, st);
+        if (ocl && ocl[0] === cl[0] && ocl[1] === cl[1]) peers.push(idxKey(c, i));
+      }
+    }
+    peers.sort((a, b) => a - b);
+    return peers;
+  }
+
   function tokenPos(color, idx) {
     const step = s.tokens[color] ? s.tokens[color][idx] : 0;
     if (step === 0) {
@@ -447,12 +550,39 @@ export function createGame(ctx) {
     if (step >= 58) {
       // fan finished tokens around the centre; add a per-colour phase so finished
       // cones of different colours don't land on the same point and z-fight in
-      // 3-4 player endgames.
+      // 3-4 player endgames. Radius widened to cell*0.78 (from 0.5) so 4 cones of
+      // one colour no longer overlap bases (#2) and so the floating die's footprint
+      // at the centre clears the fan (#1).
       const ang = (idx / 4) * Math.PI * 2 + COLORS.indexOf(color) * (Math.PI / 8);
-      return { x: gx(7) + Math.cos(ang) * cell * 0.5, z: gz(7) + Math.sin(ang) * cell * 0.5 };
+      return { x: gx(7) + Math.cos(ang) * cell * 0.78, z: gz(7) + Math.sin(ang) * cell * 0.78 };
     }
     const cl = cellOf(color, step);
-    return { x: gx(cl[0]), z: gz(cl[1]) };
+    let x = gx(cl[0]);
+    let z = gz(cl[1]);
+    // Same-square stacking fan (#5/#6): when >1 token shares this exact board cell
+    // (own doubled square OR opponents co-located on a safe square) the cones land
+    // on the same point and z-fight, reading as one piece. Spread co-located tokens
+    // along a short perpendicular line so each piece stays visible. Purely a render
+    // offset — capture logic keys on the square, not the mesh, so rules are unchanged.
+    if (step >= 1 && step <= 57) {
+      const peers = coLocated(color, step);
+      if (peers.length > 1) {
+        const myRank = peers.indexOf(idxKey(color, idx));
+        const spread = cell * 0.2;
+        const o = (myRank - (peers.length - 1) / 2) * spread;
+        // Spread along an axis derived from the SHARED cell (perpendicular to the
+        // cell's radial from the board centre) so every co-located token — even of
+        // different colours — fans along the SAME line into a tidy row, never a
+        // scatter. Falls back to the X axis at the dead centre.
+        const rdx = x - gx(7), rdz = z - gz(7);
+        const rl = Math.hypot(rdx, rdz);
+        const px = rl > 1e-4 ? -rdz / rl : 1;
+        const pz = rl > 1e-4 ? rdx / rl : 0;
+        x += px * o;
+        z += pz * o;
+      }
+    }
+    return { x, z };
   }
 
   // ---- render -------------------------------------------------------------
@@ -471,16 +601,27 @@ export function createGame(ctx) {
   let prevTokens = null;     // { color: [steps] } from the last render
   let prevDie = null;        // last shown die value (null when hidden)
   let prevPhase = "play";
+  let prevTurn = 0;          // last rendered turn index (banner diff, #11)
+  let prevSixes = 0;         // last rendered six-streak (three-6s forfeit banner, #8)
   let winFx = 0;             // countdown that drives the win celebration
   let dieAnimT = 0;          // die tumble timer (>0 while tumbling)
   let myMovable = [];        // cached indices of the LOCAL colour's movable tokens
   let hoverTok = -1;         // index of the locally-hovered own token (I2)
+  // Transient micro-banner shown under the placard for ~1.4 s (#11). Diff-driven
+  // off the snapshot stream so every viewer (host/guest/spectator) sees the same
+  // "Bonus roll!" / "No move" beat. { text, color } while active; time in bannerT.
+  let bannerT = 0;
+  let bannerText = "";
+  let bannerColor = "#f0e4cf";
+  let lastMoveTok = null;    // { color, idx } of the most recently advanced token (#10)
 
   function render() {
     const active = curColor(s);
     const activeSeat = curSeat(s);
 
     // --- detect snapshot deltas for flourishes (host/guest/spectator-safe) ---
+    let captureHappened = false;
+    let someTokenAdvanced = false;
     if (prevTokens) {
       for (const c of COLORS) {
         if (!inPlay(c)) continue;
@@ -488,18 +629,30 @@ export function createGame(ctx) {
         if (!now || !was) continue;
         for (let i = 0; i < 4; i++) {
           // capture: an opponent token was reset to the yard (>0 -> 0). Burst the
-          // glow at the square where it was hit (its prior board cell).
+          // glow at the square where it was hit (its prior board cell), then send
+          // the struck token on a jail detour before it settles in the yard (#9).
           if (was[i] > 0 && was[i] <= 52 && now[i] === 0) {
             const cl = cellOf(c, was[i]);
             if (cl) spawnFx(gx(cl[0]), gz(cl[1]), c);
             const a = tokAnim[c][i];
-            if (a) a.pop = 1;            // scale-pop as it arcs home
+            if (a) {
+              a.pop = 1;                 // scale-pop as it arcs home
+              const slot = jailSlots[c] && jailSlots[c][i];
+              if (slot) { a.jailT = 0.6; a.jx = slot.x; a.jz = slot.z; }
+            }
+            captureHappened = true;
           } else if (was[i] < 58 && now[i] === 58) {
             // finish: a token reached the centre.
             const fp = tokenPos(c, i);
             spawnFx(fp.x, fp.z, c);
             const a = tokAnim[c][i];
             if (a) a.pop = 1;
+            lastMoveTok = { color: c, idx: i }; lastMoveColor = c; lastMoveT = 1.1;
+          } else if (now[i] > was[i] && now[i] > 0) {
+            // a token advanced: mark it the just-moved piece so its landing tile
+            // gets a brief halo ring (#10). Diff-driven -> all viewers see it.
+            someTokenAdvanced = true;
+            lastMoveTok = { color: c, idx: i }; lastMoveColor = c; lastMoveT = 1.1;
           }
         }
       }
@@ -509,7 +662,31 @@ export function createGame(ctx) {
 
     // fresh die roll: trigger a short tumble (I1).
     if (s.die != null && prevDie !== s.die) dieAnimT = 0.42;
+
+    // --- transient micro-banner (#11), purely diff-driven ---
+    // A snapshot that CLEARS the die (prevDie set -> now null) in the play phase
+    // tells the story of the prior roll's outcome:
+    //   * turn unchanged  -> the same player keeps rolling: a bonus (6 or capture).
+    //   * turn advanced + nobody moved -> the roll had no legal move: passing.
+    if (prevTokens != null && s.phase === "play" && prevDie != null && s.die == null) {
+      if (s.turn === prevTurn) {
+        bannerText = captureHappened ? "Capture! Bonus roll" : "Bonus roll!";
+        bannerColor = PALETTE.ludo[curColor(s)] || "#f0e4cf";
+        bannerT = 1.4;
+      } else if (prevDie === 6 && prevSixes >= 3) {
+        // the prior snapshot was the third six in a row -> turn forfeited (#8).
+        bannerText = "Three 6s — turn passes";
+        bannerColor = "#e8dcc4";
+        bannerT = 1.4;
+      } else if (!someTokenAdvanced && !captureHappened) {
+        bannerText = "No move — passing";
+        bannerColor = "#e8dcc4";
+        bannerT = 1.4;
+      }
+    }
     prevDie = s.die;
+    prevTurn = s.turn;
+    prevSixes = s.sixes | 0;
 
     // Iterate ALL colours (meshes exist for every colour); inPlay() hides those
     // not present in the live wire s.order, so a snapshot with more colours than
@@ -560,6 +737,13 @@ export function createGame(ctx) {
 
     // die
     const showDie = s.die != null;
+    // Seed the die's XZ to the active quadrant target the frame it (re)appears so
+    // it pops in at the turn pointer instead of sliding from the previous seat.
+    if (showDie && !dieGroup.visible) {
+      const tgt = dieTarget();
+      dieGroup.position.x = tgt.x;
+      dieGroup.position.z = tgt.z;
+    }
     dieGroup.visible = showDie;
     if (showDie) {
       const col = PALETTE.ludo[active] || "#fafafa";
@@ -606,7 +790,16 @@ export function createGame(ctx) {
         const tg = tokenMeshes[c][i];
         if (!a || !tg) continue;
         let y = TOP;
-        if (a.moving) {
+        // jail detour (#9): a captured token first arcs to its jail slot and rests
+        // there while jailT counts down, THEN releases toward its yard target. The
+        // ease target is the jail slot during the detour, the real (x,z) after.
+        let tx = a.x, tz = a.z;
+        if (a.jailT > 0) {
+          a.jailT = Math.max(0, a.jailT - d);
+          tx = a.jx; tz = a.jz;
+          a.moving = false;          // the jail arc owns the lift while parked
+          y = TOP + cell * 0.06;     // sit slightly proud on the rail
+        } else if (a.moving) {
           a.t = Math.min(1, a.t + d * 3.2);
           y = TOP + Math.sin(a.t * Math.PI) * cell * 0.45; // hop arc over the move
           if (a.t >= 1) { a.moving = false; a.cx = a.x; a.cz = a.z; }
@@ -614,8 +807,8 @@ export function createGame(ctx) {
         // critically-damped glide of the display position toward the target so a
         // step reads as a smooth hop and a capture as an arc back to the yard.
         const k = Math.min(1, d * 11);
-        a.cx += (a.x - a.cx) * k;
-        a.cz += (a.z - a.cz) * k;
+        a.cx += (tx - a.cx) * k;
+        a.cz += (tz - a.cz) * k;
         // hover lift for the locally-hovered own movable token (I2).
         const hovered = c === myColor && hoverTok === i;
         const liftTarget = hovered ? cell * 0.35 : 0;
@@ -644,8 +837,13 @@ export function createGame(ctx) {
     }
 
     // die: brief tumble on a fresh roll, then settle to 0 so the lit +Y face
-    // reads cleanly (I1).
+    // reads cleanly (I1). Its XZ eases toward the active player's quadrant so the
+    // floating die also reads as a turn pointer (#1/#12).
     if (s.die != null) {
+      const tgt = dieTarget();
+      const ek = Math.min(1, d * 7);
+      dieGroup.position.x += (tgt.x - dieGroup.position.x) * ek;
+      dieGroup.position.z += (tgt.z - dieGroup.position.z) * ek;
       if (dieAnimT > 0) {
         dieAnimT = Math.max(0, dieAnimT - d);
         const f = dieAnimT / 0.42;            // 1 -> 0
@@ -656,6 +854,7 @@ export function createGame(ctx) {
       } else {
         dieGroup.rotation.y = 0;
         dieGroup.rotation.x = 0;
+        dieGroup.position.y = dieRestY;
       }
     }
 
@@ -670,6 +869,58 @@ export function createGame(ctx) {
       f.life -= d;
       if (f.life <= 0) { f.mesh.visible = false; f.mat.opacity = 0; }
     }
+
+    // last-move landing ring (#10): ride the just-moved token's eased position and
+    // fade over its life. Hidden once expired or if its token left the board.
+    if (lastMoveT > 0 && lastMoveTok) {
+      lastMoveT = Math.max(0, lastMoveT - d);
+      const a = tokAnim[lastMoveTok.color] && tokAnim[lastMoveTok.color][lastMoveTok.idx];
+      const stillThere = inPlay(lastMoveTok.color) && (s.tokens[lastMoveTok.color]?.[lastMoveTok.idx] || 0) > 0;
+      if (a && stillThere) {
+        const k = lastMoveT / 1.1;             // 1 -> 0
+        lastMoveRing.visible = true;
+        lastMoveRing.position.set(a.cx, TOP + 0.018, a.cz);
+        lastMoveRing.scale.setScalar(0.85 + 0.5 * (1 - k));
+        const hex = PALETTE.ludo[lastMoveColor] || PALETTE.accent;
+        lastMoveRingMat.color.set(hex);
+        lastMoveRingMat.emissive.set(hex);
+        lastMoveRingMat.opacity = 0.7 * k;
+      } else {
+        lastMoveT = 0;
+      }
+    } else if (lastMoveRing.visible) {
+      lastMoveRing.visible = false;
+      lastMoveRingMat.opacity = 0;
+    }
+
+    // safe-square shimmer (#15): a slow shared sine on the single safe material's
+    // emissive so star/start tiles read as "shelter". One material, no alloc.
+    safeMat.emissiveIntensity = 0.18 + 0.14 * (0.5 + 0.5 * Math.sin(pulse * 2.2));
+
+    // win podium (#13): once a colour wins, lift its 4 finished cones into a slow
+    // rotating trophy cluster above the centre. Reuses the finished tokens already
+    // parked at the centre fan; purely cosmetic, driven by the phase=over state so
+    // host/guest/spectator all see it.
+    if (s.phase === "over" && s.winner && inPlay(s.winner)) {
+      const rise = TOP + cell * 0.7 + cell * 0.1 * (0.5 + 0.5 * Math.sin(pulse * 2));
+      const spin = pulse * 0.7;
+      for (let i = 0; i < 4; i++) {
+        const tg = tokenMeshes[s.winner][i];
+        if (!tg) continue;
+        const ang = (i / 4) * Math.PI * 2 + spin;
+        const r = cell * 0.55;
+        tg.position.set(gx(7) + Math.cos(ang) * r, rise, gz(7) + Math.sin(ang) * r);
+        tg.rotation.y = -spin;
+      }
+    }
+
+    // transient micro-banner decay (#11): refresh the placard each frame while a
+    // banner is active so its fade/dissolve animates; the redraw at the frame that
+    // crosses zero clears it.
+    if (bannerT > 0) {
+      bannerT = Math.max(0, bannerT - d);
+      refreshLabel();
+    }
   }
 
   // ---- host authority -----------------------------------------------------
@@ -679,7 +930,16 @@ export function createGame(ctx) {
     s.die = 1 + Math.floor(Math.random() * 6);
     if (s.die === 6) {
       s.sixes++;
-      if (s.sixes >= 3) { nextTurn(s); pushState(); return; } // three 6s -> forfeit turn
+      if (s.sixes >= 3) {
+        // Three 6s -> forfeit turn. Broadcast the third six FIRST so watchers
+        // actually see the rolled 6 (and the tumble) before the turn advances
+        // and clears the die (#8). render()'s banner diff reads the prior
+        // snapshot's sixes>=3 to label this a forfeit, not a generic "no move".
+        pushState();
+        nextTurn(s);
+        pushState();
+        return;
+      }
     }
     const moves = legalMoves(s, color);
     // Broadcast the rolled die NOW so watchers (spectators/passersby/seated

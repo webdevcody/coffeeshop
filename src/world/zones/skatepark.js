@@ -292,19 +292,23 @@ export function buildSkatepark() {
     addCollider(colliders, cx, cz, w, d);
   }
 
-  // Skate shop (left) and cafe (right) along the +Z back rim. Depth 7 m → each
-  // spans z=[22,29], inside the tile and clear of the corner lamps at z=26 (the
-  // lamps sit at x=±26, well outside these x ranges).
-  makeStorefront(-10.5, 25.5, 11, 7, 4.2, brickMat, "SHRED", "#37e0c2", "mural-shred.png", "#37b8a0");
-  makeStorefront(10.5, 25.5, 11, 7, 4.2, stuccoMat, "CAFE", "#ffd24a", "mural-cafe.png", "#cf3f5c");
+  // Skate shop (left) and cafe (right) along the +Z back rim. SET BACK ~7 m from
+  // the +Z tile edge (z=30) so they clear the seam road + kerb + sidewalk: depth
+  // 6.5 m, centre z=19.5 → each spans z=[16.25,22.75], fully inside the building
+  // keep-out box (local X,Z in [-23,23]). X ranges x=[-16,-5] / [5,16] stay clear
+  // of the avenue seams at the ±X tile edges and of the corner lamps at x=±26.
+  makeStorefront(-10.5, 19.5, 11, 6.5, 4.2, brickMat, "SHRED", "#37e0c2", "mural-shred.png", "#37b8a0");
+  makeStorefront(10.5, 19.5, 11, 6.5, 4.2, stuccoMat, "CAFE", "#ffd24a", "mural-cafe.png", "#cf3f5c");
 
   // === HALFPIPE HOUSE — a tall full-volume building on the far (-Z) edge ======
   // Previously a flat billboard "card" with only frame posts. Now a real,
   // two-storey building mass with depth behind a halfpipe-silhouette mural on its
-  // plaza-facing (+Z) FRONT. Sits along the -Z edge: depth 7 → spans z=[-29,-22],
-  // width 16 → x=[-8,8] (clear of the corner lamps at x=±26).
+  // plaza-facing (+Z) FRONT. SET BACK ~7 m from the -Z tile edge (z=-30) so it
+  // clears the seam road + kerb + sidewalk: depth 6.5, centre z=-19.5 → spans
+  // z=[-22.75,-16.25], inside the building keep-out box (local X,Z in [-23,23]).
+  // Width 16 → x=[-8,8] (clear of the corner lamps at x=±26).
   {
-    const hpX = 0, hpZ = -25.5, hpW = 16, hpD = 7, hpH = 7.0;
+    const hpX = 0, hpZ = -19.5, hpW = 16, hpD = 6.5, hpH = 7.0;
     const hg = new THREE.Group();
     hg.position.set(hpX, 0, hpZ);
     const frontZ = hpD / 2; // plaza-facing face is the +Z side here
@@ -466,15 +470,17 @@ export function buildSkatepark() {
     }
     return g;
   }
+  // Benches sit in the OPEN plaza in front of the (now set-back) rim buildings,
+  // not inside their footprints.
   const benchA = makeBench();
-  benchA.position.set(-2, 0, 22);
+  benchA.position.set(-2, 0, 13);
   group.add(benchA);
-  addCollider(colliders, -2, 22, 2.0, 0.5);
+  addCollider(colliders, -2, 13, 2.0, 0.5);
 
   const benchB = makeBench();
-  benchB.position.set(2, 0, -20);
+  benchB.position.set(2, 0, -13);
   group.add(benchB);
-  addCollider(colliders, 2, -20, 2.0, 0.5);
+  addCollider(colliders, 2, -13, 2.0, 0.5);
 
   // === A lone skateboard prop lying on the ground (decor, walk-over) =======
   const sk = new THREE.Group();

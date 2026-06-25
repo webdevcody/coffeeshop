@@ -8,7 +8,7 @@
 
 import * as THREE from "three";
 
-const NEAR = 8, FAR = 277, LEFT = -122, RIGHT = 122;
+const NEAR = 13, FAR = 277, LEFT = -122, RIGHT = 122; // NEAR=13 keeps roads OUT of the cafe (front wall at z=11)
 const MIDX = (LEFT + RIGHT) / 2, MIDZ = (NEAR + FAR) / 2;
 const LEN = FAR - NEAR, WID = RIGHT - LEFT;
 const VROADS = [-60, 0, 60]; // vertical avenues (run along Z) on the column seams
@@ -86,6 +86,11 @@ function newsboxTex() {
 export function buildStreets() {
   const group = new THREE.Group();
   group.name = "streets";
+
+  // World-space XZ AABB colliders for SOLID static street props (collected below
+  // and inside addStreetLife). Players/car must not pass through these. The road
+  // surface, low kerbs, crosswalks and flat decals deliberately get NO collider.
+  const colliders = [];
 
   // GROUND Y-STACK (deliberate, so the layers never z-fight or sink the avatars):
   //   base pavement   y = -0.12  (opaque fallback under the whole map; a clear
@@ -171,6 +176,8 @@ export function buildStreets() {
   });
   posts.castShadow = true;
   group.add(posts); group.add(heads);
+  // Tight collider per street-lamp post (head box 0.5 -> half 0.25; posts at ax+-7.4).
+  for (const [x, z] of spots) colliders.push({ minX: x - 0.25, maxX: x + 0.25, minZ: z - 0.25, maxZ: z + 0.25 });
 
   // Instanced roadside trees on the cross streets for greenery/density.
   const trunkGeo = new THREE.CylinderGeometry(0.18, 0.22, 1.6, 6);
@@ -189,6 +196,7 @@ export function buildStreets() {
   group.add(trunks); group.add(leaves);
 
   const life = addStreetLife(group, m);
+  if (life.colliders) for (const c of life.colliders) colliders.push(c);
 
   // Drive the traffic-light heads through R -> G -> A in a continuous loop. We
   // animate by fading each colour's shared emissive material (every lamp of a
@@ -209,7 +217,7 @@ export function buildStreets() {
     lights.a.emissiveIntensity = phase === 2 ? HOT : COLD;
   };
 
-  return { group, update };
+  return { group, update, colliders };
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +234,21 @@ function addStreetLife(group, m) {
     q.setFromAxisAngle(_UP, ry);
     v.set(x, y, z); s.set(sx, sy, sz);
     m.compose(v, q, s); mesh.setMatrixAt(i, m);
+  };
+
+  // World-space XZ AABB colliders for the SOLID static props built below. Each is
+  // kept TIGHT to the prop's footprint. addAABB() centres a box at (x,z) with the
+  // given half-extents along world X/Z; for props placed with a small yaw it widens
+  // the box to the rotated bounding extents so the AABB still fully contains the
+  // footprint. Road surface, kerbs, crosswalks and flat decals get NO collider.
+  const colliders = [];
+  const addAABB = (x, z, hx, hz, ry = 0) => {
+    if (ry) {
+      const c = Math.abs(Math.cos(ry)), n = Math.abs(Math.sin(ry));
+      const ax = hx * c + hz * n, az = hx * n + hz * c;
+      hx = ax; hz = az;
+    }
+    colliders.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz });
   };
 
   // --- Traffic-light posts at the 12 intersections (one per corner approach). ---
@@ -255,6 +278,8 @@ function addStreetLife(group, m) {
     const ry = Math.atan2(-cx, -cz);
     place(tlPoles, ti, x, 2.2, z, ry);
     place(tlBoxes, ti, x, 4.7, z, ry);
+    // Tight collider on the traffic-light post footprint (head box 0.5 x 0.42).
+    addAABB(x, z, 0.25, 0.21, ry);
     // Lamps sit on the +Z face of the (unrotated) box; offset along the box-forward.
     const fz = 0.23, fx = 0;
     const rx = Math.cos(ry) * fx + Math.sin(ry) * fz;
@@ -326,13 +351,17 @@ function addStreetLife(group, m) {
     }
   }
   // Wheels for all cars (after bodies so indices line up to carSpots order).
-  for (const [x, z, ry] of carSpots) {
+  for (const [x, z, ry, , type] of carSpots) {
     const cs = Math.cos(ry), sn = Math.sin(ry);
     q.setFromEuler(new THREE.Euler(0, ry, Math.PI / 2)); // lay cylinder on its side (axis -> X), then yaw
     for (const [ox, oz] of wheelOff) {
       v.set(x + ox * cs - oz * sn, 0.34, z + ox * sn + oz * cs); s.set(1, 1, 1);
       m.compose(v, q, s); wheels.setMatrixAt(wi++, m);
     }
+    // Tight collider on the parked-car body footprint (sedan 2.0x4.4 / van 2.1x5.0),
+    // widened to the yawed bounding box. These hug the kerb edge by design.
+    const hw = type === 1 ? 1.05 : 1.0, hl = type === 1 ? 2.5 : 2.2;
+    addAABB(x, z, hw, hl, ry);
   }
   group.add(wheels);
 
@@ -342,7 +371,7 @@ function addStreetLife(group, m) {
   for (const ax of VROADS) for (let z = NEAR + 30; z < FAR; z += 60) { hydSpots.push([ax - HALFR - 1.0, z]); }
   const hydBody = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.26, 0.8, 8), hydMat, hydSpots.length);
   const hydCap = new THREE.InstancedMesh(new THREE.SphereGeometry(0.24, 8, 6), hydMat, hydSpots.length);
-  hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); });
+  hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); addAABB(x, z, 0.26, 0.26); });
   hydBody.castShadow = true;
   group.add(hydBody, hydCap);
 
@@ -417,6 +446,8 @@ function addStreetLife(group, m) {
   const glassMat = new THREE.MeshStandardMaterial({ color: "#acd5e6", roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.35 });
   const shelterSpots = [[0 - HALFR - 2.6, 70], [0 + HALFR + 2.6, 200]];
   for (const [sx, sz] of shelterSpots) {
+    // Tight collider on the shelter footprint (roof 4.2 x 2.0 -> half 2.1 x 1.0).
+    addAABB(sx, sz, 2.1, 1.0);
     const roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.16, 2.0), shelterMat);
     roof.position.set(sx, 2.5, sz); roof.castShadow = true; group.add(roof);
     const back = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.0, 0.08), glassMat);
@@ -443,6 +474,8 @@ function addStreetLife(group, m) {
   let bli = 0;
   benchSpots.forEach(([x, z, ry], i) => {
     place(bSeat, i, x, 0.5, z, ry);
+    // Tight collider on the bench seat footprint (2.2 x 0.5 -> half 1.1 x 0.25, yawed).
+    addAABB(x, z, 1.1, 0.25, ry);
     // back panel sits at the rear edge (local -Z before yaw); offset rotated into world
     const bx = Math.sin(ry) * -0.2, bz = Math.cos(ry) * -0.2;
     place(bBack, i, x + bx, 0.78, z + bz, ry);
@@ -480,6 +513,8 @@ function addStreetLife(group, m) {
   mailSpots.forEach(([x, z], i) => {
     place(mailLeg, i, x, 0.25, z);
     place(mailBody, i, x, 0.85, z);
+    // Tight collider on the mailbox body footprint (0.6 x 0.5 -> half 0.3 x 0.25).
+    addAABB(x, z, 0.3, 0.25);
     // half-cylinder cap: lay it so the flat side faces down, long axis along Z
     q.setFromEuler(new THREE.Euler(0, 0, Math.PI / 2));
     v.set(x, 1.2, z); s.set(1, 0.5, 1);
@@ -496,7 +531,12 @@ function addStreetLife(group, m) {
     newsSpots.push([ax + HALFR + 1.8, z]); newsSpots.push([ax + HALFR + 2.4, z + 0.7]);
   }
   const newsboxes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), newsMat, newsSpots.length);
-  newsSpots.forEach(([x, z], i) => place(newsboxes, i, x, 0.55, z, (i % 2) * 0.3));
+  newsSpots.forEach(([x, z], i) => {
+    const ry = (i % 2) * 0.3;
+    place(newsboxes, i, x, 0.55, z, ry);
+    // Tight collider on the newspaper-box footprint (0.5 x 0.5 -> half 0.25, yawed).
+    addAABB(x, z, 0.25, 0.25, ry);
+  });
   newsboxes.castShadow = true;
   group.add(newsboxes);
 
@@ -512,6 +552,8 @@ function addStreetLife(group, m) {
   planterSpots.forEach(([x, z], i) => {
     place(planterBox, i, x, 0.25, z);
     place(planterBush, i, x, 0.78, z, 0, 1, 0.8, 1);
+    // Tight collider on the planter tub footprint (1.1 x 1.1 -> half 0.55).
+    addAABB(x, z, 0.55, 0.55);
   });
   planterBox.castShadow = true; planterBush.castShadow = true;
   group.add(planterBox, planterBush);
@@ -549,8 +591,9 @@ function addStreetLife(group, m) {
   });
   group.add(patches);
 
-  // Hand the traffic-light materials back so buildStreets can cycle their emissive.
-  return { lights: { r: lampMatR, g: lampMatG, a: lampMatA } };
+  // Hand the traffic-light materials back so buildStreets can cycle their emissive,
+  // plus the world-space prop colliders so buildStreets can return them to the city.
+  return { lights: { r: lampMatR, g: lampMatG, a: lampMatA }, colliders };
 }
 
 const _UP = new THREE.Vector3(0, 1, 0);

@@ -38,7 +38,11 @@ const SHOW_MS = 1350;
 // --- visual-polish constants (all local/cosmetic; no rule or sync impact) -----
 const MATCH_GLOW = 0.26; // steady accent emissive on a matched-pair face
 const POP_DUR = 0.28; // seconds for the match "pop" scale flourish
-const POP_SCALE = 0.12; // extra scale at the peak of the pop (1 → 1.12 → 1)
+// Pop scales the card on its Y (thickness) axis ONLY so a popped card never grows
+// into a horizontally-adjacent neighbour (card pitch ~0.107 vs cardW ~0.092 leaves
+// little XZ clearance). A thicker "swell" reads as a pop without any inter-card
+// overlap. Modestly larger than the old planar 0.12 since Y growth is collision-free. (audit #7)
+const POP_SCALE = 0.55; // extra Y scale at the peak of the pop (1 → 1.55 → 1)
 const HOVER_LIFT = 0.006; // metres a hovered face-down card rises for the local player
 const HOVER_DUR = 0.12; // seconds for the hover lift to ease in/out
 
@@ -244,6 +248,15 @@ export function createGame(ctx) {
     return [M.edge, M.edge, topMat, faceMat, M.edge, M.edge];
   }
 
+  // JUST-FLIPPED ACCENT HALO (audit #9). A flat accent ring under a card pulses
+  // once when that card NEWLY becomes "up", so a spectator/guest can follow a fast
+  // opponent's last move. One reused ring mesh per cell (built once), driven by a
+  // per-card haloT in animateExtras. Derived from a card's down→up transition in
+  // renderCards, so it's consistent for every role with no wire change.
+  const haloGeo = keep(new THREE.RingGeometry(cardW * 0.52, cardW * 0.66, 24));
+  const haloMeshes = [];
+  const haloMats = []; // one material per cell so opacities pulse independently
+
   // Per-card resting base position (cached so update() lifts/settles without any
   // per-frame allocation — we just add hoverT*HOVER_LIFT to baseY).
   const baseY = [];
@@ -254,9 +267,20 @@ export function createGame(ctx) {
     cardMeshes.push(m);
     baseY.push(CARD_Y);
     // flipT/flipFrom drive an ease-in-out flip; popT a match pop; hoverT a
-    // local-only hover lift. prevState tracks the last logical state so we can
-    // detect a NEW match transition and fire the pop once.
-    anim.push({ faceUp: false, target: 0, mat: M.back, flipT: 1, flipFrom: 0, popT: 0, hoverT: 0, prevState: "down" });
+    // local-only hover lift; haloT the just-flipped ring pulse; wobbleT the
+    // mismatch flip-back wobble. prevState tracks the last logical state so we can
+    // detect NEW match / NEW up transitions and fire the one-shot flourishes.
+    anim.push({ faceUp: false, target: 0, mat: M.back, flipT: 1, flipFrom: 0, popT: 0, hoverT: 0, haloT: 0, wobbleT: 0, prevState: "down" });
+
+    const hmat = new THREE.MeshBasicMaterial({ color: PALETTE.accent, transparent: true, opacity: 0, depthWrite: false });
+    haloMats.push(hmat);
+    const halo = new THREE.Mesh(haloGeo, hmat);
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.set(cardX(i), TOP + 0.0025, cardZ(i));
+    halo.renderOrder = 1;
+    halo.visible = false;
+    group.add(halo);
+    haloMeshes.push(halo);
 
     const box = new THREE.Mesh(hitGeo, invis);
     box.position.set(cardX(i), TOP + CARD_T + 0.03, cardZ(i));
@@ -264,6 +288,138 @@ export function createGame(ctx) {
     group.add(box);
   }
   let hoverIdx = -1; // local-only: index of the card currently hovered (or -1)
+
+  // ---------------------------------------------------------------------------
+  // CAPTURED-PAIRS TRAYS (audit #8). Two shelves on the plank's left/right
+  // margins (outside the grid). When a side captures a pair, a miniature face-up
+  // copy of that pair's glyph slides up into that side's tray. Driven PURELY from
+  // snapshot state (matched cards + which side's score rose) — derivable on every
+  // client, zero new wire data, fair-play intact. Host tray = -X margin, guest
+  // tray = +X margin in the canonical frame; the framework's group rotation
+  // orients them per seat just like every other cue.
+  // ---------------------------------------------------------------------------
+  const TRAY_TILE = 0.04; // mini-tile edge (fits the ~0.05 plank margin)
+  const trayGeo = keep(new THREE.PlaneGeometry(TRAY_TILE, TRAY_TILE));
+  const TRAY_GAP = (BOARD_SIZE * 0.86) / PAIRS; // Z pitch so PAIRS tiles span the board depth
+  const trayX = gw / 2 + (outer / 2 - gw / 2) * 0.5; // midpoint of the side margin
+  const trayZ0 = -BOARD_SIZE * 0.40; // first slot near the far edge, filling toward near
+  const TRAY_REST_Y = TOP + 0.003; // flush-ish on the felt; rises on capture
+  // A faint felt-toned recess plate per tray so empty slots read as "captured area".
+  // Each tray owns its plate material so the WINNER's tray can be tinted at game
+  // end (audit #10) — a clear per-side scoreboard read.
+  const trayPlateGeo = keep(new THREE.PlaneGeometry(TRAY_TILE * 1.5, TRAY_GAP * PAIRS + TRAY_TILE * 0.5));
+  const TRAY_PLATE_BASE = 0x3a2614;
+
+  // Per-side tray bookkeeping: meshes + the spring-in animation phase per slot.
+  function makeTray(sign) {
+    const plateMat = keep(new THREE.MeshBasicMaterial({ color: TRAY_PLATE_BASE, transparent: true, opacity: 0.5, depthWrite: false }));
+    const plate = meshOf(THREE, trayPlateGeo, plateMat, false);
+    plate.rotation.x = -Math.PI / 2;
+    plate.position.set(sign * trayX, TOP + 0.0015, trayZ0 + (TRAY_GAP * PAIRS) / 2 - TRAY_GAP / 2);
+    plate.renderOrder = 1;
+    group.add(plate);
+    const tiles = [];
+    for (let s = 0; s < PAIRS; s++) {
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
+      mat.opacity = 0;
+      const mesh = meshOf(THREE, trayGeo, mat, false);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(sign * trayX, TRAY_REST_Y, trayZ0 + s * TRAY_GAP);
+      mesh.renderOrder = 2;
+      mesh.visible = false;
+      group.add(mesh);
+      tiles.push({ mesh, mat, value: -1, riseT: 0 }); // riseT 1→0 spring on capture
+    }
+    return { tiles, count: 0, plateMat };
+  }
+  const trayHost = makeTray(-1);
+  const trayGuest = makeTray(1);
+  const trayFor = (seat) => (seat === "guest" ? trayGuest : trayHost);
+
+  // Tint the winner's tray plate at game end (or reset both to neutral), a clear
+  // per-side scoreboard read. Driven from phase/winner (in every snapshot). (audit #10)
+  function updateTrayWinTint() {
+    const hostWin = phase === "over" && winner === "host";
+    const guestWin = phase === "over" && winner === "guest";
+    trayHost.plateMat.color.set(hostWin ? SIDE_HEX.host : TRAY_PLATE_BASE);
+    trayHost.plateMat.opacity = hostWin ? 0.72 : 0.5;
+    trayGuest.plateMat.color.set(guestWin ? SIDE_HEX.guest : TRAY_PLATE_BASE);
+    trayGuest.plateMat.opacity = guestWin ? 0.72 : 0.5;
+  }
+
+  // Captured-pair attribution (deterministic on every client). We track which
+  // matched-card indices we've already filed into a tray, plus the last seen
+  // per-side scores, so when new matched cards appear we attribute the pair to the
+  // side whose score rose. No wire change: scores + matched state are in every
+  // snapshot. Reset alongside game reset.
+  let filedMatched = new Set();
+  let prevScores = { host: 0, guest: 0 };
+
+  // Glyph texture for a tray tile reuses the very same canvas texture the card
+  // faces already own (no extra GPU texture). Just swaps the map + shows the tile.
+  function fillTraySlot(tray, value) {
+    if (tray.count >= PAIRS) return;
+    const slot = tray.tiles[tray.count++];
+    getFaceMat(value); // ensure the glyph texture exists
+    slot.mat.map = faceMats[value].map;
+    slot.value = value;
+    slot.mat.opacity = 1;
+    slot.mesh.visible = true;
+    slot.riseT = 1; // arm the spring-in
+    slot.mat.needsUpdate = true;
+  }
+
+  // Re-derive the trays from current logical state. Adds any newly-matched pair to
+  // the correct side's tray; on a cold snap (snapCards) it can also be asked to
+  // place everything instantly (no spring) for a late joiner / recovery resync.
+  function syncTrays(instant) {
+    // Find matched cards we haven't filed yet, grouped by value (a pair shares a value).
+    const fresh = {}; // value -> [indices]
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].state === "matched" && cards[i].value != null && !filedMatched.has(i)) {
+        (fresh[cards[i].value] || (fresh[cards[i].value] = [])).push(i);
+      }
+    }
+    // Which side just scored? Compare to the last seen scores; default to the
+    // current `turn` if scores are ambiguous (e.g. a multi-pair recovery snap).
+    const hostGained = scores.host - prevScores.host;
+    const guestGained = scores.guest - prevScores.guest;
+    let remainingHost = Math.max(0, hostGained);
+    let remainingGuest = Math.max(0, guestGained);
+    for (const v in fresh) {
+      const idxs = fresh[v];
+      if (idxs.length < 2) continue; // a full pair only
+      let seat;
+      if (remainingHost > 0) { seat = "host"; remainingHost--; }
+      else if (remainingGuest > 0) { seat = "guest"; remainingGuest--; }
+      else seat = turn; // fallback (cold resync where scores already settled)
+      fillTraySlot(trayFor(seat), cards[idxs[0]].value);
+      filedMatched.add(idxs[0]);
+      filedMatched.add(idxs[1]);
+      if (instant) {
+        const t = trayFor(seat).tiles[trayFor(seat).count - 1];
+        t.riseT = 0;
+        t.mesh.position.y = TRAY_REST_Y;
+      }
+    }
+    prevScores = { host: scores.host | 0, guest: scores.guest | 0 };
+  }
+
+  function resetTrays() {
+    for (const tray of [trayHost, trayGuest]) {
+      for (let s = 0; s < tray.count; s++) {
+        const t = tray.tiles[s];
+        t.mat.opacity = 0;
+        t.mesh.visible = false;
+        t.value = -1;
+        t.riseT = 0;
+        t.mesh.position.y = TRAY_REST_Y;
+      }
+      tray.count = 0;
+    }
+    filedMatched = new Set();
+    prevScores = { host: scores.host | 0, guest: scores.guest | 0 };
+  }
 
   // ---------------------------------------------------------------------------
   // Player-identity / turn / score cues — built RELATIVE TO THE LOCAL PLAYER.
@@ -312,14 +468,18 @@ export function createGame(ctx) {
 
   mineSide.bar.position.set(0, TOP + 0.004, -homeEdge);
   mineSide.lamp.position.set(BOARD_SIZE * 0.4, TOP + 0.012, -homeEdge);
-  // Chips sit higher than the placard so the two transparent planes never share
-  // a depth plane where their flat XZ footprints overlap (avoids z-fighting).
-  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.006, -homeEdge);
+  // Chips shifted out along -X to clear the centred placard's footprint and given
+  // a LOWER renderOrder than the placard, so the two transparent flat planes have
+  // a deterministic composite order (placard always on top) instead of z-fighting
+  // from the seated grazing camera. (audit #5)
+  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.006, -homeEdge);
+  mineSide.chip.mesh.renderOrder = 2;
   group.add(mineSide.bar, mineSide.lamp, mineSide.chip.mesh);
 
   oppSide.bar.position.set(0, TOP + 0.004, homeEdge);
   oppSide.lamp.position.set(BOARD_SIZE * 0.4, TOP + 0.012, homeEdge);
-  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.18, TOP + 0.006, homeEdge);
+  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.006, homeEdge);
+  oppSide.chip.mesh.renderOrder = 2;
   oppSide.chip.mesh.rotation.z = Math.PI; // reads upright from the far seat
   group.add(oppSide.bar, oppSide.lamp, oppSide.chip.mesh);
 
@@ -338,7 +498,10 @@ export function createGame(ctx) {
   const placard = meshOf(THREE, placardGeo, placardMat, false);
   placard.rotation.x = -Math.PI / 2;
   placard.position.set(0, TOP + 0.008, -BOARD_HALF - 0.05);
-  placard.renderOrder = 2;
+  // Higher renderOrder than the score chips (2) so this transparent plane always
+  // composites on top with a deterministic draw order — no same-renderOrder
+  // sort flicker where their flat footprints can overlap. (audit #5)
+  placard.renderOrder = 3;
   group.add(placard);
 
   // Assign the two side hues onto the mine/opp materials from the LOCAL role, so
@@ -433,6 +596,9 @@ export function createGame(ctx) {
   let mineBarBase = 0.2; // resting emissive for the near bar
   let pulseMine = false; // pulse the near bar (it's my turn)
   let winFlourishT = 0; // one-shot game-over flourish progress (0 → 1)
+  let deniedFlashT = 0; // one-shot blocked-click "denied" flash on the near bar (audit #11)
+  const deniedColor = new THREE.Color("#c0392b"); // red flash hue for a denied click
+  const tmpColor = new THREE.Color(); // reused scratch colour (no per-frame alloc)
 
   // Drive every cue from LOCAL state only. mineSide is the local player's own
   // side (or, for a spectator, the host side at the near edge).
@@ -457,6 +623,7 @@ export function createGame(ctx) {
     drawChip(mineSide.chip, nearSeat, mySeat === nearSeat, mineIsTurn);
     drawChip(oppSide.chip, farSeat, mySeat === farSeat, oppIsTurn);
     refreshPlacard();
+    updateTrayWinTint();
   }
 
   // ---------------------------------------------------------------------------
@@ -563,8 +730,17 @@ export function createGame(ctx) {
       // receives the `matched` state, so the flourish is consistent across roles.
       // (audit I1)
       if (c.state === "matched" && a.prevState !== "matched") a.popT = POP_DUR;
+      // Fire the just-flipped accent halo once, when a card NEWLY becomes "up"
+      // (down → up). Helps a watcher follow a fast opponent's last move. (audit #9)
+      if (c.state === "up" && a.prevState !== "up") a.haloT = 1;
+      // Arm/keep a gentle flip-back wobble on the two mismatched cards during the
+      // reveal window, so "no match" reads kinesthetically before they turn back.
+      // Cleared once the card leaves the mismatch (flips back / matches). (audit #13)
+      a.wobbleT = mismatchPair && (i === upA || i === upB) ? 1 : 0;
       a.prevState = c.state;
     }
+    // Update the captured-pairs trays from the new logical state. (audit #8)
+    syncTrays(false);
   }
 
   // Snap cards to their resting pose (no animation) — used on a fresh sync so a
@@ -574,12 +750,26 @@ export function createGame(ctx) {
       const a = anim[i];
       a.flipT = 1; // already at rest; nothing to ease
       a.popT = 0; // no flourish replay on a cold sync
-      cardMeshes[i].rotation.x = a.target;
+      a.haloT = 0; // no just-flipped halo replay on a cold sync
+      a.wobbleT = 0; // no wobble replay on a cold sync
+      cardMeshes[i].rotation.set(a.target, 0, 0); // x = flip target; clear leftover wobble (z)
       cardMeshes[i].position.y = baseY[i]; // clear any leftover hover lift
-      cardMeshes[i].scale.setScalar(1);
+      cardMeshes[i].scale.set(1, 1, 1);
+      if (haloMats[i]) { haloMats[i].opacity = 0; haloMats[i].color.set(PALETTE.accent); haloMeshes[i].visible = false; }
       cardMeshes[i].material = a.faceUp
         ? cardMaterials(M.back, a.mat)
         : cardMaterials(a.mat, M.back);
+    }
+    // Place captured tiles in their trays instantly (no spring) for a cold sync,
+    // and settle any spring armed by a preceding renderCards() so a late joiner /
+    // recovery resync doesn't animate captures it never saw.
+    syncTrays(true);
+    for (const tray of [trayHost, trayGuest]) {
+      for (let s = 0; s < tray.count; s++) {
+        const t = tray.tiles[s];
+        t.riseT = 0;
+        t.mesh.position.y = TRAY_REST_Y;
+      }
     }
   }
 
@@ -707,14 +897,41 @@ export function createGame(ctx) {
   // ---------------------------------------------------------------------------
   // Contract surface
   // ---------------------------------------------------------------------------
+  // Local mismatch-window detection a GUEST can observe (showIdx is host-only):
+  // two revealed "up" cards with unequal values means the reveal is in progress.
+  function mismatchShowing() {
+    let a = -1;
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].state === "up" && cards[i].value != null) {
+        if (a === -1) a = i;
+        else return cards[a].value !== cards[i].value;
+      }
+    }
+    return false;
+  }
+
   function onPointer(hit) {
     if (!mySeat) return; // spectator: read-only
-    if (!ctx.isLocalTurnAllowed()) return;
-    if (phase !== "play" || turn !== mySeat) return;
-    if (showIdx) return; // a mismatched pair is being shown; block input
     const cell = hit && hit.cell;
-    if (!cell || !Number.isInteger(cell.i)) return;
-    if (cards[cell.i].state !== "down") return;
+    const onGrid = cell && Number.isInteger(cell.i);
+    // BLOCKED-CLICK CUE (audit #11). A click on the grid that can't proceed (not
+    // your turn, the reveal window is up, or the cell is already played) gets a
+    // local "denied" flash on the near home bar so the seated player gets feedback
+    // instead of dead input. Purely cosmetic — no move is sent.
+    const blocked = onGrid && (
+      !ctx.isLocalTurnAllowed() ||
+      phase !== "play" ||
+      turn !== mySeat ||
+      showIdx ||
+      mismatchShowing() ||
+      cards[cell.i].state !== "down"
+    );
+
+    if (!ctx.isLocalTurnAllowed()) { if (blocked) deniedFlashT = 0.5; return; }
+    if (phase !== "play" || turn !== mySeat) { if (blocked) deniedFlashT = 0.5; return; }
+    if (showIdx || mismatchShowing()) { if (blocked) deniedFlashT = 0.5; return; }
+    if (!onGrid) return;
+    if (cards[cell.i].state !== "down") { deniedFlashT = 0.5; return; }
 
     if (amHost()) {
       hostFlip(cell.i);
@@ -773,6 +990,7 @@ export function createGame(ctx) {
       winFlourishT = 0; // clear any in-flight game-over flourish
       prevPhase = "play"; // so a later play→over transition re-arms cleanly
       synced = amHost(); // host stays live; a guest reset re-snaps on next sync
+      resetTrays(); // empty both captured-pairs trays on a fresh game (audit #8)
       renderCards();
       snapCards();
       updateIdentityCues();
@@ -782,11 +1000,21 @@ export function createGame(ctx) {
     if (amHost()) return; // host is authoritative; ignore its own echo
 
     const src = Array.isArray(state.cards) ? state.cards : [];
-    cards = Array.from({ length: COLS * ROWS }, (_, i) => {
+    const next = Array.from({ length: COLS * ROWS }, (_, i) => {
       const s = src[i] || {};
       const st = s.state === "up" || s.state === "matched" ? s.state : "down";
       return { state: st, value: st !== "down" && Number.isInteger(s.value) ? s.value : null };
     });
+    // RECOVERY-RESYNC SNAP (audit #2). A normal move changes at most two cards'
+    // logical state. A re-sync push after a desync (board.js _requestResync) can
+    // change many cards at once — animating that as a "move" teleports the board
+    // with a flurry of flips it never saw. Detect a big delta and snap instead.
+    let changed = 0;
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].state !== next[i].state) changed++;
+    }
+    const bigDelta = synced && changed > 2;
+    cards = next;
     turn = state.turn === "guest" ? "guest" : "host";
     scores = { host: state.scores?.host | 0, guest: state.scores?.guest | 0 };
     phase = state.phase === "over" ? "over" : "play";
@@ -795,9 +1023,12 @@ export function createGame(ctx) {
     renderCards();
     updateIdentityCues();
     // First snapshot after (re)join = full sync → snap (don't replay unseen
-    // flips). Later snapshots are real moves → animate.
+    // flips). A recovery resync (bigDelta) likewise snaps. Single-move snapshots
+    // animate.
     if (!synced) {
       synced = true;
+      snapCards();
+    } else if (bigDelta) {
       snapCards();
     }
   }
@@ -823,21 +1054,69 @@ export function createGame(ctx) {
         a.hoverT = wantLift > a.hoverT ? Math.min(1, a.hoverT + dh) : Math.max(0, a.hoverT - dh);
       }
 
-      // Match pop: a brief ease-out 1 → 1+POP_SCALE → 1 scale on the matched card.
-      let scale = 1;
+      // Match pop: a brief ease-out 1 → 1+POP_SCALE → 1 swell on the matched card,
+      // applied to the Y (thickness) axis only so it never collides with a
+      // horizontally-adjacent neighbour. (audit #7)
+      let scaleY = 1;
       if (a.popT > 0) {
         a.popT = Math.max(0, a.popT - step);
         const p = 1 - a.popT / POP_DUR; // 0 → 1
-        scale = 1 + POP_SCALE * Math.sin(p * Math.PI); // smooth up-and-back
+        scaleY = 1 + POP_SCALE * Math.sin(p * Math.PI); // smooth up-and-back
       }
 
       const lift = easeInOut(a.hoverT) * HOVER_LIFT;
       if (m.position.y !== baseY[i] + lift) m.position.y = baseY[i] + lift;
-      if (m.scale.x !== scale) m.scale.setScalar(scale);
+      if (m.scale.y !== scaleY) m.scale.set(1, scaleY, 1);
+
+      // Just-flipped accent halo: fade a ground ring in then out once. (audit #9)
+      if (a.haloT > 0) {
+        a.haloT = Math.max(0, a.haloT - step / 0.5); // ~0.5s pulse
+        const o = Math.sin(a.haloT * Math.PI) * 0.6; // 0 → peak → 0
+        haloMeshes[i].visible = o > 0.01;
+        haloMats[i].opacity = o;
+      } else if (haloMeshes[i].visible) {
+        haloMeshes[i].visible = false;
+        haloMats[i].opacity = 0;
+      }
+
+      // Mismatch flip-back wobble: a few degrees of rotation.z oscillation while
+      // the two unequal cards are revealed, so "no match" reads kinesthetically.
+      // rotation.x (the flip) is owned by stepFlips; we only touch z here. (audit #13)
+      const targetWobble = a.wobbleT > 0 ? Math.sin(clock * 22) * 0.07 : 0;
+      if (m.rotation.z !== targetWobble) m.rotation.z = targetWobble;
     }
 
-    // "Your turn" bar pulse for the seated player. (audit I5)
-    if (pulseMine) {
+    // Captured-pairs tray spring-in: each newly filed tile rises from the felt and
+    // eases into its resting slot. (audit #8)
+    for (const tray of [trayHost, trayGuest]) {
+      for (let s = 0; s < tray.count; s++) {
+        const t = tray.tiles[s];
+        if (t.riseT > 0) {
+          t.riseT = Math.max(0, t.riseT - step / 0.35);
+          t.mesh.position.y = TRAY_REST_Y + 0.03 * t.riseT; // drop from +0.03 to rest
+        } else if (t.mesh.position.y !== TRAY_REST_Y) {
+          t.mesh.position.y = TRAY_REST_Y;
+        }
+      }
+    }
+
+    // Blocked-click "denied" flash: briefly tint the near home bar red, then ease
+    // back to the local side hue. Overrides the turn pulse while active. (audit #11)
+    if (deniedFlashT > 0) {
+      deniedFlashT = Math.max(0, deniedFlashT - step);
+      const f = Math.sin((deniedFlashT / 0.5) * Math.PI); // 0 → 1 → 0 over the flash
+      const nearHex = mySeat === "guest" ? SIDE_HEX.guest : SIDE_HEX.host;
+      tmpColor.set(nearHex).lerp(deniedColor, f);
+      mineSide.bar.material.color.copy(tmpColor);
+      mineSide.bar.material.emissive.copy(tmpColor);
+      mineSide.bar.material.emissiveIntensity = 0.5 + 0.8 * f;
+      if (deniedFlashT === 0) {
+        // Restore the resting side hue once the flash ends.
+        mineSide.bar.material.color.set(nearHex);
+        mineSide.bar.material.emissive.set(nearHex);
+      }
+    } else if (pulseMine) {
+      // "Your turn" bar pulse for the seated player. (audit I5)
       const pulse = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(clock * 4.0));
       mineSide.bar.material.emissiveIntensity = pulse;
     } else {
@@ -853,6 +1132,24 @@ export function createGame(ctx) {
       for (let v = 0; v < matchedFaceMats.length; v++) {
         const mm = matchedFaceMats[v];
         if (mm) mm.emissiveIntensity = boost;
+      }
+      // WIN WAVE (audit #10): a celebration ripple of accent halos sweeps across
+      // the grid, offset by each card's index so the finish reads as a wave rather
+      // than a single flat flash. Halos are per-card and already pooled, so this is
+      // allocation-free and consistent for every role (phase/winner are in the
+      // snapshot). Tinted with the WINNER's side hue (neutral accent on a draw).
+      const waveColor = winner ? SIDE_HEX[winner] : PALETTE.accent;
+      const progress = 1 - winFlourishT; // 0 → 1 over the flourish
+      for (let i = 0; i < cardMeshes.length; i++) {
+        if (cards[i].state !== "matched") continue;
+        const phaseOff = (i / cardMeshes.length) * 1.6; // stagger the ripple
+        const w = Math.sin((progress * 3.2 - phaseOff) * Math.PI);
+        const o = w > 0 ? w * 0.7 * winFlourishT : 0;
+        if (o > 0.01) {
+          haloMeshes[i].visible = true;
+          haloMats[i].color.set(waveColor);
+          haloMats[i].opacity = Math.max(haloMats[i].opacity, o);
+        }
       }
     }
   }
@@ -871,9 +1168,59 @@ export function createGame(ctx) {
     mySeat = role === "host" ? "host" : role === "guest" ? "guest" : null;
     // If we just became host without a deck (promotion), mint one so flips work.
     if (role === "host" && !deck) deck = shuffledDeck();
+    const promotedToHost = role === "host" && !wasHost;
+    if (promotedToHost) {
+      // HOST-MIGRATION RE-ARM (audit #1/#4). The old host owned the mismatch
+      // "show" timer and the per-turn `pending` privately — neither crosses the
+      // wire. A freshly promoted host must reconstruct them from the relayed
+      // snapshot or the match stalls (two mismatched cards stay up forever) /
+      // the in-progress turn is lost.
+      const up = [];
+      for (let i = 0; i < cards.length; i++) if (cards[i].state === "up") up.push(i);
+      if (up.length === 2) {
+        const [a, b] = up;
+        if (cards[a].value != null && cards[b].value != null && cards[a].value === cards[b].value) {
+          // A matched pair that the old host never finished promoting: settle it.
+          cards[a].state = "matched";
+          cards[b].state = "matched";
+          scores[turn] += 1;
+          pending = [];
+          showIdx = null;
+          showUntil = 0;
+          checkWin();
+        } else {
+          // Two unequal cards revealed: re-arm the flip-back timer so WE complete
+          // the reveal the dropped host began (no permanent stall).
+          pending = [a, b];
+          showIdx = [a, b];
+          showUntil = nowMs() + SHOW_MS;
+        }
+      } else if (up.length === 1) {
+        // A lone in-progress flip (old host had flipped ONE card this turn). If our
+        // deck agrees with the visible value, re-adopt it as this turn's pending
+        // card so the next flip resolves the pair. If it DOESN'T agree (e.g. we
+        // were promoted with a freshly minted/reshuffled deck), flip it back down
+        // to a clean pre-flip state rather than leave a phantom orphaned "up" card
+        // the resolver would never pair — preventing a desync. (audit #4)
+        const i = up[0];
+        if (Number.isInteger(deck?.[i]) && deck[i] === cards[i].value) {
+          pending = [i];
+        } else {
+          cards[i].state = "down";
+          cards[i].value = null;
+          pending = [];
+        }
+        showIdx = null;
+        showUntil = 0;
+      } else {
+        pending = [];
+        showIdx = null;
+        showUntil = 0;
+      }
+    }
     // A fresh host must publish its deck on the spectator-only reveal channel so
     // watchers can render true faces.
-    if (role === "host" && !wasHost) pushReveal();
+    if (promotedToHost) { renderCards(); pushReveal(); pushState(); }
     // No longer a spectator → discard any revealed deck (a player must not retain it).
     if (role !== "spectator") revealDeck = null;
     hoverIdx = -1; // role changed → drop any stale hover affordance
@@ -899,6 +1246,9 @@ export function createGame(ctx) {
     for (const m of matchedFaceMats) m?.dispose?.();
     for (const m of missFaceMats) m?.dispose?.();
     for (const m of demotedFaceMats) m?.dispose?.();
+    // Per-cell halo materials and per-slot tray-tile materials live outside `owned`.
+    for (const m of haloMats) m?.dispose?.();
+    for (const tray of [trayHost, trayGuest]) for (const t of tray.tiles) t.mat?.dispose?.();
     for (const o of owned) o.dispose?.();
   }
 

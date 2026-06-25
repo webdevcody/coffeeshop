@@ -292,22 +292,26 @@ export function buildTransit() {
   group.add(grass);
 
   // --- Raised platform along the north side (Z ≈ +9..+15) -------------------
+  // SETBACK: the platform is pulled IN to width 44 so it spans X ∈ [-22,+22],
+  // a ~8 m setback from each side tile edge (±30) clearing the avenue road grid
+  // on the X=±60 seams + kerb + sidewalk. (Z 9..15 already clears the Z seams.)
   const PLAT_Z = 12;       // centre of platform in Z
   const PLAT_DEPTH = 6;    // 9 .. 15
   const PLAT_H = 0.9;
-  const platform = box(58, PLAT_H, PLAT_DEPTH, MAT.platform, true, true);
+  const PLAT_W = 44;       // X ∈ [-22,+22] — inside the [-23,23] setback band
+  const platform = box(PLAT_W, PLAT_H, PLAT_DEPTH, MAT.platform, true, true);
   platform.position.set(0, PLAT_H / 2, PLAT_Z);
   group.add(platform);
   // platform side fascia (slightly inset look)
-  const fascia = box(58, PLAT_H + 0.02, 0.1, MAT.platformSide, false, true);
+  const fascia = box(PLAT_W, PLAT_H + 0.02, 0.1, MAT.platformSide, false, true);
   fascia.position.set(0, (PLAT_H + 0.02) / 2, PLAT_Z - PLAT_DEPTH / 2);
   group.add(fascia);
   // yellow safety stripe along the track edge
-  const stripe = box(58, 0.04, 0.4, MAT.edgeStripe, false, false);
+  const stripe = box(PLAT_W, 0.04, 0.4, MAT.edgeStripe, false, false);
   stripe.position.set(0, PLAT_H + 0.02, PLAT_Z - PLAT_DEPTH / 2 + 0.3);
   group.add(stripe);
   // The platform is a SOLID raised block — collide its full footprint.
-  addCollider(colliders, 0, PLAT_Z, 58, PLAT_DEPTH);
+  addCollider(colliders, 0, PLAT_Z, PLAT_W, PLAT_DEPTH);
 
   // --- PLATFORM KIOSK BUILDINGS: two real little structures standing ON the
   // platform (a newsstand + a coffee bar). Each is a SUBSTANTIAL 3D volume
@@ -336,12 +340,17 @@ export function buildTransit() {
   // full 10 m-deep mass (front kept just behind the platform at Z≈15.6, back at
   // Z≈25.6 — well inside the tile) so it reads solid from the front, sides AND
   // back, with a stepped-back upper storey adding rooftop massing.
-  const CONC_DEPTH = 10;      // building depth in Z (front Z≈15.6 .. back Z≈25.6)
-  const CONC_FRONT = 15.6;    // platform-facing wall (platform back edge is Z=15)
-  const CONC_Z = CONC_FRONT + CONC_DEPTH / 2; // centre = 20.6 (kept clear of lanes)
-  const CONC_W = 50;          // building width in X
+  // SETBACK: the head-house is re-centred (concX=0) and shrunk so its WHOLE
+  // footprint sits in X,Z ∈ [-23,23]. Width 44 → X ∈ [-22,+22]; depth 7 with the
+  // front kept just behind the platform (Z=15) → back at Z≈22.4, clearing the
+  // cross-street seam at Z=215-world / +30-local + kerb + sidewalk. It stays a
+  // full ~7 m-deep, 12 m-tall masonry mass (not a thin slab).
+  const CONC_DEPTH = 7;       // building depth in Z (front Z≈15.4 .. back Z≈22.4)
+  const CONC_FRONT = 15.4;    // platform-facing wall (platform back edge is Z=15)
+  const CONC_Z = CONC_FRONT + CONC_DEPTH / 2; // centre = 18.9 (inside setback band)
+  const CONC_W = 44;          // building width in X → X ∈ [-22,+22]
   const CONC_H = 11;          // wall height
-  const concX = -3;           // shift slightly so the clock tower can sit at +X end
+  const concX = 0;            // centred on the tile so both ends stay inside ±22
 
   // masonry base wall
   const concWall = box(CONC_W, CONC_H, CONC_DEPTH, MAT.concourse, true, true);
@@ -376,18 +385,20 @@ export function buildTransit() {
   upperCornice.position.set(concX, CONC_H + upperH + 0.2, upperZ);
   group.add(upperCornice);
 
-  // END PAVILION WING (−X end): a taller, DEEPER solid brick corner block anchoring
-  // the −X end of the head-house. It extends further back than the main mass and
-  // rises above it, breaking the long facade into real stepped massing with its
-  // own side + back faces (so the building reads solid from every angle, not as a
-  // uniform slab). (The +X end is anchored by the clock TOWER below, so only the
-  // −X end gets a wing — avoids the wing clashing with the tower.)
+  // END PAVILION WING (−X end): a taller solid brick corner block anchoring the
+  // −X end of the head-house. It rises above the main mass, breaking the long
+  // facade into real stepped massing with its own side + back faces (so the
+  // building reads solid from every angle, not as a uniform slab). (The +X end is
+  // anchored by the clock TOWER below, so only the −X end gets a wing.)
+  // SETBACK: its depth is matched to the main mass (front at CONC_FRONT, back at
+  // ≈22.4) so its footprint stays inside the [-23,23] band; height is kept tall
+  // so it still reads as a substantial corner volume.
   const WING_W = 8;
-  const WING_D = CONC_DEPTH + 3.0;             // 13 m deep — deeper than the main mass
+  const WING_D = CONC_DEPTH;                    // back aligns with the main mass (≈22.4)
   const WING_H = CONC_H + 1.5;                 // taller than the main mass
-  const wingFront = 15.7;                      // front kept just behind platform (Z=15)
-  const wingCz = wingFront + WING_D / 2;       // ≈ 22.2 (back ≈ 28.7, inside tile)
-  const wingX = concX - (CONC_W / 2 - WING_W / 2 + 0.5);
+  const wingFront = CONC_FRONT;                // front kept just behind platform (Z=15)
+  const wingCz = wingFront + WING_D / 2;       // ≈ 18.9 (back ≈ 22.4, inside band)
+  const wingX = concX - (CONC_W / 2 - WING_W / 2 + 0.5); // ≈ -18.5 → X ∈ [-22.5,-14.5]
   const wing = box(WING_W, WING_H, WING_D, MAT.brick, true, true);
   wing.position.set(wingX, WING_H / 2, wingCz);
   group.add(wing);
@@ -460,10 +471,12 @@ export function buildTransit() {
   const wTmp = new THREE.Object3D();
   let wi = 0;
   for (const sign of [-1, 1]) {                       // left + right wings
-    const wingCenter = concX + sign * (GLAZE_W / 2 + 4.8);
+    // wing centre at ±18.5 with a ±2.5 spread → panes sit in the masonry band
+    // between the glazing (±15) and the new wall edge (±22) — inside the setback.
+    const wingCenter = concX + sign * (GLAZE_W / 2 + 3.5);
     for (let c = 0; c < winCols; c++) {
       for (let r = 0; r < winRows; r++) {
-        const wx = wingCenter - 3.5 + (c * 7) / (winCols - 1);
+        const wx = wingCenter - 2.5 + (c * 5) / (winCols - 1);
         const wy = 6.4 + r * 2.4;
         wTmp.position.set(wx, wy, facadeZ + 0.04);
         wTmp.scale.set(0.5, 1.0, 1);
@@ -476,7 +489,9 @@ export function buildTransit() {
   group.add(winInst);
 
   // CLOCK TOWER rising at the +X end of the concourse (a station landmark).
-  const TOWER_X = concX + CONC_W / 2 - 2.5;
+  // SETBACK: pulled in a touch (offset 3.2 from the +X end) so the tower body,
+  // its cornice cap AND the wider roof spire (radius 4.2) all stay inside X≤23.
+  const TOWER_X = concX + CONC_W / 2 - 3.2;
   const TOWER_H = 18;
   const tower = box(6, TOWER_H, 6, MAT.concourse, true, true);
   tower.position.set(TOWER_X, TOWER_H / 2, CONC_Z);
@@ -615,23 +630,26 @@ export function buildTransit() {
       addCollider(colliders, x, CANOPY_Z + dz, 0.45, 0.45);
     }
   }
+  // SETBACK: the canopy roof/beams are narrowed to 44 (X ∈ [-22,+22], matching
+  // the platform) so the overhanging slab no longer reaches into the avenue road
+  // airspace at the ±30 tile edges. Columns at ±18 still carry it.
   // the roof slab (slight tilt toward the track for a shed-roof look)
-  const roof = box(56, 0.3, 5.2, MAT.canopy, true, false);
+  const roof = box(44, 0.3, 5.2, MAT.canopy, true, false);
   roof.position.set(0, PLAT_H + 4.3, CANOPY_Z - 0.2);
   roof.rotation.z = 0.0;
   roof.rotation.x = -0.05;
   group.add(roof);
   // bright underside so it reads from below
-  const under = box(55.6, 0.05, 4.9, MAT.canopyUnder, false, false);
+  const under = box(43.6, 0.05, 4.9, MAT.canopyUnder, false, false);
   under.position.set(0, PLAT_H + 4.13, CANOPY_Z - 0.2);
   under.rotation.x = -0.05;
   group.add(under);
   // a longitudinal beam tying the column heads
-  const beam = box(56, 0.3, 0.3, MAT.steel, true, false);
+  const beam = box(44, 0.3, 0.3, MAT.steel, true, false);
   beam.position.set(0, PLAT_H + 4.0, CANOPY_Z - 2.0);
   group.add(beam);
   // second longitudinal beam at the back column line
-  const beam2 = box(56, 0.3, 0.3, MAT.steel, true, false);
+  const beam2 = box(44, 0.3, 0.3, MAT.steel, true, false);
   beam2.position.set(0, PLAT_H + 4.0, CANOPY_Z + 1.6);
   group.add(beam2);
   // RICHER CANOPY STRUCTURE: cross-tie + diagonal brace at each column bay.
@@ -707,10 +725,12 @@ export function buildTransit() {
   // --- DEPARTURE BOARDS: two extra "sign" artPanels mounted on posts at the
   // platform ends, listing services. They face the platform (+Z look). Each
   // hangs on a small steel frame; their materials pulse with the main board.
+  // SETBACK: pulled in to x=±19 (panel half-width 2.3 → X ∈ [16.7,21.3]) so each
+  // board hangs over the narrowed platform, well inside the [-23,23] band.
   const depMats = [boardMat];
   const depSpecs = [
-    { x: -22, text: "DEPARTURES", bg: "#0d2b14", fg: "#7dffa0", file: "sign-departures.png" },
-    { x: 22, text: "ARRIVALS", bg: "#2b1410", fg: "#ffb37d", file: "sign-arrivals.png" },
+    { x: -19, text: "DEPARTURES", bg: "#0d2b14", fg: "#7dffa0", file: "sign-departures.png" },
+    { x: 19, text: "ARRIVALS", bg: "#2b1410", fg: "#ffb37d", file: "sign-arrivals.png" },
   ];
   for (const s of depSpecs) {
     const dep = signFacingNorthApproach(4.6, 1.7, {
@@ -762,7 +782,9 @@ export function buildTransit() {
   // Masts stand on the far (track) side; a thin wire box spans between heads.
   // All overhead — visual only, no colliders in the open lanes.
   const CAT_Z = TRACK_Z - 2.1;                         // track-side of the rails
-  const catXs = [-24, -12, 0, 12, 24];
+  // SETBACK: masts pulled in to ±20 (was ±24) so the end poles + cantilever arms
+  // sit over the narrowed track/train and clear the avenue road grid on the seams.
+  const catXs = [-20, -10, 0, 10, 20];
   const CAT_TOP = 5.2;
   for (const cxp of catXs) {
     const mast = new THREE.Mesh(GEO.catPole, MAT.catenary);
@@ -776,15 +798,17 @@ export function buildTransit() {
     group.add(armC);
   }
   // the contact wire: one long thin box running the mast line
-  const wire = box(50, 0.05, 0.05, MAT.wire, false, false);
+  const wire = box(42, 0.05, 0.05, MAT.wire, false, false);  // spans the ±20 masts
   wire.position.set(0, CAT_TOP - 0.6, TRACK_Z - 1.0);
   group.add(wire);
 
   // --- STREET DRESSING on the plaza south of the platform (well clear of the
   // open car/walk lanes Z≈[-8,+5]): bollard line, planters, a bin, a bench.
   // Bollards line the grass-verge edge at Z≈-13 (south of the open lanes).
+  // SETBACK: the row is pulled in to ±21 so the end bollards clear the avenue
+  // road grid on the X=±60 seams (formerly the ±24 ends sat in the kerb/road).
   const bollardZ = -13;
-  for (let bx = -24; bx <= 24; bx += 6) {
+  for (let bx = -21; bx <= 21; bx += 6) {
     const bol = new THREE.Mesh(GEO.bollard, MAT.steel);
     bol.position.set(bx, 0.45, bollardZ);
     bol.castShadow = true;
@@ -813,7 +837,7 @@ export function buildTransit() {
   // --- STRING LIGHTS: a festoon of small glowing bulbs strung along the plaza
   // front, between two short posts. One shared InstancedMesh of bulbs. ---------
   const fpZ = -10.5;
-  for (const px of [-22, 22]) {
+  for (const px of [-21, 21]) {                       // posts pulled inside ±23
     const fp = box(0.14, 4.0, 0.14, MAT.steel, true, false);
     fp.position.set(px, 2.0, fpZ);
     group.add(fp);
@@ -823,7 +847,7 @@ export function buildTransit() {
   const bTmp = new THREE.Object3D();
   for (let i = 0; i < bulbCount; i++) {
     const f = i / (bulbCount - 1);
-    const bx = -22 + f * 44;
+    const bx = -21 + f * 42;                           // span matches the ±21 posts
     // gentle catenary droop
     const droop = Math.sin(f * Math.PI) * 0.6;
     bTmp.position.set(bx, 3.7 - droop, fpZ);
