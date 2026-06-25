@@ -161,11 +161,17 @@ export function buildSkatepark() {
   const bowlX = -14, bowlZ = -12;
   const bowlA = makeCurvedRamp(14, 6, 1.7, 4, rampPaint);
   bowlA.position.set(bowlX, 0, bowlZ - 5);
-  bowlA.rotation.y = 0; // faces +Z (inward)
+  // North wall: the ramp HIGH end (rim) must sit at the OUTER edge under copeA
+  // (z=-20), with the low floor toward the bowl centre. makeCurvedRamp rises
+  // toward local +Z, so rotate PI to send the high end to -Z (outer). (Was 0,
+  // which put the rim toward centre and the floor under the coping — backwards.)
+  bowlA.rotation.y = Math.PI;
   group.add(bowlA);
   const bowlB = makeCurvedRamp(14, 6, 1.7, 4, rampPaint);
   bowlB.position.set(bowlX, 0, bowlZ + 5);
-  bowlB.rotation.y = Math.PI; // faces -Z (inward)
+  // South wall: mirror — high end (rim) at the OUTER +Z edge under copeB (z=-4),
+  // low floor toward centre. rotation 0 keeps the high end at +Z. (Was PI.)
+  bowlB.rotation.y = 0;
   group.add(bowlB);
   // coping lips along the top rim of each bowl wall
   const copeA = box(14, 0.12, 0.22, coping);
@@ -179,7 +185,11 @@ export function buildSkatepark() {
   const qpX = 18, qpZ = -8;
   const quarter = makeCurvedRamp(10, 5.5, 2.4, 5, rampPaint);
   quarter.position.set(qpX, 0, qpZ);
-  quarter.rotation.y = -Math.PI / 2; // curve rises toward +X (east wall)
+  // The quarter-pipe must rise toward the EAST rim (+X) where qpCope sits (x≈20.6);
+  // makeCurvedRamp rises toward local +Z, so +PI/2 sends the high end to +X. (Was
+  // -PI/2, which rose toward -X / the plaza centre with the coping stranded at the
+  // low end — the backwards ramp.)
+  quarter.rotation.y = Math.PI / 2;
   group.add(quarter);
   const qpCope = box(0.22, 0.12, 10, coping);
   qpCope.position.set(qpX + 2.6, 2.42, qpZ);
