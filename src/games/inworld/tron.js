@@ -5,15 +5,18 @@
 // grid says. Best-of-5, first to WIN_SCORE=3 rounds takes the match.
 //
 // Candidate #1 design notes (distinct approach vs. the original):
-//   * ORIENTATION: cycles spawn on the NEAR/FAR (row / canonical Z) axis instead
-//     of left/right. board.js uses the default FLAT orientPolicy and rotates this
-//     group by orientFor(seatRy) so canonical row 0 (-Z) lands nearest whoever is
-//     looking. Host's cycle (seat 0) spawns at the NEAR edge (row 0), guest's
-//     (seat 1) at the FAR edge (last row). Under the host's rotation (ry≈0) the
-//     host's own cycle is nearest; under the guest's rotation (ry≈PI) the board
-//     flips so the guest's own cycle (far in canonical space) is nearest THEM. So
-//     each seated player genuinely has their OWN side nearest, opponent across —
-//     with NO per-state recomputation of identity.
+//   * ORIENTATION: SELF-ORIENTED (orientPolicy:"self"), like pong.js. The sim runs
+//     in one CANONICAL frame (rows along Z); cycles spawn on the NEAR/FAR axis —
+//     host's cycle (seat 0) at the NEAR edge (row 4) heading far, guest's (seat 1)
+//     at the FAR edge heading near. board.js does NOT rotate our group; instead we
+//     map canonical -> a LOCAL-VIEW frame ourselves (gx/gz apply a per-seat 180°
+//     view flip for the guest), so THE LOCAL PLAYER'S OWN CYCLE ALWAYS RENDERS NEAR
+//     (-Z) and the opponent across at +Z, from BOTH opposite-end chairs. (The
+//     earlier FLAT + orientFor(seatRy) approach was wrong: orientFor brings
+//     canonical row 0 nearest EVERY viewer, so the guest saw the host's cycle near
+//     and steered its own across the table — and a 180° board spin also mirrored
+//     the lateral axis, inverting one seat's left/right. Self-orienting fixes both
+//     in one frame; see turnIntentFor for the matching steering swap.)
 //   * IDENTITY: the local side is derived ONCE from role and never re-read off the
 //     wire. The two cycles use clearly distinct colours (cyan vs orange), the
 //     LOCAL cycle gets a brighter head + a pulsing halo + a glowing home strip on
@@ -67,11 +70,15 @@ export function createGame(ctx) {
   // starts the sim. update()/pushState() gate on isHost() below.
   const isHost = () => role === "host";
 
-  // Per-viewer seat facing. board.js (FLAT policy — no orientPolicy declared)
-  // rotates THIS group by orientFor(seatRy) so the arena turns to face whoever is
-  // looking. We retain seatRy only so an in-place re-seat (setSeatRy) keeps in
-  // step; the arena + cues are authored in the canonical frame and the framework
-  // applies the rotation.
+  // Per-viewer seat facing. We declare orientPolicy:"self" (see the return), so
+  // board.js does NOT rotate this group — WE own facing. Facing is COMPOSED from
+  // two parts (exactly like pong.js): (1) a real group rotation to the physical
+  // chair via applyFacing() => group.rotation.y = orientFor(seatRy), which handles
+  // ALL FOUR chairs (ry ∈ {0, π, ±π/2}); and (2) the per-seat view flip below
+  // (viewSign), which selects which END (host/guest) lands near within that rotated
+  // frame. The earlier build drove facing from viewSign ALONE (a ±180° flip), which
+  // can never produce the ±90° a side chair needs — so side-chair seats saw the
+  // arena rotated 90° from their gaze. seatRy now genuinely drives the render.
   let seatRy = ctx.seatRy;
 
   // COLOR/SIDE DERIVATION (canonical convention §2). Derived ONCE from ROLE and
@@ -83,6 +90,37 @@ export function createGame(ctx) {
   // promoted-to a seat re-binds its identity cues via applyIdentity() in setRole().
   let mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
   let myColorIdx = mySeat;
+
+  // ---- SELF-ORIENTED view frame (orientPolicy:"self") ----
+  // We declare orientPolicy:"self" so board.js does NOT rotate this group (see
+  // InWorldBoard._orient). Facing is COMPOSED of two rotations, exactly as pong.js:
+  //   (1) applyFacing() rotates the WHOLE group by orientFor(seatRy) to the physical
+  //       chair — this is what makes all four chairs (ry ∈ {0, π, ±π/2}) correct.
+  //   (2) the view flip below renders canonical coords so THE LOCAL PLAYER'S OWN
+  //       CYCLE IS ALWAYS ON THE NEAR (-Z) EDGE of that rotated frame, the opponent
+  //       across at +Z. Seat 0 (host) spawns near (-Z) so it renders canonical
+  //       directly (viewSign +1); seat 1 (guest) spawns far (+Z) so we apply a 180°
+  //       view flip about table centre (both X and Z negate, viewSign -1) to bring
+  //       its OWN cycle near. Spectators take the canonical/host view.
+  // Both the group rotation AND the 180° view flip are proper rotations (chirality-
+  // preserving), so left/right steering stays self-consistent for both seats from
+  // every chair (see turnIntentFor below).
+  let viewFlip = mySeat === 1;
+  let viewSign = viewFlip ? -1 : 1;
+  // Rotate the whole group to THIS seat's chair (orientPolicy:"self" => board.js
+  // won't). Composes with the viewSign flip above; called at construction and on
+  // any in-place seat/role change.
+  function applyFacing() { group.rotation.y = orientFor(seatRy); }
+  // STEERING handedness. In the self-oriented frame the viewer always looks from
+  // the near (-Z) edge, so screen-left = -X(rendered), screen-right = +X(rendered).
+  // The canonical turn helpers turnLeft=(d+3)%4 / turnRight=(d+1)%4 are named the
+  // OPPOSITE way round from screen intent here: a physical "left" press must apply
+  // canonical turnRight, and "right" must apply turnLeft — and (because a 180° view
+  // flip preserves chirality) this swap is IDENTICAL for both seats. So we swap the
+  // physical intent to a turn-intent at the SENDER (each client knows its own seat)
+  // before buffering (host) or streaming (guest). The host trusts the guest's
+  // already-swapped intent in onInput.
+  const turnIntentFor = (physical) => (physical === "left" ? "right" : "left");
 
   // ---- authoritative / mirrored game state ----
   let grid = makeArena();
@@ -111,14 +149,14 @@ export function createGame(ctx) {
     if (e.code === "ArrowLeft" || e.code === "KeyA") t = "left";
     else if (e.code === "ArrowRight" || e.code === "KeyD") t = "right";
     if (!t) return;
-    // Steering is relative to the LOCAL player's own forward view. The board is
-    // rotated to face this seat, but left/right of the cycle's heading are
-    // invariant under that rotation (a 90°/180° board spin maps screen-left to
-    // the cycle's canonical left consistently), so "left" => turnLeft is correct
-    // for both seats. We buffer (host) or stream the intent (guest).
+    // Convert the physical key to a per-seat turn-intent in our self-oriented view
+    // (see turnIntentFor): a physical "left" must veer the LOCAL cycle toward the
+    // local screen-left from BOTH chairs. We buffer (host) or stream (guest) the
+    // already-swapped intent; onInput trusts the guest's swapped value.
+    const eff = turnIntentFor(t);
     e.preventDefault?.();
-    if (isHost()) hostTurn(0, t);
-    else { try { ctx.net.sendInput({ turn: t }); } catch { /* */ } }
+    if (isHost()) hostTurn(0, eff);
+    else { try { ctx.net.sendInput({ turn: eff }); } catch { /* */ } }
   };
   window.addEventListener("keydown", onKeyDown);
 
@@ -134,11 +172,16 @@ export function createGame(ctx) {
   // once. Identity materials are tracked in `ownedIdentity` so a rebuild can dispose
   // the prior pair without leaking.
   const ownedIdentity = [];
+  // Base trail glow (I4): nudged up from 0.55 so the OPPONENT's far-edge trail
+  // doesn't wash out under the pendant lamp from a low seated eye. Both sides share
+  // it so neither seat sees its opponent as dim. The win flourish (I2) pulses
+  // ABOVE this base and resets back to it each frame.
+  const TRAIL_GLOW = 0.7;
   const M = {
     floor: keep(standard(THREE, "#081c2e", { roughness: 0.7 })),
     // Two CLEARLY DISTINCT trail materials: cyan (tron0) vs orange (tron1).
-    t0: keep(standard(THREE, COLORS[0], { emissive: COLORS[0], emissiveIntensity: 0.55 })),
-    t1: keep(standard(THREE, COLORS[1], { emissive: COLORS[1], emissiveIntensity: 0.55 })),
+    t0: keep(standard(THREE, COLORS[0], { emissive: COLORS[0], emissiveIntensity: TRAIL_GLOW })),
+    t1: keep(standard(THREE, COLORS[1], { emissive: COLORS[1], emissiveIntensity: TRAIL_GLOW })),
     head0: keep(standard(THREE, "#bff7ff", { emissive: COLORS[0], emissiveIntensity: 0.9 })),
     head1: keep(standard(THREE, "#ffe0c0", { emissive: COLORS[1], emissiveIntensity: 0.9 })),
     // IDENTITY CUE: the LOCAL cycle's head out-glows the opponent's; halo + home
@@ -169,23 +212,79 @@ export function createGame(ctx) {
   floor.position.y = plankH / 2;
   group.add(floor);
   const TOP = plankH;
-  const gx = (x) => -AW / 2 + (x + 0.5) * cw;
-  const gz = (y) => -AH / 2 + (y + 0.5) * chh;
+
+  // BOUNDARY RAILS (I5): four thin glowing rails framing the lethal grid edge so the
+  // kill-walls are READABLE before a crash (matches pong's gold side rails). The
+  // perimeter is symmetric, so it's view-flip independent — no gx/gz needed. Dim
+  // emissive, castShadow:false, sits just above the floor below the trails.
+  const railMat = keep(standard(THREE, "#1a4a66", { emissive: PALETTE.tron0, emissiveIntensity: 0.45, roughness: 0.6 }));
+  const halfW = AW / 2, halfH = AH / 2, railT = 0.012, railY = TOP + 0.004;
+  const railLong = keep(new THREE.BoxGeometry(AW + railT * 2, 0.01, railT));
+  const railSide = keep(new THREE.BoxGeometry(railT, 0.01, AH + railT * 2));
+  for (const [geo, x, z] of [
+    [railLong, 0, -halfH - railT / 2],
+    [railLong, 0, halfH + railT / 2],
+    [railSide, -halfW - railT / 2, 0],
+    [railSide, halfW + railT / 2, 0],
+  ]) {
+    const rail = meshOf(THREE, geo, railMat, false);
+    rail.position.set(x, railY, z);
+    rail.renderOrder = 1;
+    group.add(rail);
+  }
+  // Canonical grid -> local-view world. viewSign applies the per-seat 180° view
+  // flip (both axes negate) so the LOCAL player's own cycle/home edge land near
+  // (-Z). All cycle/trail/halo/home-strip placement routes through these.
+  const gx = (x) => viewSign * (-AW / 2 + (x + 0.5) * cw);
+  const gz = (y) => viewSign * (-AH / 2 + (y + 0.5) * chh);
 
   const cellGeo = keep(new THREE.BoxGeometry(cw * 0.92, 0.012, chh * 0.92));
-  const headGeo = keep(new THREE.BoxGeometry(cw * 0.98, 0.022, chh * 0.98));
+  // Head fills a full cell (vs 0.98) so the live "cap" reads a touch brighter and
+  // wider than the trail it lays — a clearer leading edge for both seats (I4).
+  const headGeo = keep(new THREE.BoxGeometry(cw * 1.0, 0.024, chh * 1.0));
 
   // pool of trail meshes keyed by "x,y"
   const trailMeshes = new Map();
+  const HEAD_Y = TOP + 0.014;
 
   // IDENTITY CUE: the LOCAL cycle's head uses the brighter myHead material.
   // applyHeadMaterials() reassigns these on an in-place role change so the bright
   // local-head cue tracks the current seat (and clears for a demoted spectator).
+  // castShadow:false to match the flat-glow aesthetic of the trails/halo/strip —
+  // two tiny moving head boxes otherwise throw jittery specks onto the floor.
   const headMeshes = [
-    meshOf(THREE, headGeo, M.head0),
-    meshOf(THREE, headGeo, M.head1),
+    meshOf(THREE, headGeo, M.head0, false),
+    meshOf(THREE, headGeo, M.head1, false),
   ];
-  for (const h of headMeshes) { h.position.y = TOP + 0.014; group.add(h); }
+  for (const h of headMeshes) { h.position.y = HEAD_Y; group.add(h); }
+  // RENDER-SIDE head interpolation (I1). The authoritative grid is discrete (snaps
+  // each TICK_MS), but the moving head is eased toward its snapshot target every
+  // frame so it GLIDES cell-to-cell instead of teleporting. Trails stay discrete
+  // (they're authoritative). headTarget holds the latest snapshot world XZ; a fresh
+  // spawn / big jump snaps (no long glide across the arena). Reused objects — no
+  // per-frame allocation. Same "render eases toward authority" pattern as pong.
+  const headTarget = [{ x: 0, z: 0 }, { x: 0, z: 0 }];
+  const headPlaced = [false, false];
+
+  // CRASH FLOURISH (I2). On a head transitioning alive->dead (detected from the
+  // synced snapshot via wasAlive) we pop a brief expanding emissive ring at its last
+  // cell, fading over CRASH_MS. One reusable ring + material per cycle (no per-frame
+  // alloc); driven from snapshot state so host/guest/spectator all see it.
+  const CRASH_MS = 420;
+  const wasAlive = [true, true];
+  const crashAt = [-1e9, -1e9]; // local-ms start of each cycle's crash ring
+  // Cell-relative ring (one cell-ish base; update() scales it out to ~3 cells).
+  const ringR = Math.min(cw, chh);
+  const ringGeo = keep(new THREE.RingGeometry(ringR * 0.55, ringR * 0.85, 28));
+  const crashMats = [
+    keep(standard(THREE, COLORS[0], { emissive: COLORS[0], emissiveIntensity: 1.4, transparent: true, opacity: 0.9, depthWrite: false })),
+    keep(standard(THREE, COLORS[1], { emissive: COLORS[1], emissiveIntensity: 1.4, transparent: true, opacity: 0.9, depthWrite: false })),
+  ];
+  const crashRings = [
+    meshOf(THREE, ringGeo, crashMats[0], false),
+    meshOf(THREE, ringGeo, crashMats[1], false),
+  ];
+  for (const r of crashRings) { r.rotation.x = -Math.PI / 2; r.position.y = TOP + 0.009; r.renderOrder = 3; r.visible = false; group.add(r); }
   function applyHeadMaterials() {
     headMeshes[0].material = myColorIdx === 0 && M.myHead ? M.myHead : M.head0;
     headMeshes[1].material = myColorIdx === 1 && M.myHead ? M.myHead : M.head1;
@@ -204,7 +303,11 @@ export function createGame(ctx) {
     if (myHomeStrip) { group.remove(myHomeStrip); myHomeStrip = null; }
     if (M.mine && myColorIdx != null) {
       myHalo = meshOf(THREE, haloGeo, M.mine, false);
-      myHalo.position.y = TOP + 0.006;
+      // Sit ABOVE the trail cells (TOP+0.007) but below the heads (TOP+0.014) so
+      // the "this is me" glow never gets occluded by the local cycle's own freshly
+      // laid trail; renderOrder pins it over the floor/trails with depthWrite:false.
+      myHalo.position.y = TOP + 0.0085;
+      myHalo.renderOrder = 2;
       group.add(myHalo);
       const spawn = SPAWN[myColorIdx];
       myHomeStrip = meshOf(THREE, stripGeo, M.mine, false);
@@ -219,6 +322,12 @@ export function createGame(ctx) {
   // the synced snapshot so host, guests, and spectators all read the same cue.
   let bannerTex = null, bannerMat = null, bannerSprite = null, bannerCanvas = null, bannerCtx = null;
   let lastBannerText = "";
+  // Banner "pop": when the displayed text changes (each countdown tick / GO / a
+  // round or match result) we kick a quick overshoot-then-settle scale animation
+  // instead of re-uploading the canvas texture every frame. baseScale is captured
+  // once; bannerPopAt is the local-ms timestamp of the last text change.
+  let bannerBaseX = 0, bannerBaseY = 0, bannerPopAt = -1e9;
+  const BANNER_POP_MS = 320;
   (function buildBanner() {
     if (typeof document === "undefined") return; // headless guard
     try {
@@ -232,7 +341,8 @@ export function createGame(ctx) {
       owned.push(bannerMat);
       bannerSprite = new THREE.Sprite(bannerMat);
       bannerSprite.position.set(0, TOP + 0.16, 0);
-      bannerSprite.scale.set(AW * 0.7, AW * 0.7 * (128 / 512), 1);
+      bannerBaseX = AW * 0.7; bannerBaseY = AW * 0.7 * (128 / 512);
+      bannerSprite.scale.set(bannerBaseX, bannerBaseY, 1);
       bannerSprite.renderOrder = 999;
       group.add(bannerSprite);
     } catch { bannerSprite = null; }
@@ -299,15 +409,27 @@ export function createGame(ctx) {
   // can run across rows 0 / ROWS-1 and z-fight a pip parked on the spawn row.
   const PIP_MARGIN = chh * 1.2;
   for (let side = 0; side < 2; side++) {
-    const z = side === 0 ? -AH / 2 - PIP_MARGIN : AH / 2 + PIP_MARGIN;
     for (let k = 0; k < WIN_SCORE; k++) {
       const p = meshOf(THREE, pipGeo, pipOffMat, false);
-      const x = (k - (WIN_SCORE - 1) / 2) * cw * 1.4;
-      p.position.set(x, TOP + 0.01, z);
+      p.position.y = TOP + 0.01;
       group.add(p);
       pips[side].push(p);
     }
   }
+  // Pip XZ is view-dependent: side 0 (cyan / host) sits beyond the canonical near
+  // edge, side 1 (orange / guest) beyond the far edge. viewSign flips both so the
+  // LOCAL player's own-colour pips read on THEIR near side from either chair.
+  // Re-run on an in-place role change (setRole) so the flip tracks the new seat.
+  function positionPips() {
+    for (let side = 0; side < 2; side++) {
+      const z = (side === 0 ? -AH / 2 - PIP_MARGIN : AH / 2 + PIP_MARGIN) * viewSign;
+      for (let k = 0; k < pips[side].length; k++) {
+        const x = (k - (WIN_SCORE - 1) / 2) * cw * 1.4 * viewSign;
+        pips[side][k].position.set(x, TOP + 0.01, z);
+      }
+    }
+  }
+  positionPips();
 
   function clearTrails() {
     for (const m of trailMeshes.values()) group.remove(m);
@@ -341,15 +463,32 @@ export function createGame(ctx) {
     for (let i = 0; i < 2; i++) {
       const c = cycles[i];
       headMeshes[i].visible = !!c && c.alive && showHeads;
-      if (c) headMeshes[i].position.set(gx(c.x), TOP + 0.014, gz(c.y));
+      if (c) {
+        const tx = gx(c.x), tz = gz(c.y);
+        // CRASH FLOURISH: fire a ring when this cycle just died (alive->dead). At
+        // round reset both come back alive, which re-arms wasAlive without firing.
+        if (wasAlive[i] && !c.alive) {
+          crashAt[i] = nowMs();
+          crashRings[i].position.set(tx, crashRings[i].position.y, tz);
+        }
+        wasAlive[i] = c.alive;
+        // Set the interpolation TARGET; snap on a fresh placement / big jump (round
+        // reset, first paint) so the head never glides across the whole arena. The
+        // normal cell-to-cell step (<= one cell) is left to update()'s ease.
+        const dx = tx - headTarget[i].x, dz = tz - headTarget[i].z;
+        const big = !headPlaced[i] || (dx * dx + dz * dz) > (cw * cw + chh * chh) * 4;
+        headTarget[i].x = tx; headTarget[i].z = tz;
+        if (big) { headMeshes[i].position.set(tx, HEAD_Y, tz); headPlaced[i] = true; }
+      } else {
+        headPlaced[i] = false;
+      }
     }
 
     if (myColorIdx != null) {
       const me = cycles[myColorIdx];
-      if (myHalo) {
-        myHalo.visible = !!me && me.alive && showHeads;
-        if (me) myHalo.position.set(gx(me.x), TOP + 0.006, gz(me.y));
-      }
+      // Halo XZ tracks the LOCAL head mesh in update() (eased), so it glides with
+      // the head; here we only toggle visibility.
+      if (myHalo) myHalo.visible = !!me && me.alive && showHeads;
       // Home strip marks the spawn edge during countdown so the player confirms
       // their starting side, then fades so it doesn't clutter the live arena.
       if (myHomeStrip) myHomeStrip.visible = phase === "countdown";
@@ -363,11 +502,14 @@ export function createGame(ctx) {
       }
     }
 
-    // banner
+    // banner. Redraw the canvas ONLY when the text actually changes (the countdown
+    // digit changes once per second, the result text once) — no per-frame GPU
+    // texture upload. The visual "tick" comes from a sprite-scale pop (see update).
     const b = bannerFor();
-    if (b.text !== lastBannerText || phase === "countdown") {
+    if (b.text !== lastBannerText) {
       lastBannerText = b.text;
       drawBanner(b.text, b.color);
+      if (b.text) bannerPopAt = nowMs(); // kick the overshoot-then-settle pop
     }
     if (bannerSprite) bannerSprite.visible = !!b.text;
   }
@@ -527,11 +669,77 @@ export function createGame(ctx) {
 
   function update(dt) {
     if (isHost()) hostTick(dt);
-    // Idle pulse on the local halo so "which one am I" reads at a glance even
-    // while standing still during the countdown.
+
+    // ---- render-side cosmetic interpolation (authority untouched) ----
+    if (!Number.isFinite(dt) || dt <= 0) dt = 1 / 60;
+    const now = nowMs();
+    const ease = Math.min(1, dt * 12); // smooth cell-to-cell head glide (I1)
+
+    // Ease each visible head toward its snapshot target; the local head's halo
+    // follows so the "this is me" glow glides with it.
+    for (let i = 0; i < 2; i++) {
+      const h = headMeshes[i];
+      if (!h.visible) continue;
+      h.position.x += (headTarget[i].x - h.position.x) * ease;
+      h.position.z += (headTarget[i].z - h.position.z) * ease;
+    }
+    if (myHalo && myHalo.visible && myColorIdx != null) {
+      myHalo.position.x = headMeshes[myColorIdx].position.x;
+      myHalo.position.z = headMeshes[myColorIdx].position.z;
+    }
+
+    // CRASH FLOURISH (I2a): expanding, fading emissive ring at the death cell.
+    for (let i = 0; i < 2; i++) {
+      const age = now - crashAt[i];
+      const ring = crashRings[i];
+      if (age >= 0 && age < CRASH_MS) {
+        const t = age / CRASH_MS;            // 0..1
+        const s = 0.6 + t * 2.6;             // grow out from the cell
+        ring.scale.set(s, s, s);
+        crashMats[i].opacity = 0.9 * (1 - t); // fade out
+        crashMats[i].emissiveIntensity = 1.4 * (1 - t * 0.5);
+        ring.visible = true;
+      } else if (ring.visible) {
+        ring.visible = false;
+      }
+    }
+
+    // BANNER POP (I3): quick overshoot-then-settle scale each time the text changes
+    // (no per-frame texture upload). Cosmetic only; visibility is set in renderGrid.
+    if (bannerSprite && bannerSprite.visible) {
+      const age = now - bannerPopAt;
+      let k = 1;
+      if (age >= 0 && age < BANNER_POP_MS) {
+        const t = age / BANNER_POP_MS;       // 0..1
+        // Damped overshoot: punches ~25% above base then settles smoothly to 1.
+        k = 1 + 0.25 * Math.sin(Math.PI * t * 1.5) * (1 - t);
+      }
+      bannerSprite.scale.set(bannerBaseX * k, bannerBaseY * k, 1);
+    }
+
+    // WIN FLOURISH (I2b): pulse the survivor's trail glow on round/match end so the
+    // winner's wall reads as "alive". Always reset BOTH trails to the base glow
+    // first, so a finished pulse never leaves a material brightened.
+    M.t0.emissiveIntensity = TRAIL_GLOW;
+    M.t1.emissiveIntensity = TRAIL_GLOW;
+    if ((phase === "roundover" || phase === "matchover")) {
+      const w = phase === "matchover" ? matchWinner : roundWinner;
+      if (w === 0 || w === 1) {
+        const pulse = TRAIL_GLOW + 0.6 * (0.5 + 0.5 * Math.sin(now / 1000 * 6));
+        (w === 0 ? M.t0 : M.t1).emissiveIntensity = pulse;
+      }
+    }
+
+    // IDENTITY HALO pulse (I6): strong, attention-grabbing during the countdown so
+    // "which one am I" reads at a glance; damped to a steady glow during live play
+    // so it doesn't compete with the fast-moving trail.
     if (M.mine) {
-      const t = nowMs() / 1000;
-      M.mine.emissiveIntensity = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3.2));
+      const t = now / 1000;
+      if (phase === "countdown") {
+        M.mine.emissiveIntensity = 0.65 + 0.45 * (0.5 + 0.5 * Math.sin(t * 5));
+      } else {
+        M.mine.emissiveIntensity = 0.78 + 0.12 * (0.5 + 0.5 * Math.sin(t * 2.2));
+      }
     }
     // guests/spectators paint on snapshot arrival (renderGrid in applyState).
   }
@@ -591,16 +799,23 @@ export function createGame(ctx) {
     mySeat = role === "host" ? 0 : role === "guest" ? 1 : null;
     myColorIdx = mySeat;
     myColor = myColorIdx != null ? COLORS[myColorIdx] : null;
+    // Recompute the self-oriented view frame for the new seat: seat 1 (guest) flips
+    // 180° so its own cycle stays near; host/spectator render canonical. Re-layout
+    // the view-dependent meshes (pips; home strip is rebuilt below) so nothing
+    // keeps a stale orientation. The steering swap (turnIntentFor) is seat-agnostic.
+    viewFlip = mySeat === 1;
+    viewSign = viewFlip ? -1 : 1;
+    applyFacing(); // re-rotate to this seat's chair (composes with viewSign)
     buildIdentityMaterials();
     applyHeadMaterials();
     buildIdentityMeshes();
+    positionPips();
     renderGrid();
   }
-  // board.js re-rotates the group by orientFor(seatRy) on an in-place seat move
-  // and calls this; the arena + cues are authored canonically so the rotation is
-  // all that's needed. Track seatRy and reference orientFor so the contract is
-  // explicit in this module.
-  function setSeatRy(ry) { seatRy = ry; void orientFor(seatRy); }
+  // orientPolicy:"self" — board.js does NOT rotate this group, so an in-place
+  // re-seat must re-rotate the group ourselves to keep THIS player's near edge at
+  // local -Z. applyFacing() composes orientFor(seatRy) with the viewSign flip.
+  function setSeatRy(ry) { seatRy = ry; applyFacing(); renderGrid(); }
   function dispose() {
     window.removeEventListener("keydown", onKeyDown);
     clearTrails();
@@ -611,11 +826,17 @@ export function createGame(ctx) {
 
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
+  applyFacing(); // rotate to this seat's physical chair before the first paint
   renderGrid();
+  // orientPolicy:"self" — we own per-seat facing by COMPOSING a real group rotation
+  // (applyFacing => orientFor(seatRy), handles all four chairs) with the view flip
+  // (gx/gz/pips, selects which end is near), so board.js must NOT also rotate our
+  // group (see InWorldBoard._orient). This is what makes each player's OWN cycle
+  // render near and the left/right steering self-consistent from EVERY chair.
   // spectatorAnimates:false — real-time, snapshot-driven: applyMove is a no-op and
   // spectators render only from streamed state, so board.js must NOT swallow
   // post-move snapshots (see InWorldBoard._onMove, BUG 1).
-  return { group, spectatorAnimates: false, applyState, applyMove: () => true, onPointer, onInput, update, publicState, setRole, setSeatRy, dispose };
+  return { group, orientPolicy: "self", spectatorAnimates: false, applyState, applyMove: () => true, onPointer, onInput, update, publicState, setRole, setSeatRy, dispose };
 }
 
 export default createGame;

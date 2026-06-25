@@ -35,6 +35,7 @@
 // so `npm run build` stays green and the book still renders.
 
 import { listGames } from "../registry.js";
+import { orientFor } from "./createGame.js";
 
 // Lazy, build-tolerant preview loader. The static glob lets Vite resolve whatever
 // exists at build time; a missing previews.js simply isn't in the map and we use
@@ -218,6 +219,16 @@ export function createGame(ctx) {
   group.name = "flipbook-menu";
 
   let role = ctx.role;
+  // Our seat ry. board.js uses the default "flat" orientPolicy, so it rotates our
+  // GROUP by orientFor(seatRy): ~0 for the host seat, ~PI for the opponent chair.
+  // Every flat text plane (page title/blurb, page footer, "Play" plate, arrows) is
+  // a child of the group, so without per-seat correction the opponent reads the
+  // whole menu upside-down/backwards. We track seatRy and counter-rotate the text
+  // holders by -orientFor(seatRy) (see _applyTextFacing) — exactly the trick
+  // battleship uses for its HUD (hudMesh.rotation.y = -group.rotation.y) — so the
+  // text always reads upright from the LOCAL seat while the book BODY stays oriented
+  // toward the reader.
+  let seatRy = ctx.seatRy;
   // onPick(gameId) is injected by main.js via ctx.onPick; chooseGame relay lives
   // there. Guests/spectators never pick.
   const onPick = typeof ctx.onPick === "function" ? ctx.onPick : () => {};
@@ -287,9 +298,39 @@ export function createGame(ctx) {
   let turnFront = null;
   let turnBack = null;
 
+  // Per-seat TEXT-FACING holders. Every readable flat text plane (page title/blurb,
+  // page footer, "Play" plate, nav arrows) lives at the ORIGIN of one of these
+  // holders; the holder carries the plane's position and a Y rotation that cancels
+  // the group's per-seat orientFor(seatRy). _applyTextFacing() keeps holder.rotation.y
+  // = -orientFor(seatRy) so each plane spins about its own normal and reads upright
+  // from whichever seat the local viewer occupies — the opponent no longer sees the
+  // menu upside-down. The book BODY (cover/spine/pages/diorama) is NOT a text holder,
+  // so it stays oriented toward the reader by the group + bookRoot.PI.
+  const textHolders = [];
+  // A text plane laid flat (rotation.x = -PI/2) at the local −Z near edge reads 180°
+  // rotated from the seat without a correction. bookRoot.rotation.y = PI already
+  // supplies that +PI for the host seat; the per-seat counter-rotation below makes it
+  // hold for EVERY seat. Net readable world-Y of the text = group.rotation.y (PI for
+  // the opponent, 0 for host) + bookRoot.PI + holder(-orientFor(seatRy)) ≡ PI for all.
+  function makeTextHolder(parent, x, y, z) {
+    const h = new THREE.Group();
+    h.position.set(x, y, z);
+    parent.add(h);
+    textHolders.push(h);
+    return h;
+  }
+  // Counter-rotate every text holder so flat text stays seat-upright. Called once at
+  // build and whenever the seat changes (setSeatRy). A spectator (seatRy null) gets
+  // orientFor(null) === 0 → holder.rotation.y 0, i.e. the canonical host-facing text.
+  function _applyTextFacing() {
+    const ry = -orientFor(seatRy);
+    for (const h of textHolders) h.rotation.y = ry;
+  }
+
   buildBook();
   buildPlacard();
   applyRoleVisibility();
+  _applyTextFacing(); // orient the flat text holders for this seat (built after buildBook)
   renderSpread();
   sendMenuState(); // host: publish the initial page so late joiners catch up
 
@@ -329,18 +370,23 @@ export function createGame(ctx) {
     bookRoot.add(spine);
 
     // Two flat open page faces (left + right of the spine). Their textures are
-    // (re)assigned in renderSpread().
+    // (re)assigned in renderSpread(). The RIGHT page carries the title/blurb/footer
+    // text, so it sits in a per-seat text holder that keeps the text upright from the
+    // local seat (the LEFT page is a blank parchment backdrop for the diorama, but it
+    // also rides a holder so a future left-page texture stays upright too). Each plane
+    // is laid flat at its holder's ORIGIN; the holder carries the page's local
+    // position + the -orientFor(seatRy) counter-rotation.
     const pageY = 0.02 + blockH + 0.004; // clear 4 mm gap above the block (no z-fight)
     const pageGeo = track(_geos, new THREE.PlaneGeometry(halfW - 0.012, PAGE_D - 0.02));
+    const leftHolder = makeTextHolder(bookRoot, -halfW / 2, pageY, 0);
     leftPageMesh = new THREE.Mesh(pageGeo, M.pageBlank);
     leftPageMesh.rotation.x = -Math.PI / 2;
-    leftPageMesh.position.set(-halfW / 2, pageY, 0);
-    bookRoot.add(leftPageMesh);
+    leftHolder.add(leftPageMesh);
 
+    const rightHolder = makeTextHolder(bookRoot, halfW / 2, pageY, 0);
     rightPageMesh = new THREE.Mesh(pageGeo, M.pageBlank);
     rightPageMesh.rotation.x = -Math.PI / 2;
-    rightPageMesh.position.set(halfW / 2, pageY, 0);
-    bookRoot.add(rightPageMesh);
+    rightHolder.add(rightPageMesh);
 
     // Ribbon bookmark trailing off the bottom edge toward the reader.
     const ribbon = new THREE.Mesh(
@@ -396,11 +442,15 @@ export function createGame(ctx) {
     buildArrow("prev", -halfW + 0.04, pageY + 0.012, PAGE_D / 2 + 0.012, false);
     buildArrow("next", halfW - 0.04, pageY + 0.012, PAGE_D / 2 + 0.012, true);
 
-    // "Play" plate floating off the front edge, centred.
+    // "Play" plate floating off the front edge, centred. It carries the "Play" label
+    // text, so it rides a per-seat text holder (placed at the plate's local position)
+    // and is added at the holder ORIGIN — keeping the label upright from any seat.
+    // userData.menuAction stays on the plate (and propagates through its label/base),
+    // so the pointer ancestor-walk still resolves a click anywhere on it.
     playPlate = makeLabelPlate("Play", COL.plate, "#ffffff", 0.16, 0.058);
-    playPlate.position.set(0, pageY + 0.016, PAGE_D / 2 + 0.028);
     playPlate.userData.menuAction = "play";
-    bookRoot.add(playPlate);
+    const playHolder = makeTextHolder(bookRoot, 0, pageY + 0.016, PAGE_D / 2 + 0.028);
+    playHolder.add(playPlate);
     hostOnly.push(playPlate);
 
     // The turning sheet (hidden until a flip is in progress). It pivots about the
@@ -477,7 +527,6 @@ export function createGame(ctx) {
     const mat = M.arrow;
     const m = new THREE.Mesh(geo, mat);
     m.rotation.x = -Math.PI / 2;
-    m.position.set(x, y, z);
     m.userData.menuAction = action;
     // A slightly larger invisible hit pad behind it for easier clicking.
     const pad = new THREE.Mesh(
@@ -485,9 +534,15 @@ export function createGame(ctx) {
       track(_mats, new THREE.MeshBasicMaterial({ visible: false }))
     );
     pad.rotation.x = -Math.PI / 2;
-    pad.position.set(x, y - 0.001, z);
+    pad.position.y = -0.001;
     pad.userData.menuAction = action;
-    bookRoot.add(m, pad);
+    // Arrow glyphs are directional (prev points left, next points right): they ride a
+    // per-seat text holder at the arrow's local position so the glyph reads in the
+    // LOCAL viewer's left/right (the opponent otherwise saw them mirrored). The glyph
+    // + hit pad sit at the holder ORIGIN; menuAction stays on both so the pointer
+    // ancestor-walk still routes the click regardless of the holder rotation.
+    const arrowHolder = makeTextHolder(bookRoot, x, y, z);
+    arrowHolder.add(m, pad);
     hostOnly.push(m, pad);
   }
 
@@ -882,8 +937,13 @@ export function createGame(ctx) {
     renderSpread();
     sendMenuState(); // self-gates to host; a newly-promoted host re-publishes
   }
-  function setSeatRy() {
-    /* engine rotates our group (orientPolicy default "flat"); nothing to do. */
+  function setSeatRy(ry) {
+    // The engine rotates our GROUP by orientFor(ry) (default "flat" orientPolicy), so
+    // the book BODY already faces the new seat. But the flat TEXT planes would then
+    // read upside-down/backwards from the opposite chair — so track the seat and
+    // counter-rotate the text holders to keep every label upright from the local seat.
+    seatRy = ry;
+    _applyTextFacing();
   }
 
   // Host → others page sync. The host publishes its open-page index (cached by

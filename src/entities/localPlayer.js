@@ -177,7 +177,9 @@ export class LocalPlayer {
 
     if (this.moving) {
       const inv = 1 / intent;
-      const step = PLAYER.speed * dt;
+      // speedMul lets a ride (skateboard) boost ground speed without touching the
+      // base walk speed. Default 1 (plain walking).
+      const step = PLAYER.speed * dt * (this.speedMul || 1);
       let nx = this.pos.x + vx * inv * step;
       let nz = this.pos.z + vz * inv * step;
 

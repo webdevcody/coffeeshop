@@ -911,3 +911,57 @@ body {
 .game-ctl-btn.primary { background: #2f8a5a; border-color: #54a368; color: #eafff1; }
 .game-ctl-btn.primary:hover { background: #36a368; }
 .game-ctl-btn.disabled { background: #39444c; color: #8b97a0; cursor: default; }
+
+/* Battleship fleet-status cards (screen-space) — pinned to the side edges so the
+   table pedestal / 3D bodies across the table can never clip them. Two cards: the
+   enemy fleet you're sinking (left) and your own fleet (right). */
+.fleet-panels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease;
+}
+.fleet-panels.show { opacity: 1; visibility: visible; }
+.fleet-card {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 210px;
+  padding: 12px 14px;
+  background: rgba(8, 18, 30, 0.86);
+  border: 1px solid var(--accent, #7fd1ff);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45);
+}
+.fleet-card:first-child { left: 18px; }
+.fleet-card:last-child { right: 18px; }
+.fleet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(150,190,230,0.18);
+  padding-bottom: 6px;
+}
+.fleet-title { font: 700 16px system-ui, sans-serif; color: var(--accent, #7fd1ff); }
+.fleet-count { font: 500 12px system-ui, sans-serif; color: #9fb2c0; white-space: nowrap; }
+.fleet-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.fleet-ship { font: 600 13px system-ui, sans-serif; color: #dfe9f2; }
+.fleet-row.dead .fleet-ship { color: #7d4a4a; text-decoration: line-through; }
+.fleet-pips { display: inline-flex; gap: 4px; }
+.fleet-pip {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--accent, #7fd1ff);
+}
+.fleet-row.dead .fleet-pip { background: #8a1c0c; }

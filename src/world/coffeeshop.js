@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { WORLD } from "../config.js";
 import { buildOutside } from "./outside.js";
+import { buildCity } from "./city.js";
 import { woodFloorTexture, plasterTexture, chalkboardMenuTexture } from "./textures.js";
 import {
   makeTable,
@@ -291,15 +292,25 @@ export function buildCoffeeshop(scene) {
   const outside = buildOutside(scene);
   for (const c of outside.colliders) colliders.push(c);
 
-  // Walkable ground = the interior floor + the outside block. Standing outside
-  // every rect makes the player fall and respawn (see LocalPlayer).
+  // --- The expanded city: 16 districts radiating out in front of the cafe ---
+  const city = buildCity(scene);
+  for (const c of city.colliders) colliders.push(c);
+
+  // Walkable ground = the interior floor + the outside block + the whole city.
+  // Standing outside every rect makes the player fall and respawn (see LocalPlayer).
   const ground = [
     { minX: -halfW, maxX: halfW, minZ: -halfD, maxZ: halfD },
     ...outside.ground,
+    ...city.ground,
   ];
   const spawn = { x: 0, z: 4 };
 
-  return { group, colliders, lights, seats, bar, ground, spawn, tables, update: outside.update };
+  const update = (dt) => {
+    outside.update?.(dt);
+    city.update?.(dt);
+  };
+
+  return { group, colliders, lights, seats, bar, ground, spawn, tables, update };
 }
 
 // Register an axis-aligned box collider centered at (cx, cz) with full size (w, d).

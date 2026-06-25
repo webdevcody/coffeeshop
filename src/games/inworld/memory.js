@@ -28,7 +28,19 @@ const COLS = 6;
 const ROWS = 4;
 const PAIRS = (COLS * ROWS) / 2;
 const FACES = ["☕", "🫘", "🥐", "🍰", "🍩", "🧁", "🍪", "🥛", "🍫", "🍵", "🧋", "🥧"];
-const SHOW_MS = 1100; // how long a mismatched pair stays revealed before flipping back
+// Mismatched pair stays revealed before flipping back. Lengthened modestly from
+// 1100 → 1350 so the GUEST's reveal window survives relay latency: the host arms
+// the timer only AFTER pushing the "both up" snapshot, so on a slow link the guest
+// still gets a comfortable look before the host pushes the flip-back. Purely a
+// timing tweak — no protocol change, no rule change. (audit B3)
+const SHOW_MS = 1350;
+
+// --- visual-polish constants (all local/cosmetic; no rule or sync impact) -----
+const MATCH_GLOW = 0.26; // steady accent emissive on a matched-pair face
+const POP_DUR = 0.28; // seconds for the match "pop" scale flourish
+const POP_SCALE = 0.12; // extra scale at the peak of the pop (1 → 1.12 → 1)
+const HOVER_LIFT = 0.006; // metres a hovered face-down card rises for the local player
+const HOVER_DUR = 0.12; // seconds for the hover lift to ease in/out
 
 // Two clearly DISTINCT side hues. Host (the first-to-move side) = warm gold;
 // guest (second side) = cool blue. Derived from ROLE only — never from the wire.
@@ -111,7 +123,10 @@ export function createGame(ctx) {
   const keep = (x) => (owned.push(x), x);
   const M = {
     felt: keep(standard(THREE, "#6b4327", { roughness: 0.85 })),
-    back: keep(standard(THREE, "#8a5526", { roughness: 0.6, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })),
+    // Card back lightened #8a5526 → #a8703a and given a faint warm emissive so the
+    // grid of face-down cards reads clearly against the close-brown felt from both
+    // seats (audit I7). The darker edge mat frames each card for extra separation.
+    back: keep(standard(THREE, "#a8703a", { roughness: 0.55, emissive: "#3a2410", emissiveIntensity: 0.18, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })),
     edge: keep(standard(THREE, "#4a2e1a", { roughness: 0.8, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })),
     matched: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.22, roughness: 0.5, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })),
     // Per-side identity / turn materials. Own instances so emissive drives
@@ -124,6 +139,21 @@ export function createGame(ctx) {
   };
   const faceTextures = [];
   const faceMats = [];
+  // Parallel cache of "matched" face materials: the same printed glyph, but with
+  // a steady accent emissive so a matched pair visibly GLOWS for every viewer
+  // (host / guest / spectator). Built lazily alongside faceMats and reusing the
+  // very same canvas texture, so no extra per-frame allocation. The popup/win
+  // flourishes (I1/I8) ramp these materials' emissiveIntensity transiently.
+  const matchedFaceMats = [];
+  // Mismatch face materials: the same glyph with a faint red emissive, shown on
+  // the two revealed-but-unequal cards just before they flip back, as a gentle
+  // "no" cue. Both host and guest see two "up" cards with values in the snapshot,
+  // so this reads identically for every role with no protocol change. (audit I2)
+  const missFaceMats = [];
+  // Demoted face materials for the SPECTATOR's reveal of still-face-down cards:
+  // same glyph, but darkened/desaturated (low color multiplier) so a watcher can
+  // tell "known but not yet played" from cards actually up/matched. (audit B1)
+  const demotedFaceMats = [];
 
   function getFaceMat(value) {
     if (faceMats[value]) return faceMats[value];
@@ -131,6 +161,48 @@ export function createGame(ctx) {
     faceTextures.push(tex);
     const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 });
     faceMats[value] = mat;
+    return mat;
+  }
+
+  function getMatchedFaceMat(value) {
+    if (matchedFaceMats[value]) return matchedFaceMats[value];
+    // Reuse the same glyph texture the plain face mat already built/owns.
+    getFaceMat(value);
+    const base = faceMats[value];
+    const mat = new THREE.MeshStandardMaterial({
+      map: base.map,
+      roughness: 0.5,
+      emissive: new THREE.Color(PALETTE.accent),
+      emissiveIntensity: MATCH_GLOW,
+    });
+    matchedFaceMats[value] = mat;
+    return mat;
+  }
+
+  function getMissFaceMat(value) {
+    if (missFaceMats[value]) return missFaceMats[value];
+    getFaceMat(value);
+    const base = faceMats[value];
+    const mat = new THREE.MeshStandardMaterial({
+      map: base.map,
+      roughness: 0.6,
+      emissive: new THREE.Color("#a83a2a"),
+      emissiveIntensity: 0.28,
+    });
+    missFaceMats[value] = mat;
+    return mat;
+  }
+
+  function getDemotedFaceMat(value) {
+    if (demotedFaceMats[value]) return demotedFaceMats[value];
+    getFaceMat(value);
+    const base = faceMats[value];
+    const mat = new THREE.MeshStandardMaterial({
+      map: base.map,
+      roughness: 0.75,
+      color: new THREE.Color(0.55, 0.55, 0.55), // darken so it reads as "not in play"
+    });
+    demotedFaceMats[value] = mat;
     return mat;
   }
 
@@ -172,18 +244,26 @@ export function createGame(ctx) {
     return [M.edge, M.edge, topMat, faceMat, M.edge, M.edge];
   }
 
+  // Per-card resting base position (cached so update() lifts/settles without any
+  // per-frame allocation — we just add hoverT*HOVER_LIFT to baseY).
+  const baseY = [];
   for (let i = 0; i < COLS * ROWS; i++) {
     const m = meshOf(THREE, cardGeo, cardMaterials(M.back, M.back));
     m.position.set(cardX(i), CARD_Y, cardZ(i));
     group.add(m);
     cardMeshes.push(m);
-    anim.push({ faceUp: false, target: 0, mat: M.back });
+    baseY.push(CARD_Y);
+    // flipT/flipFrom drive an ease-in-out flip; popT a match pop; hoverT a
+    // local-only hover lift. prevState tracks the last logical state so we can
+    // detect a NEW match transition and fire the pop once.
+    anim.push({ faceUp: false, target: 0, mat: M.back, flipT: 1, flipFrom: 0, popT: 0, hoverT: 0, prevState: "down" });
 
     const box = new THREE.Mesh(hitGeo, invis);
     box.position.set(cardX(i), TOP + CARD_T + 0.03, cardZ(i));
     box.userData.cell = { i };
     group.add(box);
   }
+  let hoverIdx = -1; // local-only: index of the card currently hovered (or -1)
 
   // ---------------------------------------------------------------------------
   // Player-identity / turn / score cues — built RELATIVE TO THE LOCAL PLAYER.
@@ -194,18 +274,25 @@ export function createGame(ctx) {
   // ---------------------------------------------------------------------------
   const barGeo = keep(new THREE.BoxGeometry(BOARD_SIZE * 0.7, 0.006, 0.018));
   const lampGeo = keep(new THREE.SphereGeometry(0.012, 16, 12));
-  const chipGeo = keep(new THREE.PlaneGeometry(BOARD_SIZE * 0.34, BOARD_SIZE * 0.34 * 0.34));
+  // Aspect matches the 288×88 chip canvas (88/288 ≈ 0.3056) so the text isn't
+  // squashed horizontally. (audit B6)
+  const chipGeo = keep(new THREE.PlaneGeometry(BOARD_SIZE * 0.34, BOARD_SIZE * 0.34 * (88 / 288)));
   const homeEdge = BOARD_HALF + 0.03;
 
   function makeChip() {
     const cv = document.createElement("canvas");
-    cv.width = 256;
+    // Widened 256 → 288 so the longest label ("GUEST (you): 12") no longer
+    // clips at the rounded corners; geometry aspect updated to match. (audit B6)
+    cv.width = 288;
     cv.height = 88;
     const tex = keep(new THREE.CanvasTexture(cv));
     tex.colorSpace = THREE.SRGBColorSpace;
-    const mat = keep(new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+    // depthWrite:false + renderOrder so the chip composites cleanly over the felt
+    // (no grazing-angle z-fighting from the seated camera). (audit I6)
+    const mat = keep(new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
     const mesh = meshOf(THREE, chipGeo, mat, false);
     mesh.rotation.x = -Math.PI / 2;
+    mesh.renderOrder = 2;
     return { mesh, tex, cv };
   }
 
@@ -242,11 +329,16 @@ export function createGame(ctx) {
   placardCv.height = 72;
   const placardTex = keep(new THREE.CanvasTexture(placardCv));
   placardTex.colorSpace = THREE.SRGBColorSpace;
-  const placardMat = keep(new THREE.MeshBasicMaterial({ map: placardTex, transparent: true }));
+  // depthWrite:false + a positive renderOrder so this transparent plane always
+  // composites cleanly OVER the felt instead of z-fighting it from the seated
+  // low camera; also lifted from TOP+0.002 → TOP+0.008 so it isn't the lowest
+  // near-coplanar plane on the table. (audit I6)
+  const placardMat = keep(new THREE.MeshBasicMaterial({ map: placardTex, transparent: true, depthWrite: false }));
   const placardGeo = keep(new THREE.PlaneGeometry(BOARD_SIZE * 0.62, (BOARD_SIZE * 0.62 * 72) / 320));
   const placard = meshOf(THREE, placardGeo, placardMat, false);
   placard.rotation.x = -Math.PI / 2;
-  placard.position.set(0, TOP + 0.002, -BOARD_HALF - 0.05);
+  placard.position.set(0, TOP + 0.008, -BOARD_HALF - 0.05);
+  placard.renderOrder = 2;
   group.add(placard);
 
   // Assign the two side hues onto the mine/opp materials from the LOCAL role, so
@@ -266,26 +358,35 @@ export function createGame(ctx) {
     M.oppLamp.emissive.set(SIDE_HEX[far]);
   }
 
-  function drawChip(chip, seat, isMine) {
+  function drawChip(chip, seat, isMine, isTurn) {
+    const W = 288;
+    const H = 88;
     const g = chip.cv.getContext("2d");
-    g.clearRect(0, 0, 256, 88);
+    g.clearRect(0, 0, W, H);
     g.fillStyle = "rgba(28,20,12,0.82)";
     const rr = 14;
     g.beginPath();
     g.moveTo(rr, 0);
-    g.arcTo(256, 0, 256, 88, rr);
-    g.arcTo(256, 88, 0, 88, rr);
-    g.arcTo(0, 88, 0, 0, rr);
-    g.arcTo(0, 0, 256, 0, rr);
+    g.arcTo(W, 0, W, H, rr);
+    g.arcTo(W, H, 0, H, rr);
+    g.arcTo(0, H, 0, 0, rr);
+    g.arcTo(0, 0, W, 0, rr);
     g.closePath();
     g.fill();
-    g.font = "bold 30px sans-serif";
+    // A faint accent ring round the side that is to move, so whose-turn reads
+    // from the chip too (reinforces the lamp/bar). Local/cosmetic. (audit I5)
+    if (isTurn) {
+      g.lineWidth = 4;
+      g.strokeStyle = PALETTE.accent;
+      g.stroke();
+    }
+    g.font = "bold 28px sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = SIDE_HEX[seat];
     const label = seat === "host" ? "HOST" : "GUEST";
     const suffix = isMine ? " (you)" : "";
-    g.fillText(`${label}${suffix}: ${scores[seat] | 0}`, 128, 44);
+    g.fillText(`${label}${suffix}: ${scores[seat] | 0}`, W / 2, 44);
     chip.tex.needsUpdate = true;
   }
 
@@ -326,6 +427,13 @@ export function createGame(ctx) {
     placardTex.needsUpdate = true;
   }
 
+  // Whose-turn pulse state, read by update(dt). When it's the LOCAL player's
+  // turn, the near home bar gently pulses so "your turn" is unmistakable from the
+  // seated camera without hunting for the tiny lamp. (audit I5)
+  let mineBarBase = 0.2; // resting emissive for the near bar
+  let pulseMine = false; // pulse the near bar (it's my turn)
+  let winFlourishT = 0; // one-shot game-over flourish progress (0 → 1)
+
   // Drive every cue from LOCAL state only. mineSide is the local player's own
   // side (or, for a spectator, the host side at the near edge).
   function updateIdentityCues() {
@@ -337,14 +445,17 @@ export function createGame(ctx) {
     const iAmPlayer = !!mySeat;
 
     // Identity: the local player's own home bar glows steadily (spectator: dim).
-    mineSide.bar.material.emissiveIntensity = iAmPlayer ? 0.55 : 0.2;
+    mineBarBase = iAmPlayer ? 0.55 : 0.2;
+    mineSide.bar.material.emissiveIntensity = mineBarBase;
     oppSide.bar.material.emissiveIntensity = 0.0;
     // Whose-turn lamp: side-to-move glows; brighter when it's the local turn.
     mineSide.lamp.material.emissiveIntensity = mineIsTurn ? (iAmPlayer ? 1.0 : 0.5) : 0.0;
     oppSide.lamp.material.emissiveIntensity = oppIsTurn ? 0.5 : 0.0;
+    // Pulse the near bar only when it's the seated player's own turn.
+    pulseMine = iAmPlayer && mineIsTurn;
 
-    drawChip(mineSide.chip, nearSeat, mySeat === nearSeat);
-    drawChip(oppSide.chip, farSeat, mySeat === farSeat);
+    drawChip(mineSide.chip, nearSeat, mySeat === nearSeat, mineIsTurn);
+    drawChip(oppSide.chip, farSeat, mySeat === farSeat, oppIsTurn);
     refreshPlacard();
   }
 
@@ -353,14 +464,22 @@ export function createGame(ctx) {
   // ---------------------------------------------------------------------------
   const FLIP_DUR = 0.32; // seconds for a ~180° flip
 
+  // Smooth ease-in-out (smoothstep) so the hinge flip accelerates and settles
+  // instead of turning at a constant, mechanical angular speed. (audit I3)
+  const easeInOut = (p) => (p <= 0 ? 0 : p >= 1 ? 1 : p * p * (3 - 2 * p));
+
   function stepFlips(dt) {
-    const speed = (Math.PI / FLIP_DUR) * dt;
+    const inc = dt / FLIP_DUR;
     for (let i = 0; i < cardMeshes.length; i++) {
       const m = cardMeshes[i];
       const a = anim[i];
-      const diff = a.target - m.rotation.x;
-      if (Math.abs(diff) > 1e-4) {
-        m.rotation.x = Math.abs(diff) <= speed ? a.target : m.rotation.x + Math.sign(diff) * speed;
+      if (a.flipT < 1) {
+        a.flipT = Math.min(1, a.flipT + inc);
+        // Interpolate the rotation along an ease-in-out curve from where the flip
+        // began toward its current target (handles a target change mid-flip).
+        m.rotation.x = a.flipFrom + (a.target - a.flipFrom) * easeInOut(a.flipT);
+      } else if (m.rotation.x !== a.target) {
+        m.rotation.x = a.target;
       }
       // Swap the printed material once past the edge-on midpoint so the value
       // never bleeds through the back before the card has turned over.
@@ -372,8 +491,29 @@ export function createGame(ctx) {
     }
   }
 
+  let prevPhase = "play"; // detect the play→over transition for the win flourish
+
   // Translate logical card state into per-card animation targets.
   function renderCards() {
+    // One-shot game-over flourish: when the board first transitions to "over",
+    // arm a staggered glow pulse across the matched cards. Every client receives
+    // phase/winner in the snapshot, so this is consistent for all roles. (audit I8)
+    if (phase === "over" && prevPhase !== "over") winFlourishT = 1;
+    prevPhase = phase;
+
+    // Detect a revealed-but-unequal pair (two "up" cards with differing values)
+    // so we can tint them red just before they flip back. Derived purely from the
+    // snapshot, so host/guest/spectator agree without any extra wire data. (audit I2)
+    let upA = -1;
+    let upB = -1;
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].state === "up" && cards[i].value != null) {
+        if (upA === -1) upA = i;
+        else if (upB === -1) upB = i;
+      }
+    }
+    const mismatchPair = upB !== -1 && cards[upA].value !== cards[upB].value;
+
     for (let i = 0; i < cardMeshes.length; i++) {
       const c = cards[i];
       const a = anim[i];
@@ -388,21 +528,42 @@ export function createGame(ctx) {
       if (c.state === "matched") {
         faceUp = true;
         const v = c.value != null ? c.value : revealValue;
-        mat = v != null ? getFaceMat(v) : M.matched;
+        // Matched cards GLOW (accent emissive) for EVERY viewer — host, guest, and
+        // spectator — so a captured pair is visibly distinct from a momentarily
+        // flipped pair. (audit B1/B2)
+        mat = v != null ? getMatchedFaceMat(v) : M.matched;
       } else if (c.state === "up" && c.value != null) {
         faceUp = true;
-        mat = getFaceMat(c.value);
+        // The two revealed-but-unequal cards get a faint red "no" tint just before
+        // they flip back; a matching/lone up card stays neutral. (audit I2)
+        mat = mismatchPair && (i === upA || i === upB) ? getMissFaceMat(c.value) : getFaceMat(c.value);
       } else if (revealValue != null) {
-        // Spectator viewing a face-down card whose true face we know.
+        // Spectator viewing a still-face-down card whose true face we know: show
+        // the glyph on a DARKENED/demoted material so a watcher can tell it apart
+        // from cards actually up or matched (no false "already solved" read). The
+        // seated guest never has revealDeck, so this only ever affects watchers.
+        // (audit B1)
         faceUp = true;
-        mat = getFaceMat(revealValue);
+        mat = getDemotedFaceMat(revealValue);
       } else {
         faceUp = false;
         mat = M.back;
       }
+      const target = faceUp ? Math.PI : 0;
+      // If the logical target changed, begin a fresh eased flip from the current
+      // rotation. (audit I3)
+      if (Math.abs(target - a.target) > 1e-4) {
+        a.flipFrom = cardMeshes[i].rotation.x;
+        a.flipT = 0;
+      }
       a.faceUp = faceUp;
       a.mat = mat;
-      a.target = faceUp ? Math.PI : 0;
+      a.target = target;
+      // Fire the match "pop" once, when a card NEWLY becomes matched. Everyone
+      // receives the `matched` state, so the flourish is consistent across roles.
+      // (audit I1)
+      if (c.state === "matched" && a.prevState !== "matched") a.popT = POP_DUR;
+      a.prevState = c.state;
     }
   }
 
@@ -411,7 +572,11 @@ export function createGame(ctx) {
   function snapCards() {
     for (let i = 0; i < cardMeshes.length; i++) {
       const a = anim[i];
+      a.flipT = 1; // already at rest; nothing to ease
+      a.popT = 0; // no flourish replay on a cold sync
       cardMeshes[i].rotation.x = a.target;
+      cardMeshes[i].position.y = baseY[i]; // clear any leftover hover lift
+      cardMeshes[i].scale.setScalar(1);
       cardMeshes[i].material = a.faceUp
         ? cardMaterials(M.back, a.mat)
         : cardMaterials(a.mat, M.back);
@@ -562,6 +727,19 @@ export function createGame(ctx) {
     }
   }
 
+  // Local-only hover affordance (audit I4). board.js routes a resolved {i} cell
+  // (or -1) here, throttled and ALREADY gated by _turnAllowed, so this only ever
+  // fires for the side whose turn it is. We simply remember which face-down,
+  // clickable card to lift; update() eases it. Zero sync impact (cosmetic).
+  function setHover(cell) {
+    let next = -1;
+    if (phase === "play" && mySeat && turn === mySeat && !showIdx && cell && cell !== -1 && Number.isInteger(cell.i)) {
+      const i = cell.i;
+      if (i >= 0 && i < cards.length && cards[i].state === "down") next = i;
+    }
+    hoverIdx = next;
+  }
+
   // Host receives a guest {flip,i}. Guests/spectators never get raw moves
   // (they render from masked snapshots only). Returns true (handled) so the
   // framework never triggers a needless resync for an out-of-turn click.
@@ -591,6 +769,9 @@ export function createGame(ctx) {
       pending = [];
       showIdx = null;
       showUntil = 0;
+      hoverIdx = -1; // clear stale hover on a fresh game
+      winFlourishT = 0; // clear any in-flight game-over flourish
+      prevPhase = "play"; // so a later play→over transition re-arms cleanly
       synced = amHost(); // host stays live; a guest reset re-snaps on next sync
       renderCards();
       snapCards();
@@ -623,10 +804,64 @@ export function createGame(ctx) {
 
   // Per-frame pump: animate flips on every client; host also runs the mismatch
   // flip-back timer here (no private RAF, no setTimeout).
+  // Wall-clock accumulator for the gentle, frame-rate-independent sin pulses
+  // (bar "your turn" pulse, win flourish). No per-frame allocation.
+  let clock = 0;
+
+  // Drive the local-only cosmetic flourishes: match pop, hover lift, bar pulse,
+  // game-over glow. All read/write reused materials & transforms — no allocation.
+  function animateExtras(step) {
+    clock += step;
+    for (let i = 0; i < cardMeshes.length; i++) {
+      const a = anim[i];
+      const m = cardMeshes[i];
+
+      // Hover lift (local player only): ease the target card up, settle others.
+      const wantLift = i === hoverIdx ? 1 : 0;
+      if (a.hoverT !== wantLift) {
+        const dh = step / HOVER_DUR;
+        a.hoverT = wantLift > a.hoverT ? Math.min(1, a.hoverT + dh) : Math.max(0, a.hoverT - dh);
+      }
+
+      // Match pop: a brief ease-out 1 → 1+POP_SCALE → 1 scale on the matched card.
+      let scale = 1;
+      if (a.popT > 0) {
+        a.popT = Math.max(0, a.popT - step);
+        const p = 1 - a.popT / POP_DUR; // 0 → 1
+        scale = 1 + POP_SCALE * Math.sin(p * Math.PI); // smooth up-and-back
+      }
+
+      const lift = easeInOut(a.hoverT) * HOVER_LIFT;
+      if (m.position.y !== baseY[i] + lift) m.position.y = baseY[i] + lift;
+      if (m.scale.x !== scale) m.scale.setScalar(scale);
+    }
+
+    // "Your turn" bar pulse for the seated player. (audit I5)
+    if (pulseMine) {
+      const pulse = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(clock * 4.0));
+      mineSide.bar.material.emissiveIntensity = pulse;
+    } else {
+      mineSide.bar.material.emissiveIntensity = mineBarBase;
+    }
+
+    // One-shot game-over glow ramp on the matched (accent) face materials. We ramp
+    // a shared multiplier across all matchedFaceMats so winning cards shimmer once
+    // then settle back to the steady MATCH_GLOW. (audit I8)
+    if (winFlourishT > 0) {
+      winFlourishT = Math.max(0, winFlourishT - step * 0.6);
+      const boost = MATCH_GLOW + 0.45 * Math.sin((1 - winFlourishT) * Math.PI) * winFlourishT;
+      for (let v = 0; v < matchedFaceMats.length; v++) {
+        const mm = matchedFaceMats[v];
+        if (mm) mm.emissiveIntensity = boost;
+      }
+    }
+  }
+
   function update(dt) {
     if (disposed) return;
     const step = typeof dt === "number" && dt > 0 ? Math.min(0.05, dt) : 0.016;
     stepFlips(step);
+    animateExtras(step);
     if (amHost() && showIdx && nowMs() >= showUntil) resolveMismatch();
   }
 
@@ -641,6 +876,7 @@ export function createGame(ctx) {
     if (role === "host" && !wasHost) pushReveal();
     // No longer a spectator → discard any revealed deck (a player must not retain it).
     if (role !== "spectator") revealDeck = null;
+    hoverIdx = -1; // role changed → drop any stale hover affordance
     layoutColours();
     updateIdentityCues();
   }
@@ -658,6 +894,11 @@ export function createGame(ctx) {
     if (group.parent) group.parent.remove(group);
     for (const t of faceTextures) t.dispose?.();
     for (const m of faceMats) m?.dispose?.();
+    // The matched/miss face mats reuse faceMats' textures (already disposed above),
+    // so only the extra material instances need releasing here.
+    for (const m of matchedFaceMats) m?.dispose?.();
+    for (const m of missFaceMats) m?.dispose?.();
+    for (const m of demotedFaceMats) m?.dispose?.();
     for (const o of owned) o.dispose?.();
   }
 
@@ -670,10 +911,17 @@ export function createGame(ctx) {
 
   return {
     group,
+    // Snapshot-driven for onlookers: applyMove is a no-op for spectators/ambient
+    // (they render PURELY from masked snapshots). The host commits via sendMove
+    // THEN re-broadcasts state, so board.js must NOT arm its post-move skip window
+    // and swallow the following authoritative snapshot. See InWorldBoard._onMove
+    // (BUG 1), mirroring ludo.js / pong.js / tron.js.
+    spectatorAnimates: false,
     applyState,
     applyMove,
     applyReveal, // SPECTATOR-ONLY: render the true card faces (no-op for host/guest)
     onPointer,
+    setHover, // local-only hover lift for the side whose turn it is (audit I4)
     publicState,
     update,
     setRole,

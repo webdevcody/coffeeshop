@@ -18,13 +18,29 @@ import { TABLE_SURFACE_Y, orientFor, hitToCell, GameDesync } from "./createGame.
 
 // Move-vs-orbit disambiguation: a pointerdown→up that moves less than this many
 // pixels is a board "click"; more is a camera-orbit drag (controls.js keeps it).
-const CLICK_SLOP = 6;
+// 6px was too tight — ordinary clicks carry a few px of jitter (more on a
+// trackpad/touch), so legitimate board taps were being swallowed as "drags",
+// making cells feel hard to hit. 12px still comfortably distinguishes a real
+// orbit drag (which travels much further) while letting honest clicks register.
+const CLICK_SLOP = 12;
 
 // Per-game seated-camera zoom-out factor. Most boards fit the default first-person
 // framing (1). Battleship's two ocean grids are much larger, so we pull the camera
-// FURTHER BACK (and up) for that game ONLY, so the whole board is visible. Other
-// games are unaffected. localPlayer._updateSeatedCamera reads this via getSeatedView.
-const SEATED_CAM_ZOOM = { battleship: 1.7 };
+// FURTHER BACK (and up) for that game ONLY, so the whole board is visible. Connect4
+// is an UPRIGHT cabinet whose playable mass stands VERTICAL and level with the eye
+// (a flat board lies on the surface below the eye and frames fine at 1) — so it gets
+// its own pull-back so the seated eye dollies back+up enough to fit the whole tall
+// rack for BOTH seats (the seated path has no host/guest branch). Other games are
+// unaffected. localPlayer._updateSeatedCamera reads this via getSeatedView.
+const SEATED_CAM_ZOOM = { battleship: 1.7, connect4: 1.5 };
+
+// Per-game vertical lift of the seated framing CENTRE (world metres), added to the
+// tabletop surface Y. A FLAT board's pieces sit on the surface, so the default 0 is
+// right. An UPRIGHT cabinet (connect4) centres its playable grid well ABOVE the
+// surface, so aiming at the bare surface points the gaze at the cabinet's feet and
+// looms the grid into the top of the frame. Lift the centre to the grid's mid-height
+// so the eye aims at the grid, not the tabletop. Symmetric across seats.
+const SEATED_CENTER_LIFT = { connect4: 0.33 };
 
 // Derive the tabletop's local Y for parenting a board to a table group, the same
 // way InWorldBoard._tabletopLocalY does — prefer the actual tabletop mesh's top
@@ -243,16 +259,23 @@ export class InWorldBoard {
     // through any ancestor transform; add the tabletop's local surface offset so the
     // centre tracks the real surface even under a tilted/raised room group.
     const world = a.table.getWorldPosition(new THREE.Vector3());
+    // Lift the framing centre for an UPRIGHT cabinet so the eye aims at the grid's
+    // mid-height, not the tabletop surface. A module may also override per-instance
+    // via instance.seatedCenterLift; default to the per-game table for flat boards
+    // (0 = the bare surface). Symmetric across host/guest (no seat branch).
+    const lift = (a.instance && Number.isFinite(a.instance.seatedCenterLift))
+      ? a.instance.seatedCenterLift
+      : (SEATED_CENTER_LIFT[a.gameId] || 0);
     return {
       active: true,
       center: {
         x: world.x,
-        y: world.y + this._tabletopLocalY(a.table),
+        y: world.y + this._tabletopLocalY(a.table) + lift,
         z: world.z,
       },
       seatRy: a.seatRy,
       tableId: a.tableId,
-      // Per-game pull-back (battleship only); 1 = default first-person framing.
+      // Per-game pull-back (battleship + connect4); 1 = default first-person framing.
       zoom: SEATED_CAM_ZOOM[a.gameId] || 1,
     };
   }
@@ -379,16 +402,19 @@ export class InWorldBoard {
     try {
       const ok = a.instance.applyMove?.(m.move, m.byRole, by);
       if (ok === false) this._requestResync();
-      else if (a.role === "spectator" && a.instance.spectatorAnimates !== false) {
-        // BUG 1 (spectator animations snapped away): the host commits a move with
-        // net.sendMove THEN net.sendState, so for a full-info game a spectator
-        // reliably receives the host's post-move `pub` snapshot a few ms after the
-        // relayed move. applyState tears down in-flight animation (clears hops/
-        // flips/falling discs) and hard-snaps to the authoritative layout, so the
-        // glide/flip/fall the move just started is aborted and the watcher sees a
-        // teleport. Since applyMove already converged the spectator to the same
-        // logical position the snapshot describes, suppress exactly ONE following
-        // snapshot (the redundant post-move push) so the animation can complete.
+      else if ((a.role === "spectator" || a.role === "guest") && a.instance.spectatorAnimates !== false) {
+        // BUG 1 (spectator/guest animations snapped away): the host commits a move
+        // with net.sendMove THEN net.sendState, so for a full-info game a spectator
+        // — OR a seated GUEST animating the host's relayed move — reliably receives
+        // the host's post-move `pub` snapshot a few ms after the relayed move.
+        // applyState tears down in-flight animation (clears hops/flips/falling discs)
+        // and hard-snaps to the authoritative layout, so the glide/flip/fall the move
+        // just started is aborted and the watcher sees a teleport. Since applyMove
+        // already converged the viewer to the same logical position the snapshot
+        // describes (connect4 defers turn-flip/win into resolveAfter on BOTH sides,
+        // so the echo is a redundant restatement of the position the guest already
+        // holds), suppress exactly ONE following snapshot (the redundant post-move
+        // push) so the animation can complete.
         // We only swallow the immediate echo: a stale/recovery snapshot arriving
         // later than _SPEC_SNAP_WINDOW_MS, or a second snapshot, still applies and
         // re-converges. Tracked with a deadline so a dropped echo can't suppress an
@@ -444,12 +470,12 @@ export class InWorldBoard {
     if (a.role === "host") return;
     const state = m.full != null ? m.full : m.pub;
     if (state == null) return;
-    // BUG 1: a spectator that just consumed the relayed move for this snapshot
-    // suppresses exactly the redundant post-move echo so its in-flight animation
-    // is not snapped away (see _onMove). The window is one-shot and time-bounded:
-    // clear it whether or not it was still in force, so only the immediate echo is
-    // ever swallowed and the very next snapshot always applies.
-    if (a.role === "spectator" && a._specSkipSnapUntil != null) {
+    // BUG 1: a spectator OR seated guest that just consumed the relayed move for
+    // this snapshot suppresses exactly the redundant post-move echo so its in-flight
+    // animation is not snapped away (see _onMove). The window is one-shot and
+    // time-bounded: clear it whether or not it was still in force, so only the
+    // immediate echo is ever swallowed and the very next snapshot always applies.
+    if ((a.role === "spectator" || a.role === "guest") && a._specSkipSnapUntil != null) {
       const skip = this._now() <= a._specSkipSnapUntil;
       a._specSkipSnapUntil = null;
       if (skip) return;
@@ -926,15 +952,34 @@ export class InWorldBoard {
 
   // 3-tier resolver: module hitToCell > userData.cell ancestor walk > geometric.
   _resolveCell(a, hit) {
+    // Tier 1 — the module's OWN hit-test. A module that exposes hitToCell owns the
+    // authoritative mapping for its geometry; if it returns a cell, use it. If it
+    // returns null it has DELIBERATELY rejected this hit (e.g. connect4's base slab /
+    // rail / lamps, battleship's non-grid furniture). We must NOT then fall through
+    // to the flat geometric fallback below: that helper assumes a flat 8×8 XZ board
+    // in UN-rotated group space, but an upright cabinet (connect4) carries its facing
+    // rotation on a child mesh, so it would map a non-grid click to an arbitrary
+    // {r,c} and drop a disc the player never intended. A module's null is final.
     if (typeof a.instance.hitToCell === "function") {
-      const c = a.instance.hitToCell(hit);
-      if (c) return c;
+      return a.instance.hitToCell(hit) || null;
     }
+    // Tier 2 — per-cell colliders tagged userData.cell (the precise, orientation-safe
+    // path battleship/pieces use). Walk ancestors so a child mesh of a tagged collider
+    // still resolves.
     let o = hit.object;
     while (o) {
       if (o.userData && o.userData.cell) return o.userData.cell;
       o = o.parent;
     }
+    // Tier 3 — geometric fallback (flat N×N XZ board in the group's local frame).
+    // This is only correct for a FLAT board the host rotated via orientFor(seatRy):
+    // group.worldToLocal then undoes that rotation and the layout really is a flat
+    // XZ grid. A module that orients ITSELF (orientPolicy "self") puts its facing on
+    // a child (or self-orients per seat), so the unrotated-group XZ assumption is
+    // wrong — never run the flat fallback for it. Such a module is expected to expose
+    // hitToCell or userData.cell colliders (handled above); if it does neither, this
+    // click simply doesn't resolve to a cell (correct — better than an arbitrary one).
+    if (a.instance.orientPolicy === "self") return null;
     // Grid size for the geometric fallback: prefer the instance, then the group's
     // userData (reversi/gomoku publish gridN there), default 8. Using 8 for a 15×15
     // gomoku board would map a click on bare wood to a wrong intersection.

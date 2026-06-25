@@ -184,13 +184,19 @@ export function createGame(ctx) {
     return x;
   };
 
-  const matFrame = keep(new THREE.MeshStandardMaterial({ color: "#1f4ea8", roughness: 0.5, metalness: 0.15 }));
-  const matBack = keep(new THREE.MeshStandardMaterial({ color: "#14305f", roughness: 0.7, metalness: 0.08 }));
+  // Frame + back-plate read from BOTH faces (DoubleSide) so a spectator orbiting to
+  // the -Z side still sees the rack, not a culled/blank face. The back is now an OPEN
+  // perimeter (no solid centre) so discs in the holes are visible front AND back.
+  const matFrame = keep(new THREE.MeshStandardMaterial({ color: "#1f4ea8", roughness: 0.5, metalness: 0.15, side: THREE.DoubleSide }));
+  const matBack = keep(new THREE.MeshStandardMaterial({ color: "#14305f", roughness: 0.7, metalness: 0.08, side: THREE.DoubleSide }));
   const matBase = keep(new THREE.MeshStandardMaterial({ color: "#16387a", roughness: 0.7, metalness: 0.1 }));
   const matRail = keep(new THREE.MeshStandardMaterial({ color: "#caa15a", roughness: 0.35, metalness: 0.85 }));
 
-  const matRed = keep(new THREE.MeshStandardMaterial({ color: "#e23b4e", roughness: 0.35, metalness: 0.1, emissive: "#5a0d16", emissiveIntensity: 0.5 }));
-  const matYellow = keep(new THREE.MeshStandardMaterial({ color: "#f2c14e", roughness: 0.35, metalness: 0.1, emissive: "#5a4208", emissiveIntensity: 0.5 }));
+  // Discs carry a slightly stronger self-emissive so they stay legible from the open
+  // -Z back side (no fill behind the holes) and under low café lighting, without
+  // washing out the cosy low-poly read.
+  const matRed = keep(new THREE.MeshStandardMaterial({ color: "#e23b4e", roughness: 0.35, metalness: 0.1, emissive: "#7a1320", emissiveIntensity: 0.62 }));
+  const matYellow = keep(new THREE.MeshStandardMaterial({ color: "#f2c14e", roughness: 0.35, metalness: 0.1, emissive: "#7a5a0c", emissiveIntensity: 0.62 }));
   const matRedWin = keep(new THREE.MeshStandardMaterial({ color: "#ff8090", roughness: 0.25, metalness: 0.1, emissive: "#ff3b4e", emissiveIntensity: 1.0 }));
   const matYellowWin = keep(new THREE.MeshStandardMaterial({ color: "#ffe79a", roughness: 0.25, metalness: 0.1, emissive: "#ffcf4e", emissiveIntensity: 1.0 }));
 
@@ -199,7 +205,7 @@ export function createGame(ctx) {
   const matGhostYellow = keep(new THREE.MeshStandardMaterial({ color: "#f2c14e", roughness: 0.4, transparent: true, opacity: 0.34, emissive: "#7fd1ff", emissiveIntensity: 0.3, depthWrite: false }));
 
   const matAccent = keep(new THREE.MeshStandardMaterial({ color: "#7fd1ff", roughness: 0.4, metalness: 0.0, emissive: "#7fd1ff", emissiveIntensity: 0.95, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
-  const matHalo = keep(new THREE.MeshStandardMaterial({ color: "#fff1b8", roughness: 0.3, metalness: 0.2, emissive: "#ffd24a", emissiveIntensity: 1.4 }));
+  const matHalo = keep(new THREE.MeshStandardMaterial({ color: "#fff1b8", roughness: 0.3, metalness: 0.2, emissive: "#ffd24a", emissiveIntensity: 1.4, side: THREE.DoubleSide }));
 
   // Turn arrow — recoloured live to the side-to-move (clone of base, recolourable).
   const matArrow = keep(new THREE.MeshStandardMaterial({ color: "#e23b4e", roughness: 0.4, metalness: 0.1, emissive: "#e23b4e", emissiveIntensity: 0.9 }));
@@ -234,27 +240,51 @@ export function createGame(ctx) {
   group.add(rack);
   function applyFacing() {
     // orientFor(seatRy) alone points the flat-board near edge (-Z) at the seat;
-    // the upright rack's readable surface is +Z, so the extra π turns +Z toward
-    // the local viewer from every chair. hitToCell resolves via rack.worldToLocal,
-    // so column mapping (and the natural L/R mirror between opposing seats) stays
+    // the upright rack's readable surface is +Z, so the extra π turns +Z toward a
+    // SEATED viewer from every chair. hitToCell resolves via rack.worldToLocal, so
+    // column mapping (and the natural L/R mirror between opposing seats) stays
     // correct under this rotation.
-    rack.rotation.y = orientFor(seatRy) + Math.PI;
+    //
+    // A spectator/ambient mount has NO seat (seatRy == null → orientFor == 0):
+    // adding π there would rotate the open holes+discs to the canonical BACK and
+    // leave the blank back-plate slab facing a canonical-front watcher (the reported
+    // "one side just blue" bug). With no seat, keep the +Z faceplate at the canonical
+    // front like every other board so a watcher orbiting from the front sees the full
+    // board. (The cabinet is now also built two-sided, so the other side reads too.)
+    const seated = seatRy != null && Number.isFinite(seatRy);
+    rack.rotation.y = orientFor(seatRy) + (seated ? Math.PI : 0);
   }
   applyFacing();
 
-  // -- back-plate -------------------------------------------------------------
+  // -- back-plate (OPEN perimeter) --------------------------------------------
+  // Authored as a thin perimeter ring at z=0 instead of a solid slab so the 6×7
+  // open holes show straight through: a disc parked in a hole is visible from the
+  // FRONT (+Z) and the BACK (-Z), so a spectator on either side of the table reads
+  // the board (the reported "one side just blue, no holes, no discs" was a solid
+  // opaque slab occluding the single +Z disc plane). `backY`/SLAB_* keep the same
+  // overall footprint the rest of the layout references.
   const SLAB_W = GRID_W + CELL * 0.5;
   const SLAB_H = GRID_H + CELL * 0.5;
-  const backGeo = keep(new THREE.BoxGeometry(SLAB_W, SLAB_H, BACK_T));
-  const back = mesh(backGeo, matBack);
-  back.position.set(0, GRID_BOTTOM + GRID_H / 2 - CELL / 2, 0);
-  rack.add(back);
+  const backY = GRID_BOTTOM + GRID_H / 2 - CELL / 2;
+  const BACK_RIM = CELL * 0.25; // perimeter rail thickness
+  const backTopGeo = keep(new THREE.BoxGeometry(SLAB_W, BACK_RIM, BACK_T));
+  const backBotGeo = keep(new THREE.BoxGeometry(SLAB_W, BACK_RIM, BACK_T));
+  const backSideGeo = keep(new THREE.BoxGeometry(BACK_RIM, SLAB_H, BACK_T));
+  const backTop = mesh(backTopGeo, matBack);
+  backTop.position.set(0, backY + SLAB_H / 2 - BACK_RIM / 2, 0);
+  const backBot = mesh(backBotGeo, matBack);
+  backBot.position.set(0, backY - SLAB_H / 2 + BACK_RIM / 2, 0);
+  const backL = mesh(backSideGeo, matBack);
+  backL.position.set(-SLAB_W / 2 + BACK_RIM / 2, backY, 0);
+  const backR = mesh(backSideGeo, matBack);
+  backR.position.set(SLAB_W / 2 - BACK_RIM / 2, backY, 0);
+  rack.add(backTop, backBot, backL, backR);
 
   // -- front frame: outer ring + vertical column dividers (open between holes) -
   const frameTopGeo = keep(new THREE.BoxGeometry(SLAB_W, CELL * 0.28, FRAME_D));
   const frameBotGeo = keep(new THREE.BoxGeometry(SLAB_W, CELL * 0.28, FRAME_D));
   const frameSideGeo = keep(new THREE.BoxGeometry(CELL * 0.28, GRID_H + CELL * 0.5, FRAME_D));
-  const frameMidY = back.position.y;
+  const frameMidY = backY;
   const frameZ = DISC_Z; // ribs sit at the disc plane front
   const fTop = mesh(frameTopGeo, matFrame);
   fTop.position.set(0, GRID_BOTTOM + GRID_H - CELL / 2 + CELL * 0.3, frameZ);
@@ -266,20 +296,31 @@ export function createGame(ctx) {
   fR.position.set(SLAB_W / 2 - CELL * 0.14, frameMidY, frameZ);
   rack.add(fTop, fBot, fL, fR);
 
-  // slim vertical dividers between columns
+  // slim vertical dividers between columns (mirrored onto the -Z back face too, so
+  // the grid lattice reads from both sides).
   const dividerGeo = keep(new THREE.BoxGeometry(CELL * 0.06, GRID_H, FRAME_D * 0.8));
   for (let c = 1; c < COLS; c++) {
     const div = mesh(dividerGeo, matFrame);
     div.position.set(GRID_LEFT + c * CELL, frameMidY, frameZ);
     rack.add(div);
+    const divB = mesh(dividerGeo, matFrame);
+    divB.position.set(GRID_LEFT + c * CELL, frameMidY, -frameZ);
+    rack.add(divB);
   }
 
-  // -- open hole bezels (rings), per cell -------------------------------------
+  // -- open hole bezels (rings), per cell, on BOTH faces ----------------------
+  // A ring on the +Z front (toward a seated/canonical-front viewer) AND a mirrored
+  // ring on the -Z back, so the grid reads as open holes from either side of the
+  // table. The disc inside (at +DISC_Z) is visible through both rings since the
+  // back-plate centre is now open.
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const bez = mesh(bezelGeo, matFrame, false);
-      bez.position.set(cellX(c), cellY(r), DISC_Z);
-      rack.add(bez);
+      const bezF = mesh(bezelGeo, matFrame, false);
+      bezF.position.set(cellX(c), cellY(r), DISC_Z);
+      rack.add(bezF);
+      const bezB = mesh(bezelGeo, matFrame, false);
+      bezB.position.set(cellX(c), cellY(r), -DISC_Z);
+      rack.add(bezB);
     }
   }
 
@@ -319,17 +360,21 @@ export function createGame(ctx) {
   youRing.visible = false;
   rack.add(youRing);
   function refreshYouMarker() {
+    // Seat the ring just in front of the lamp sphere (radius CELL*0.16) rather than
+    // a hair off centre, so it never z-fights the sphere at grazing angles (I7).
+    const front = CELL * 0.18;
     if (myColor === "red") {
       youRing.position.copy(lampRed.position);
-      youRing.position.z += 0.006;
+      youRing.position.z += front;
       youRing.visible = true;
     } else if (myColor === "yellow") {
       youRing.position.copy(lampYellow.position);
-      youRing.position.z += 0.006;
+      youRing.position.z += front;
       youRing.visible = true;
     } else {
       youRing.visible = false;
     }
+    matYouRing.emissiveIntensity = 1.0;
   }
   refreshYouMarker();
 
@@ -356,6 +401,12 @@ export function createGame(ctx) {
   fxRoot.add(rim);
 
   let hoverCol = -1;
+  // Hover animation state: the ghost eases in (scale+opacity) when a new column is
+  // picked, then gently bobs at the mouth; the cyan landing rim breathes so the
+  // target hole reads clearly. `hoverIn` ramps 0→1 on a fresh hover (I2).
+  let hoverIn = 0;
+  let hoverPhase = 0;
+  const GHOST_BASE_OPACITY = matGhostRed.opacity;
 
   // ---- win halo -------------------------------------------------------------
   const haloGeo = keep(new THREE.TorusGeometry(DISC_R * 1.3, DISC_R * 0.12, 10, 28));
@@ -373,7 +424,7 @@ export function createGame(ctx) {
   let arrowPhase = 0;
 
   function needsAnim() {
-    return bodies.length > 0 || winAnim.active || lampPulse || (phase === "play" && arrow.visible);
+    return bodies.length > 0 || winAnim.active || lampPulse || ghost.visible || (phase === "play" && arrow.visible);
   }
   function now() {
     return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
@@ -395,6 +446,7 @@ export function createGame(ctx) {
     stepWinAnim(dt);
     stepLamps(dt);
     stepArrow(dt);
+    stepHover(dt);
 
     if (needsAnim()) rafId = requestAnimationFrame(tick);
   }
@@ -411,7 +463,10 @@ export function createGame(ctx) {
         const speed = Math.abs(b.vy);
         if (speed < REST_EPS) {
           b.vy = 0;
-          b.squash = 0.5;
+          // Softer final squash for a cosier settle (I6) — the disc gives a small
+          // diminishing wobble rather than an abrupt snap. Shared-material-safe:
+          // this is a per-mesh scale pop, never a shared emissive flash (I3).
+          b.squash = 0.38;
           b.settled = true;
         } else {
           b.vy = speed * RESTITUTION;
@@ -422,9 +477,9 @@ export function createGame(ctx) {
       b.mesh.position.y = b.y;
 
       if (b.squash > 0) {
-        b.squash = Math.max(0, b.squash - dt * 6);
+        b.squash = Math.max(0, b.squash - dt * 5);
         const s = b.squash;
-        b.mesh.scale.set(1 + 0.22 * s, 1 - 0.35 * s, 1 + 0.22 * s);
+        b.mesh.scale.set(1 + 0.2 * s, 1 - 0.3 * s, 1 + 0.2 * s);
       } else {
         b.mesh.scale.set(1, 1, 1);
       }
@@ -461,7 +516,17 @@ export function createGame(ctx) {
     } else {
       const [rm, cm] = winLine[Math.floor(n / 2)];
       halo.position.set(cellX(cm), cellY(rm), DISC_Z + DISC_T);
-      halo.scale.setScalar(1 + 0.12 * Math.sin(winAnim.t * 6));
+      // One-shot "bloom" at sweep-end (overshoot then ease back) before settling
+      // into the steady heartbeat — a more satisfying win beat (I4).
+      const tb = winAnim.t - sweepDur;
+      const bloomDur = 0.32;
+      if (tb < bloomDur) {
+        const bf = tb / bloomDur;
+        const bloom = 0.28 * Math.sin(bf * Math.PI); // 1.0→1.28→1.0
+        halo.scale.setScalar(1 + bloom);
+      } else {
+        halo.scale.setScalar(1 + 0.12 * Math.sin(winAnim.t * 6));
+      }
     }
     // ease the winning discs forward out of the rack.
     const lift = Math.min(1, winAnim.t / 0.5) * (DISC_T * 1.2);
@@ -472,18 +537,55 @@ export function createGame(ctx) {
   }
 
   // ---- lamp heartbeat at game over ------------------------------------------
+  // The winner lamp's base colour/emissive are set ONCE in announceOver() (so the
+  // glow is the winner's hue, never the black/dim that refreshLamps leaves behind
+  // when it runs before lampPulse flips true). Here we only modulate the intensity
+  // so the heartbeat is a visible coloured pulse rather than an invisible black one.
   function stepLamps(dt) {
     if (!lampPulse) return;
     lampPhase += dt;
     const winMat = winner === "red" ? matLampRed : winner === "yellow" ? matLampYellow : null;
-    if (winMat) winMat.emissiveIntensity = 0.6 + 0.6 * (0.5 + 0.5 * Math.sin(lampPhase * 3));
+    if (winMat) winMat.emissiveIntensity = 0.65 + 0.65 * (0.5 + 0.5 * Math.sin(lampPhase * 3));
   }
 
   // ---- turn arrow bob -------------------------------------------------------
+  // When it is the LOCAL player's turn the arrow bobs with a wider amplitude and a
+  // brighter emissive heartbeat ("it's YOU"); on the opponent's turn it sits calmer
+  // and dimmer. Purely visual — drives off canPlayLocally(), never state/sync.
   function stepArrow(dt) {
     if (phase !== "play" || !arrow.visible) return;
     arrowPhase += dt;
-    arrow.position.y = cellY(0) + CELL * 1.55 + Math.sin(arrowPhase * 3) * CELL * 0.08;
+    const mine = canPlayLocally();
+    const amp = mine ? CELL * 0.14 : CELL * 0.06;
+    const speed = mine ? 4.2 : 2.6;
+    arrow.position.y = cellY(0) + CELL * 1.55 + Math.sin(arrowPhase * speed) * amp;
+    const baseI = mine ? 1.05 : 0.55;
+    const swing = mine ? 0.45 : 0.12;
+    matArrow.emissiveIntensity = baseI + swing * (0.5 + 0.5 * Math.sin(arrowPhase * speed));
+    if (youRing.visible) {
+      matYouRing.emissiveIntensity = mine ? 1.0 + 0.5 * (0.5 + 0.5 * Math.sin(arrowPhase * speed)) : 0.45;
+    }
+  }
+
+  // ---- hover ease-in + idle bob (ghost) and breathing landing rim (I2) ------
+  function stepHover(dt) {
+    if (!ghost.visible) return;
+    hoverPhase += dt;
+    if (hoverIn < 1) hoverIn = Math.min(1, hoverIn + dt * 6);
+    // ease-out cubic so the ghost pops in then settles.
+    const e = 1 - Math.pow(1 - hoverIn, 3);
+    const bob = Math.sin(hoverPhase * 3) * CELL * 0.05 * e;
+    ghost.position.y = MOUTH_Y + bob;
+    const s = 0.7 + 0.3 * e;
+    ghost.scale.set(s, s, s);
+    ghost.material.opacity = GHOST_BASE_OPACITY * e;
+    if (rim.visible) {
+      // breathe the rim's emissive + scale so the target hole reads clearly.
+      const pulse = 0.5 + 0.5 * Math.sin(hoverPhase * 3.4);
+      matAccent.emissiveIntensity = 0.7 + 0.55 * pulse;
+      const rs = 1 + 0.06 * pulse;
+      rim.scale.set(rs, rs, rs);
+    }
   }
 
   // ============================================================================
@@ -584,6 +686,11 @@ export function createGame(ctx) {
       startWinFx(false);
       refreshLamps();
       announceOver();
+      // The logical resolution (turn/winner/winLine/phase) only exists NOW —
+      // commit(animate=true) deferred it here. Broadcast the resolved snapshot
+      // so peers/spectators receive the correct side-to-move and win line.
+      // Self-gated to the host inside pushState().
+      pushState();
       return;
     }
     if (isFull(board)) {
@@ -592,10 +699,12 @@ export function createGame(ctx) {
       phase = "over";
       refreshLamps();
       announceOver();
+      pushState();
       return;
     }
     turn = other(turn);
     refreshLamps();
+    pushState();
   }
 
   function startWinFx(instant) {
@@ -626,7 +735,15 @@ export function createGame(ctx) {
     if (overAnnounced) return;
     overAnnounced = true;
     lampPulse = !!winner;
-    if (lampPulse) ensureClock();
+    if (lampPulse) {
+      // Light the winner's lamp at its OWN colour as the pulse base. refreshLamps()
+      // ran earlier (while lampPulse was still false) and dimmed both lamps to a
+      // black emissive; without re-lighting here, stepLamps would modulate the
+      // intensity of an emissive that is still #000000 → an invisible "black" pulse.
+      const winColor = winner === "red" ? "#e23b4e" : "#f2c14e";
+      setLamp(winner === "red" ? matLampRed : matLampYellow, winColor, true);
+      ensureClock();
+    }
     try {
       reportOver({ winner: winner || null, reason: winner ? "four" : "draw" });
     } catch {
@@ -655,10 +772,16 @@ export function createGame(ctx) {
     arrow.visible = true;
     ensureClock();
   }
+  // An UNLIT lamp keeps a faint tint of its own side (dim red / dim yellow) plus a
+  // low emissive so both lamps stay identifiable against the dark frame from either
+  // seat and under low café lighting; only the side-to-move brightens to full.
+  function dimTint(color) {
+    return color === "#e23b4e" ? "#4a2226" : "#4a3c1e";
+  }
   function setLamp(mat, color, lit) {
-    mat.color.set(lit ? color : "#2a2f3a");
-    mat.emissive.set(lit ? color : "#000000");
-    mat.emissiveIntensity = lit ? 0.9 : 0;
+    mat.color.set(lit ? color : dimTint(color));
+    mat.emissive.set(lit ? color : dimTint(color));
+    mat.emissiveIntensity = lit ? 0.9 : 0.18;
   }
 
   // ============================================================================
@@ -674,19 +797,28 @@ export function createGame(ctx) {
     }
     if (col === hoverCol) return;
     hoverCol = col;
+    hoverIn = 0; // restart the ease-in for the freshly hovered column
 
     ghost.material = myColor === "yellow" ? matGhostYellow : matGhostRed;
     ghost.position.set(cellX(col), MOUTH_Y, DISC_Z);
+    ghost.scale.set(0.7, 0.7, 0.7);
+    ghost.material.opacity = 0;
     ghost.visible = true;
 
     const r = dropRow(board, col);
     rim.position.set(cellX(col), cellY(r), DISC_Z + DISC_T / 2 + 0.002);
     rim.visible = true;
+    ensureClock();
   }
   function clearHover() {
     hoverCol = -1;
     ghost.visible = false;
     rim.visible = false;
+    // restore the shared ghost materials' base opacity so a static repaint or the
+    // next hover doesn't inherit a mid-ease faded alpha.
+    matGhostRed.opacity = GHOST_BASE_OPACITY;
+    matGhostYellow.opacity = GHOST_BASE_OPACITY;
+    ghost.scale.set(1, 1, 1);
   }
 
   // True iff the local player may currently drop in their own colour.
@@ -727,6 +859,11 @@ export function createGame(ctx) {
   // recomputes the local role/colour — myColor stays derived from our own role.
   function applyState(state) {
     overAnnounced = false;
+    // A full snapshot rebuilds the scene via paint()->clearScene(), which drops
+    // any in-flight falling body before it can settle — so resolveAfter() (the
+    // only place busy is cleared) would never run. Reset the input lock here so
+    // a resync that lands mid-drop always returns the module to interactable.
+    busy = false;
     lampPulse = false;
     lampPhase = 0;
     if (state == null) {
@@ -737,6 +874,10 @@ export function createGame(ctx) {
       winner = null;
       lastDrop = null;
       paint();
+      // Re-seed the server's cached snapshot on reset so a spectator that joins
+      // after the reset (but before the next move) hydrates against the fresh empty
+      // board and animates the first move. Host-gated inside pushState().
+      pushState();
       return;
     }
     const b = emptyBoard();
@@ -771,7 +912,7 @@ export function createGame(ctx) {
         .filter(([r, c]) => board[r] && board[r][c] === winner);
       winLine = wl.length >= 4 ? wl : null;
     }
-    lastDrop = state.lastDrop && Number.isInteger(state.lastDrop.r) ? { r: state.lastDrop.r, c: state.lastDrop.c } : null;
+    lastDrop = state.lastDrop && Number.isInteger(state.lastDrop.r) && Number.isInteger(state.lastDrop.c) ? { r: state.lastDrop.r, c: state.lastDrop.c } : null;
 
     paint();
     if (phase === "over") announceOver();
@@ -787,16 +928,14 @@ export function createGame(ctx) {
     if (dropRow(board, col) < 0) throw new GameDesync("connect4: drop into full column");
     const movedColor = byRole ? colorForRole(byRole) : turn;
     if (movedColor && movedColor !== turn) throw new GameDesync("connect4: out-of-turn relayed move");
+    // commit(animate=true) defers turn flip / win detection into resolveAfter(),
+    // which broadcasts the RESOLVED authoritative snapshot once the disc settles
+    // (host-gated via pushState). We must NOT push here: at this instant turn is
+    // still the mover's colour and winner/winLine are null, so an immediate push
+    // would relay a stale pre-resolution snapshot (wrong side-to-move, no win
+    // line) that clobbers peers mid-animation. resolveAfter()'s push re-caches
+    // t.pub on server.js and fires broadcastAmbient() with the correct state.
     commit(col, turn, /*animate*/ true);
-    // The host applied the GUEST's relayed drop locally; re-broadcast the full
-    // authoritative public snapshot so server.js re-caches t.pub and fires
-    // broadcastAmbient() (which it does ONLY on game-state, never on the
-    // game-move relay). Without this the passersby ambient mirror, late-join
-    // spectators and any _requestResync replay stay one ply stale on yellow's
-    // moves (and miss a guest winning move entirely) until red drops next.
-    // pushState() self-gates with `if (role !== "host") return;`, so guest/
-    // spectator mounts that run applyMove are unaffected. Mirrors onPointer().
-    pushState();
     return true;
   }
 
@@ -814,12 +953,16 @@ export function createGame(ctx) {
     if (r < 0) return;
 
     // Wire carries ONLY the column; the peer derives the landing row from gravity.
+    // Keep the move relay immediate for low latency. We deliberately do NOT
+    // pushState() here: the logical resolution (turn flip + win/draw) is deferred
+    // by commit(animate=true) into resolveAfter(), which broadcasts the resolved
+    // snapshot (host-gated) once the disc settles. Pushing now would relay a
+    // stale pre-resolution snapshot.
     try {
       net.sendMove?.({ type: "drop", col });
     } catch {
-      /* transport hiccup: snapshot push below still re-seeds authority */
+      /* transport hiccup: resolveAfter()'s snapshot push still re-seeds authority */
     }
-    pushState();
   }
 
   // Module-side raycast→cell resolver. We map the hit's LOCAL x onto a column;
@@ -836,8 +979,14 @@ export function createGame(ctx) {
     // that shares the grid's X span (base slab, brass rail, turn arrow, ready
     // lamps) does NOT resolve to a column and trigger a drop. The grid rows span
     // roughly from the bottom hole to the top hole (plus half a cell of bezel).
+    // Extend the top bound up to the column mouth (where the ghost cocks and a
+    // player naturally aims) so clicks at the top of a column resolve. The brass
+    // rail centre is at cellY(0)+0.85*CELL, the lamps share that y but sit OUTSIDE
+    // the grid's X span (so u<0/u>=1 rejects them), and the arrow is at
+    // cellY(0)+1.55*CELL — so a mouth-inclusive top of cellY(0)+1.35*CELL keeps the
+    // grid clickable while still excluding the arrow tip above it.
     const yBot = cellY(ROWS - 1) - CELL * 0.7;
-    const yTop = cellY(0) + CELL * 0.7;
+    const yTop = cellY(0) + CELL * 1.35;
     if (local.y < yBot || local.y > yTop) return null;
     const c = Math.min(COLS - 1, Math.max(0, Math.floor(u * COLS)));
     const r = dropRow(board, c);
@@ -893,6 +1042,15 @@ export function createGame(ctx) {
 
   // ---- initial paint --------------------------------------------------------
   paint();
+  // BUG (mid-join spectator drops first move): the host otherwise only ever
+  // broadcasts AFTER a move resolves (resolveAfter→pushState), so until the first
+  // drop lands the server's cached pub/full are null. A spectator that mounts in
+  // that window gets pub:null, board.js _onState bails, _hydrated stays false, and
+  // the first relayed move is DROPPED by the spectator gate (never animated).
+  // Publish the authoritative empty board at game start so a joining spectator's
+  // requestState() returns a real pub, hydrates, and animates the first move.
+  // Host-gated inside pushState(); a no-op for guest/spectator instances.
+  pushState();
 
   return {
     group,

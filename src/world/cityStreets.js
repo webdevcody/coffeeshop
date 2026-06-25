@@ -1,0 +1,373 @@
+// City streets + unified ground. The 16 districts abut edge-to-edge, which reads as
+// one big open plane. This lays a textured pavement base under everything (so there
+// are never voids or jarring slab seams) plus an asphalt ROAD GRID on the tile seams
+// — main avenues + cross streets with painted lane lines, crosswalks at every
+// intersection, kerbs, and instanced street lamps + trees lining the roads. That
+// carves the map into believable city blocks and fills the open space. Visual only
+// (no colliders): roads are walkable/drivable; the ground already exists beneath.
+
+import * as THREE from "three";
+
+const NEAR = 8, FAR = 277, LEFT = -122, RIGHT = 122;
+const MIDX = (LEFT + RIGHT) / 2, MIDZ = (NEAR + FAR) / 2;
+const LEN = FAR - NEAR, WID = RIGHT - LEFT;
+const VROADS = [-60, 0, 60]; // vertical avenues (run along Z) on the column seams
+const HROADS = [35, 95, 155, 215]; // cross streets (run along X) on the row seams
+const ROADW = 12, HALFR = ROADW / 2;
+
+function cnv(w, h) { const c = document.createElement("canvas"); c.width = w; c.height = h; return [c, c.getContext("2d")]; }
+function tex(c, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.anisotropy = 8;
+  return t;
+}
+
+// Speckled concrete pavement for the base ground.
+function pavementTex() {
+  const [c, g] = cnv(256, 256);
+  g.fillStyle = "#8f8c85"; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {
+    const v = 120 + Math.floor(Math.random() * 70);
+    g.fillStyle = `rgba(${v},${v},${v - 6},0.35)`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+  // faint expansion-joint grid
+  g.strokeStyle = "rgba(60,60,60,0.25)"; g.lineWidth = 2;
+  for (let i = 0; i <= 256; i += 64) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 256); g.moveTo(0, i); g.lineTo(256, i); g.stroke(); }
+  return c;
+}
+
+// One lengthwise tile of asphalt road: dark, side lines, dashed centre line.
+function roadTex() {
+  const [c, g] = cnv(128, 256);
+  g.fillStyle = "#33343a"; g.fillRect(0, 0, 128, 256);
+  for (let i = 0; i < 1400; i++) { const v = 40 + Math.floor(Math.random() * 30); g.fillStyle = `rgba(${v},${v},${v},0.4)`; g.fillRect(Math.random() * 128, Math.random() * 256, 2, 2); }
+  g.fillStyle = "#e7e7df"; // white edge lines
+  g.fillRect(10, 0, 4, 256); g.fillRect(114, 0, 4, 256);
+  g.fillStyle = "#e9d24a"; // dashed yellow centre
+  for (let y = 14; y < 256; y += 56) g.fillRect(61, y, 6, 30);
+  return c;
+}
+
+function crosswalkTex() {
+  const [c, g] = cnv(128, 128);
+  g.clearRect(0, 0, 128, 128);
+  g.fillStyle = "#eaeae2";
+  for (let x = 10; x < 128; x += 22) g.fillRect(x, 6, 12, 116);
+  return c;
+}
+
+export function buildStreets() {
+  const group = new THREE.Group();
+  group.name = "streets";
+
+  // GROUND Y-STACK (deliberate, so the layers never z-fight or sink the avatars):
+  //   base pavement   y = -0.12  (opaque fallback under the whole map; a clear
+  //                               0.12 m below the district slab tops at y=0 so it
+  //                               can never z-fight them — it only shows through the
+  //                               road-grid seams where slabs don't reach)
+  //   district slabs  y =  0.00  (built in the zone files — must not edit)
+  //   road grid       y =  0.02  (single tier; V renderOrder 0, H renderOrder 1,
+  //                               both polygonOffset -1 so asphalt deterministically
+  //                               wins over the y=0 slabs; only 2 cm above the
+  //                               avatar's y=0 feet, so they don't visibly sink)
+  //   road decals     y =  0.025 (crosswalk > manhole > stain, separated by
+  //                               polygonOffset + renderOrder, not Y; transparent
+  //                               ones use depthWrite:false so they blend cleanly)
+  const pav = new THREE.MeshStandardMaterial({ map: tex(pavementTex(), WID / 16, LEN / 16), roughness: 0.97, metalness: 0 });
+  const base = new THREE.Mesh(new THREE.PlaneGeometry(WID, LEN), pav);
+  base.rotation.x = -Math.PI / 2;
+  base.position.set(MIDX, -0.12, MIDZ);
+  base.receiveShadow = true;
+  group.add(base);
+
+  // Both road materials get polygonOffset so the asphalt is pulled toward the camera
+  // and deterministically wins over whatever district slab top sits beneath it at
+  // y=0 — that ordering no longer relies on a sub-mm Y lift the depth buffer can't
+  // resolve at city distance. Vertical avenues and cross streets share one height
+  // (y=0.02); at intersections the cross street is forced on top by renderOrder.
+  const roadMatV = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, LEN / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  const roadMatH = new THREE.MeshStandardMaterial({ map: tex(roadTex(), 1, WID / 24), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  const kerbMat = new THREE.MeshStandardMaterial({ color: "#b9b6ac", roughness: 0.9 });
+
+  // Vertical avenues (run along Z) + flanking kerbs. PlaneGeometry(ROADW, LEN) with
+  // rotation.x=-PI/2 maps width->world X (ROADW) and height->world Z (LEN); the dashed
+  // centre line runs down the height, i.e. along Z. No extra rotation.
+  for (const x of VROADS) {
+    const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, LEN), roadMatV);
+    r.rotation.x = -Math.PI / 2; r.position.set(x, 0.02, MIDZ); r.receiveShadow = true; r.renderOrder = 0;
+    group.add(r);
+    for (const s of [-1, 1]) {
+      const k = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, LEN), kerbMat);
+      k.position.set(x + s * (HALFR + 0.25), 0.06, MIDZ); group.add(k);
+    }
+  }
+  // Cross streets (run along X) + flanking kerbs. Use PlaneGeometry(ROADW, WID) then
+  // rotation.z=PI/2 to swing the long axis (and the centre dashes) onto world X.
+  for (const z of HROADS) {
+    const r = new THREE.Mesh(new THREE.PlaneGeometry(ROADW, WID), roadMatH);
+    r.rotation.x = -Math.PI / 2; r.rotation.z = Math.PI / 2; r.position.set(MIDX, 0.02, z); r.receiveShadow = true; r.renderOrder = 1;
+    group.add(r);
+    for (const s of [-1, 1]) {
+      const k = new THREE.Mesh(new THREE.BoxGeometry(WID, 0.18, 0.5), kerbMat);
+      k.position.set(MIDX, 0.06, z + s * (HALFR + 0.25)); group.add(k);
+    }
+  }
+
+  // Crosswalks at every intersection (4 approaches each). Top decal of the road
+  // tier: a hair (5 mm) above the asphalt, with the strongest polygonOffset and
+  // highest renderOrder so the paint always composites over the road and the other
+  // decals. depthWrite:false lets the transparent stripes blend over a single
+  // stable surface instead of depth-fighting the road beneath them.
+  const cwMat = new THREE.MeshStandardMaterial({ map: tex(crosswalkTex()), transparent: true, depthWrite: false, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  const cwGeo = new THREE.PlaneGeometry(ROADW - 1, 4.2);
+  for (const x of VROADS) for (const z of HROADS) {
+    for (const [dx, dz, rot] of [[0, HALFR + 2, 0], [0, -HALFR - 2, 0], [HALFR + 2, 0, Math.PI / 2], [-HALFR - 2, 0, Math.PI / 2]]) {
+      const cw = new THREE.Mesh(cwGeo, cwMat);
+      cw.rotation.x = -Math.PI / 2; cw.rotation.z = rot; cw.position.set(x + dx, 0.025, z + dz); cw.renderOrder = 4;
+      group.add(cw);
+    }
+  }
+
+  // Instanced street lamps lining the avenues (posts + emissive heads).
+  const postGeo = new THREE.CylinderGeometry(0.12, 0.14, 5, 6);
+  const postMat = new THREE.MeshStandardMaterial({ color: "#2b2e33", roughness: 0.5, metalness: 0.6 });
+  const headGeo = new THREE.BoxGeometry(0.5, 0.3, 0.5);
+  const headMat = new THREE.MeshStandardMaterial({ color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 0.9, roughness: 0.4 });
+  const spots = [];
+  for (const x of VROADS) for (let z = NEAR + 12; z < FAR; z += 26) { spots.push([x - HALFR - 1.4, z]); spots.push([x + HALFR + 1.4, z]); }
+  const posts = new THREE.InstancedMesh(postGeo, postMat, spots.length);
+  const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
+  const m = new THREE.Matrix4();
+  spots.forEach(([x, z], i) => {
+    m.makeTranslation(x, 2.5, z); posts.setMatrixAt(i, m);
+    m.makeTranslation(x, 5.0, z); heads.setMatrixAt(i, m);
+  });
+  posts.castShadow = true;
+  group.add(posts); group.add(heads);
+
+  // Instanced roadside trees on the cross streets for greenery/density.
+  const trunkGeo = new THREE.CylinderGeometry(0.18, 0.22, 1.6, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: "#5a3d28", roughness: 0.9 });
+  const leafGeo = new THREE.IcosahedronGeometry(1.5, 0);
+  const leafMat = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.9, flatShading: true });
+  const tspots = [];
+  for (const z of HROADS) for (let x = LEFT + 16; x < RIGHT; x += 24) { if (Math.abs(x) < 7) continue; tspots.push([x, z - HALFR - 2.2]); tspots.push([x, z + HALFR + 2.2]); }
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, tspots.length);
+  const leaves = new THREE.InstancedMesh(leafGeo, leafMat, tspots.length);
+  tspots.forEach(([x, z], i) => {
+    m.makeTranslation(x, 0.8, z); trunks.setMatrixAt(i, m);
+    m.makeTranslation(x, 2.4, z); leaves.setMatrixAt(i, m);
+  });
+  trunks.castShadow = true; leaves.castShadow = true;
+  group.add(trunks); group.add(leaves);
+
+  addStreetLife(group, m);
+
+  return { group };
+}
+
+// ---------------------------------------------------------------------------
+// STREET LIFE: visual-only clutter that makes the avenues feel busy and lived-in.
+// Traffic-light posts at every intersection, instanced parked cars at the kerbs,
+// fire hydrants, manhole discs, road signs, bus shelters, trash bins, and faint
+// oil-stain/road-patch decals. All repeats use InstancedMesh; no per-frame work.
+// ---------------------------------------------------------------------------
+function addStreetLife(group, m) {
+  const q = new THREE.Quaternion();
+  const s = new THREE.Vector3(1, 1, 1);
+  const v = new THREE.Vector3();
+  const place = (mesh, i, x, y, z, ry = 0, sx = 1, sy = 1, sz = 1) => {
+    q.setFromAxisAngle(_UP, ry);
+    v.set(x, y, z); s.set(sx, sy, sz);
+    m.compose(v, q, s); mesh.setMatrixAt(i, m);
+  };
+
+  // --- Traffic-light posts at the 12 intersections (one per corner approach). ---
+  // A dark pole + a stacked head box with three emissive lamp discs (R/A/G).
+  const tlInter = [];
+  for (const x of VROADS) for (const z of HROADS) tlInter.push([x, z]);
+  // Put a post on the near-right corner of each approach so all 4 corners get one.
+  const tlCorners = [[HALFR + 1.6, HALFR + 1.6], [HALFR + 1.6, -HALFR - 1.6], [-HALFR - 1.6, HALFR + 1.6], [-HALFR - 1.6, -HALFR - 1.6]];
+  const tlCount = tlInter.length * tlCorners.length;
+  const tlPoleMat = new THREE.MeshStandardMaterial({ color: "#1d2024", roughness: 0.45, metalness: 0.7 });
+  const tlPoles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.13, 0.16, 4.4, 6), tlPoleMat, tlCount);
+  const tlBoxMat = new THREE.MeshStandardMaterial({ color: "#17191c", roughness: 0.6, metalness: 0.3 });
+  const tlBoxes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.3, 0.42), tlBoxMat, tlCount);
+  // Three lamp colours, one InstancedMesh each so each can carry its own emissive.
+  const lampGeo = new THREE.CircleGeometry(0.16, 10);
+  const mkLamp = (col, emi) => new THREE.InstancedMesh(lampGeo, new THREE.MeshStandardMaterial({ color: col, emissive: emi, emissiveIntensity: 1.4, roughness: 0.4 }), tlCount);
+  const lampR = mkLamp("#ff5a4a", "#ff2a18");
+  const lampA = mkLamp("#ffd24a", "#ffb000");
+  const lampG = mkLamp("#5dff84", "#16d24a");
+  let ti = 0;
+  for (const [ix, iz] of tlInter) for (const [cx, cz] of tlCorners) {
+    const x = ix + cx, z = iz + cz;
+    // Face the head roughly toward the intersection centre.
+    const ry = Math.atan2(-cx, -cz);
+    place(tlPoles, ti, x, 2.2, z, ry);
+    place(tlBoxes, ti, x, 4.7, z, ry);
+    // Lamps sit on the +Z face of the (unrotated) box; offset along the box-forward.
+    const fz = 0.23, fx = 0;
+    const rx = Math.cos(ry) * fx + Math.sin(ry) * fz;
+    const rz = -Math.sin(ry) * fx + Math.cos(ry) * fz;
+    // Lamp planes need to face outward: rotate the circle to stand vertical, facing ry.
+    q.setFromEuler(new THREE.Euler(0, ry, 0));
+    for (const [mesh, yy] of [[lampR, 5.1], [lampA, 4.7], [lampG, 4.3]]) {
+      v.set(x + rx, yy, z + rz); s.set(1, 1, 1);
+      m.compose(v, q, s); mesh.setMatrixAt(ti, m);
+    }
+    ti++;
+  }
+  tlPoles.castShadow = true; tlBoxes.castShadow = true;
+  group.add(tlPoles, tlBoxes, lampR, lampA, lampG);
+
+  // --- Parked cars pulled to the kerb along the avenues (instanced low-poly boxes). ---
+  // Bodies + cabins, varied colours via a few colour buckets (one InstancedMesh per
+  // colour so we keep instancing). Wheels are one dark InstancedMesh (4 per car).
+  const carColors = ["#b5392f", "#2f5fb5", "#cdb23a", "#3a8f55", "#cfcfcf", "#7a3fa0", "#d98a2b", "#2b2e33"];
+  const carBodyGeo = new THREE.BoxGeometry(2.0, 0.85, 4.4);
+  const carCabGeo = new THREE.BoxGeometry(1.85, 0.7, 2.2);
+  const carSpots = []; // [x, z, ry, colorIdx]
+  let cseed = 1234.5;
+  const rnd = () => { cseed = (cseed * 9301 + 49297) % 233280; return cseed / 233280; };
+  for (const ax of VROADS) {
+    for (let z = NEAR + 18; z < FAR - 6; z += 17) {
+      if (rnd() < 0.22) continue; // gaps so it's not a solid wall of cars
+      // alternate which kerb side; pull body so it sits just inside the lane edge
+      const side = rnd() < 0.5 ? -1 : 1;
+      const x = ax + side * (HALFR - 1.3);
+      const jitter = (rnd() - 0.5) * 3.0;
+      carSpots.push([x, z + jitter, 0, Math.floor(rnd() * carColors.length)]);
+    }
+  }
+  // Group spots by colour to build one InstancedMesh per colour for bodies+cabins.
+  const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.22, 8);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: "#17181a", roughness: 0.8 });
+  const totalWheels = carSpots.length * 4;
+  const wheels = new THREE.InstancedMesh(wheelGeo, wheelMat, totalWheels);
+  let wi = 0;
+  const cabMat = new THREE.MeshStandardMaterial({ color: "#aebcc6", roughness: 0.25, metalness: 0.1 });
+  const wheelOff = [[-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5]];
+  for (let ci = 0; ci < carColors.length; ci++) {
+    const mine = carSpots.filter((c) => c[3] === ci);
+    if (!mine.length) continue;
+    const bodyMat = new THREE.MeshStandardMaterial({ color: carColors[ci], roughness: 0.4, metalness: 0.25 });
+    const bodies = new THREE.InstancedMesh(carBodyGeo, bodyMat, mine.length);
+    const cabs = new THREE.InstancedMesh(carCabGeo, cabMat, mine.length);
+    mine.forEach(([x, z, ry], i) => {
+      place(bodies, i, x, 0.62, z, ry);
+      place(cabs, i, x, 1.28, z - 0.2, ry);
+    });
+    bodies.castShadow = true; cabs.castShadow = true;
+    group.add(bodies, cabs);
+  }
+  // Wheels for all cars (after bodies so indices line up to carSpots order).
+  for (const [x, z, ry] of carSpots) {
+    for (const [ox, oz] of wheelOff) {
+      q.setFromEuler(new THREE.Euler(0, 0, Math.PI / 2)); // lay cylinder on its side (axis -> X)
+      v.set(x + ox, 0.34, z + oz); s.set(1, 1, 1);
+      m.compose(v, q, s); wheels.setMatrixAt(wi++, m);
+    }
+  }
+  group.add(wheels);
+
+  // --- Fire hydrants on the pavement just outside the kerbs. ---
+  const hydMat = new THREE.MeshStandardMaterial({ color: "#c43a2c", roughness: 0.55, metalness: 0.2 });
+  const hydSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 30; z < FAR; z += 60) { hydSpots.push([ax - HALFR - 1.0, z]); }
+  const hydBody = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.26, 0.8, 8), hydMat, hydSpots.length);
+  const hydCap = new THREE.InstancedMesh(new THREE.SphereGeometry(0.24, 8, 6), hydMat, hydSpots.length);
+  hydSpots.forEach(([x, z], i) => { place(hydBody, i, x, 0.4, z); place(hydCap, i, x, 0.82, z); });
+  hydBody.castShadow = true;
+  group.add(hydBody, hydCap);
+
+  // --- Manhole-cover discs flush on the asphalt down the avenue centres. ---
+  // Middle decal: a solid cover, so it stays opaque + depthWrite, but its
+  // polygonOffset/renderOrder sit below the crosswalk paint and above the oil
+  // stains for a stable ordering on the unified road tier.
+  const mhMat = new THREE.MeshStandardMaterial({ color: "#3a3b40", roughness: 0.95, metalness: 0.3, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+  const mhSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 24; z < FAR; z += 38) mhSpots.push([ax + (Math.random() < 0.5 ? -2.5 : 2.5), z]);
+  const manholes = new THREE.InstancedMesh(new THREE.CircleGeometry(0.55, 14), mhMat, mhSpots.length);
+  manholes.renderOrder = 3;
+  mhSpots.forEach(([x, z], i) => {
+    q.setFromAxisAngle(_RIGHT, -Math.PI / 2); v.set(x, 0.025, z); s.set(1, 1, 1);
+    m.compose(v, q, s); manholes.setMatrixAt(i, m);
+  });
+  group.add(manholes);
+
+  // --- Faint oil-stain / road-patch decals scattered on the road surface. ---
+  // Bottom-most decal: depthWrite:false + the weakest polygonOffset/renderOrder so
+  // it blends softly over the asphalt without depth-fighting it (it was the dark
+  // rectangle that flickered over the pavement). Opacity dialled back so any residual
+  // overlap reads as a faint stain, never a hard dark patch.
+  const stainMat = new THREE.MeshStandardMaterial({ color: "#15151a", roughness: 1, transparent: true, opacity: 0.32, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const stainSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 14; z < FAR; z += 21) stainSpots.push([ax + (Math.random() - 0.5) * 7, z + (Math.random() - 0.5) * 8, 1.0 + Math.random() * 1.8]);
+  const stains = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 10), stainMat, stainSpots.length);
+  stains.renderOrder = 2;
+  stainSpots.forEach(([x, z, sc], i) => {
+    q.setFromAxisAngle(_RIGHT, -Math.PI / 2); v.set(x, 0.025, z); s.set(sc, sc * 0.7, 1);
+    m.compose(v, q, s); stains.setMatrixAt(i, m);
+  });
+  group.add(stains);
+
+  // --- Road signs: STOP (octagon, red) + ONE-WAY (rectangle) on thin posts. ---
+  const signPostGeo = new THREE.CylinderGeometry(0.06, 0.06, 2.6, 6);
+  const signPostMat = new THREE.MeshStandardMaterial({ color: "#777", roughness: 0.5, metalness: 0.6 });
+  const signSpots = []; // [x, z, type]  type 0 = stop, 1 = one-way
+  let snToggle = 0;
+  for (const ax of VROADS) for (const hz of HROADS) {
+    signSpots.push([ax - HALFR - 1.4, hz - HALFR - 1.4, (snToggle++) % 2]);
+  }
+  const signPosts = new THREE.InstancedMesh(signPostGeo, signPostMat, signSpots.length);
+  signSpots.forEach(([x, z], i) => place(signPosts, i, x, 1.3, z));
+  signPosts.castShadow = true;
+  group.add(signPosts);
+  // Stop faces (octagon approximated by an 8-gon circle) and one-way plates.
+  const stopList = signSpots.filter((sn) => sn[2] === 0);
+  const owList = signSpots.filter((sn) => sn[2] === 1);
+  const stopFaceMat = new THREE.MeshStandardMaterial({ color: "#c0392b", emissive: "#5a160f", emissiveIntensity: 0.4, roughness: 0.5, side: THREE.DoubleSide });
+  const stops = new THREE.InstancedMesh(new THREE.CircleGeometry(0.42, 8), stopFaceMat, Math.max(1, stopList.length));
+  stopList.forEach(([x, z], i) => { q.setFromEuler(new THREE.Euler(0, Math.PI / 4, 0)); v.set(x, 2.45, z); s.set(1, 1, 1); m.compose(v, q, s); stops.setMatrixAt(i, m); });
+  if (stopList.length) group.add(stops);
+  const owFaceMat = new THREE.MeshStandardMaterial({ color: "#1f2933", roughness: 0.5, side: THREE.DoubleSide });
+  const ow = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.9, 0.34), owFaceMat, Math.max(1, owList.length));
+  owList.forEach(([x, z], i) => { q.setFromEuler(new THREE.Euler(0, 0, 0)); v.set(x, 2.45, z); s.set(1, 1, 1); m.compose(v, q, s); ow.setMatrixAt(i, m); });
+  if (owList.length) group.add(ow);
+
+  // --- Trash bins along the pavement. ---
+  const binMat = new THREE.MeshStandardMaterial({ color: "#2f6f4a", roughness: 0.7, metalness: 0.2 });
+  const lidMat = new THREE.MeshStandardMaterial({ color: "#244f37", roughness: 0.6 });
+  const binSpots = [];
+  for (const ax of VROADS) for (let z = NEAR + 46; z < FAR; z += 62) binSpots.push([ax + HALFR + 1.0, z]);
+  const bins = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.34, 0.3, 1.0, 8), binMat, binSpots.length);
+  const lids = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.37, 0.37, 0.12, 8), lidMat, binSpots.length);
+  binSpots.forEach(([x, z], i) => { place(bins, i, x, 0.5, z); place(lids, i, x, 1.06, z); });
+  bins.castShadow = true;
+  group.add(bins, lids);
+
+  // --- A couple of bus-stop shelters beside the main avenue. ---
+  const shelterMat = new THREE.MeshStandardMaterial({ color: "#3b4651", roughness: 0.5, metalness: 0.4 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: "#acd5e6", roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.35 });
+  const shelterSpots = [[0 - HALFR - 2.6, 70], [0 + HALFR + 2.6, 200]];
+  for (const [sx, sz] of shelterSpots) {
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.16, 2.0), shelterMat);
+    roof.position.set(sx, 2.5, sz); roof.castShadow = true; group.add(roof);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.0, 0.08), glassMat);
+    back.position.set(sx, 1.4, sz - 0.95); group.add(back);
+    for (const ex of [-2.0, 2.0]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.5, 0.12), shelterMat);
+      post.position.set(sx + ex, 1.25, sz + 0.9); post.castShadow = true; group.add(post);
+    }
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.12, 0.5), shelterMat);
+    bench.position.set(sx, 0.5, sz - 0.5); group.add(bench);
+  }
+}
+
+const _UP = new THREE.Vector3(0, 1, 0);
+const _RIGHT = new THREE.Vector3(1, 0, 0);

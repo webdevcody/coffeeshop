@@ -436,6 +436,7 @@ export function createGame(ctx) {
   // destination + the four candidate moves keyed by their flags.promo.
   let promoPick = null;            // null | { to:{r,c}, moves:{q,r,b,n} }
   const promoChoiceMeshes = [];    // selectable token meshes for the active picker
+  let promoBackMesh = null;        // dark backing quad under the choice row
 
   let busy = false;                // true while a move animates
   let disposed = false;
@@ -447,9 +448,31 @@ export function createGame(ctx) {
   // Piece ledger: pieceMeshes[r][c] = Group|null, diffed against the board.
   const pieceMeshes = Array.from({ length: N }, () => new Array(N).fill(null));
 
+  // While a promotion mover glides, paint() must NOT reconcile its destination
+  // cell (the logical board already says "queen" there, but the gliding mesh is
+  // still the pawn — we swap it after the glide). Key = r*8+c, or -1 = none.
+  // Declared up front with all other mutable state to avoid the TDZ crash the
+  // module header documents (the initial paint() runs before later let-bindings).
+  let paintSkipCell = -1;
+
   // Highlights.
   let selRingMesh = null;
   const targets = [];
+  let liftedPiece = null;          // the selected piece given the I1 emissive lift
+  let hoverCell = null;            // {r,c} | null — cursor cell on the local turn
+  let hoverRingMesh = null;        // faint ring affordance on a hoverable square
+
+  // Last-move trace: two fading tinted quads marking the previous from/to.
+  let traceFromMesh = null, traceToMesh = null;
+  let traceT = 0;                  // seconds since the trace was armed
+  const TRACE_DUR = 1.2;
+
+  // Transient cosmetic animations driven by stepAnim (capture sink/fade, piece
+  // scale-pop, king check pulse / mate topple). All purely visual — never touch
+  // logical state, the wire, or the piece ledger.
+  const fxAnims = [];              // { kind, mesh, t, dur, ... }
+  let checkPulseKing = null;       // mesh of the king in check (emissive pulse)
+  let checkPulseT = 0;
 
   // Identity / turn cue resources.
   let cueCanvas = null, cueTex = null, cueMesh = null, homeRail = null;
@@ -465,14 +488,26 @@ export function createGame(ctx) {
   const M = {
     frame: new THREE.MeshStandardMaterial({ color: "#4a311c", roughness: 0.66, metalness: 0.06 }),
     plank: new THREE.MeshStandardMaterial({ color: "#3a281a", roughness: 0.74, metalness: 0.04 }),
-    dark: new THREE.MeshStandardMaterial({ color: "#7a4a25", roughness: 0.8, metalness: 0.03 }),
-    light: new THREE.MeshStandardMaterial({ color: "#e8d2ab", roughness: 0.84, metalness: 0.02 }),
+    dark: new THREE.MeshStandardMaterial({ color: "#6e4220", roughness: 0.8, metalness: 0.03 }),
+    light: new THREE.MeshStandardMaterial({ color: "#ecd7b2", roughness: 0.84, metalness: 0.02 }),
     tray: new THREE.MeshStandardMaterial({ color: "#2c1d11", roughness: 0.9, metalness: 0.03 }),
-    white: new THREE.MeshStandardMaterial({ color: "#f1ead6", roughness: 0.46, metalness: 0.06, emissive: "#000000" }),
-    black: new THREE.MeshStandardMaterial({ color: "#26211d", roughness: 0.5, metalness: 0.12, emissive: "#000000" }),
+    // White = warm ivory, black = lifted graphite with a faint cool rim so the
+    // dark army reads clearly against the dark squares from an oblique seated
+    // angle (was #26211d, near-invisible on #7a4a25 at grazing incidence).
+    white: new THREE.MeshStandardMaterial({ color: "#f3ecda", roughness: 0.44, metalness: 0.08, emissive: "#3a352a", emissiveIntensity: 0.10 }),
+    black: new THREE.MeshStandardMaterial({ color: "#322a24", roughness: 0.42, metalness: 0.22, emissive: "#1a2230", emissiveIntensity: 0.16 }),
     selRing: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.34, metalness: 0.5, emissive: "#e0a23a", emissiveIntensity: 0.5, transparent: true, opacity: 0.92 }),
     target: new THREE.MeshStandardMaterial({ color: "#e0a23a", roughness: 0.3, metalness: 0.3, emissive: "#e0a23a", emissiveIntensity: 0.55, transparent: true, opacity: 0.62, depthWrite: false }),
     capTarget: new THREE.MeshStandardMaterial({ color: "#e05a3a", roughness: 0.3, metalness: 0.3, emissive: "#e05a3a", emissiveIntensity: 0.6, transparent: true, opacity: 0.5, depthWrite: false }),
+    // Hover ring on a hoverable own-piece / ghost target (cool gold, fainter than
+    // the firm selection ring so the two never read the same).
+    hover: new THREE.MeshStandardMaterial({ color: "#9fd4ff", roughness: 0.4, metalness: 0.3, emissive: "#7fb8ee", emissiveIntensity: 0.45, transparent: true, opacity: 0.55, depthWrite: false }),
+    // Last-move trace quads (from = cool, to = warm) that fade out over ~1.2 s.
+    traceFrom: new THREE.MeshBasicMaterial({ color: "#7fb8ee", transparent: true, opacity: 0.0, depthWrite: false }),
+    traceTo: new THREE.MeshBasicMaterial({ color: "#e0a23a", transparent: true, opacity: 0.0, depthWrite: false }),
+    // Dark rounded backing the promotion choices float over so they read as a
+    // deliberate menu rather than four disconnected pieces.
+    promoBack: new THREE.MeshBasicMaterial({ color: "#1a120b", transparent: true, opacity: 0.78, depthWrite: false }),
     invisible: new THREE.MeshBasicMaterial({ visible: false }),
   };
 
@@ -481,6 +516,8 @@ export function createGame(ctx) {
     selRing: new THREE.TorusGeometry(STEP * 0.42, STEP * 0.05, 8, 28),
     target: new THREE.CylinderGeometry(STEP * 0.16, STEP * 0.16, STEP * 0.04, 22),
     capRing: new THREE.TorusGeometry(STEP * 0.40, STEP * 0.045, 8, 28),
+    hoverRing: new THREE.TorusGeometry(STEP * 0.44, STEP * 0.035, 8, 28),
+    trace: new THREE.PlaneGeometry(STEP * 0.94, STEP * 0.94),
     // Flat slab (like checkers): a thin per-cell collider sitting just above the
     // tiles. A tall collider would occlude the square BEHIND it at an oblique
     // camera angle, so empty-square clicks could pick the wrong (front) cell.
@@ -552,7 +589,8 @@ export function createGame(ctx) {
   }
 
   // Build a procedural piece Group for (type, mat). Base on y=0, sits at TILE_TOP.
-  function makeProceduralPiece(type, mat) {
+  // `color` orients the knight to face the opponent (white faces -Z, black +Z).
+  function makeProceduralPiece(type, mat, color) {
     const g = new THREE.Group();
     if (type === "n") {
       const baseGeo = new THREE.CylinderGeometry(STEP * 0.3, STEP * 0.34, STEP * 0.12, 20);
@@ -580,7 +618,11 @@ export function createGame(ctx) {
       const sc = PIECE_HEIGHT.n / 0.78;
       head.scale.setScalar(sc);
       head.position.y = STEP * 0.12 + (0.78 * sc) / 2;
-      head.rotation.y = Math.PI / 2;
+      // Face the opponent: white knights look toward -Z (black home), black
+      // knights toward +Z. Mirroring per colour (rather than rotating the whole
+      // group by PI as the GLB path did) keeps both knights upright and facing
+      // across the board correctly from either seat.
+      head.rotation.y = color === "black" ? -Math.PI / 2 : Math.PI / 2;
       head.castShadow = true; head.receiveShadow = true;
       g.add(head);
       g.userData.baseGeo = baseGeo;
@@ -590,7 +632,11 @@ export function createGame(ctx) {
     const geo = procGeo[type];
     const mesh = new THREE.Mesh(geo, mat);
     const profH = type === "p" ? 0.86 : type === "r" ? 0.86 : type === "b" ? 0.98 : 1.06;
-    const sc = (PIECE_HEIGHT[type] / profH) * (STEP * 1.0);
+    // PIECE_HEIGHT[type] is the target height in METRES; profH is the lathe
+    // profile-space height. Scale = target / profile (matches the knight path,
+    // sc = PIECE_HEIGHT.n / 0.78). The old extra `* STEP` factor shrank every
+    // non-knight piece to a ~5 mm flat speck.
+    const sc = PIECE_HEIGHT[type] / profH;
     mesh.scale.setScalar(sc);
     mesh.castShadow = true; mesh.receiveShadow = true;
     g.add(mesh);
@@ -617,7 +663,10 @@ export function createGame(ctx) {
     cueCanvas.width = 512; cueCanvas.height = 96;
     cueTex = new THREE.CanvasTexture(cueCanvas);
     if (THREE.SRGBColorSpace) cueTex.colorSpace = THREE.SRGBColorSpace;
-    const cueMat = new THREE.MeshBasicMaterial({ map: cueTex, transparent: true, depthWrite: false });
+    // depthTest:false (paired with renderOrder 4 + depthWrite:false) so the
+    // placard never z-fights the tray and is never occluded by a tall piece on
+    // the home rank from a low seated angle — it always reads as an overlay.
+    const cueMat = new THREE.MeshBasicMaterial({ map: cueTex, transparent: true, depthWrite: false, depthTest: false });
     const cueGeo = new THREE.PlaneGeometry(BOARD_SIZE * 0.62, BOARD_SIZE * 0.62 * (96 / 512));
     cueMesh = new THREE.Mesh(cueGeo, cueMat);
     cueMesh.rotation.x = -Math.PI / 2;
@@ -634,10 +683,24 @@ export function createGame(ctx) {
 
   function updateIdentityCue() {
     if (!cueMesh) return;
-    const nearZ = myColor === "white" ? 1 : -1; // white home +Z, black home -Z
+    // White home is +Z, black home -Z. A SPECTATOR has no colour: branch
+    // explicitly to +Z (the standard spectator look direction is down -Z toward
+    // +Z's far edge), so "Spectating" sits on a neutral near edge and reads
+    // upright from the default canonical spectator camera. (Previously the
+    // `white?1:-1` ternary silently pinned the spectator cue to black's edge.)
+    const nearZ = myColor === "white" ? 1 : myColor === "black" ? -1 : 1;
     const edgeZ = nearZ * (HALF + FRAME_W + STEP * 0.30);
-    cueMesh.position.set(0, TILE_TOP + 0.003, edgeZ + nearZ * STEP * 0.34);
-    cueMesh.rotation.z = nearZ > 0 ? Math.PI : 0;
+    cueMesh.position.set(0, TILE_TOP + 0.012, edgeZ + nearZ * STEP * 0.34);
+    // The cue is flat on the table (rotation.x = -PI/2) and lives in group-local
+    // space alongside its near-edge position, so it turns WITH the per-seat
+    // group.rotation.y (no per-frame counter-rotation needed, unlike battleship's
+    // upright HUD). For the text to read upright to the LOCAL viewer, its text-top
+    // (plane +Y) must point toward the FAR edge (group-local -nearZ), away from the
+    // seated player. With rotation.x = -PI/2, text-top maps to group-local
+    // (-sin z, 0, -cos z): z = 0 -> -Z, z = PI -> +Z. White home is +Z (nearZ > 0)
+    // so its far edge is -Z -> z = 0; black is the inverse. The previous flip was
+    // reversed, so text read upside-down from both seats.
+    cueMesh.rotation.z = nearZ > 0 ? 0 : Math.PI;
 
     if (homeRail) {
       homeRail.position.set(0, PLANK_TOP + FRAME_H + (FRAME_H * 0.6) / 2, nearZ * (HALF + FRAME_W / 2));
@@ -856,7 +919,10 @@ export function createGame(ctx) {
         o.receiveShadow = true;
       }
     });
-    if (color === "black") g.rotation.y = Math.PI; // cosmetic symmetry
+    // Flip black 180° so the two armies face opposite directions (knights then
+    // look across at each other rather than both the same way); for symmetric
+    // pieces this is purely cosmetic.
+    if (color === "black") g.rotation.y = Math.PI;
     return g;
   }
 
@@ -865,7 +931,7 @@ export function createGame(ctx) {
     const mat = (color === "white" ? M.white : M.black).clone();
     let g = null;
     if (modelsReady && modelTemplate[type]) g = makeModelPiece(type, color, mat);
-    if (!g) g = makeProceduralPiece(type, mat);
+    if (!g) g = makeProceduralPiece(type, mat, color);
     g.userData.pieceMat = mat;
     g.userData.pieceType = type;
     g.userData.pieceColor = color;
@@ -887,6 +953,7 @@ export function createGame(ctx) {
   function paint() {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
+        if (paintSkipCell === r * 8 + c) continue;
         const want = state.board[r][c];
         const have = pieceMeshes[r][c];
         if (!want) {
@@ -926,6 +993,39 @@ export function createGame(ctx) {
     return phase === "play" && role !== "spectator" && state.turn === myColor && gate;
   }
 
+  // I1: lift + warm-glow the actually-selected piece so the choice reads on the
+  // tall back rank, not just via the floor ring. Stored so it can be reset.
+  function liftSelectedPiece() {
+    dropSelectedPiece();
+    if (!selectedFrom) return;
+    const p = pieceMeshes[selectedFrom.r][selectedFrom.c];
+    if (!p || !p.userData.pieceMat) return;
+    const mat = p.userData.pieceMat;
+    p.userData._emR0 = mat.emissive.getHex();
+    p.userData._emI0 = mat.emissiveIntensity;
+    p.userData._y0 = p.position.y;
+    mat.emissive.set("#e0a23a");
+    mat.emissiveIntensity = 0.42;
+    p.position.y = p.userData._y0 + STEP * 0.06;
+    liftedPiece = p;
+  }
+  function dropSelectedPiece() {
+    const p = liftedPiece;
+    liftedPiece = null;
+    if (!p) return;
+    const mat = p.userData.pieceMat;
+    if (mat && p.userData._emR0 !== undefined) {
+      mat.emissive.setHex(p.userData._emR0);
+      mat.emissiveIntensity = p.userData._emI0;
+    }
+    if (p.userData._y0 !== undefined && !isGliding(p)) p.position.y = p.userData._y0;
+    delete p.userData._emR0; delete p.userData._emI0; delete p.userData._y0;
+  }
+  function isGliding(mesh) {
+    for (const a of glides) if (a.mesh === mesh) return true;
+    return false;
+  }
+
   function refreshHighlights() {
     clearHighlights();
     if (!myTurnNow() || !selectedFrom) { startLoopIfNeeded(); return; }
@@ -934,11 +1034,13 @@ export function createGame(ctx) {
     selRingMesh.position.set(cellX(selectedFrom.c), TILE_TOP + 0.002, cellZ(selectedFrom.r));
     selRingMesh.renderOrder = 2;
     group.add(selRingMesh);
+    liftSelectedPiece();
 
     for (const m of selMoves) {
       const capture = !!state.board[m.to.r][m.to.c] || !!m.flags.ep;
       addTarget(m.to.r, m.to.c, capture);
     }
+    refreshHoverRing();
     startLoopIfNeeded();
   }
 
@@ -954,6 +1056,9 @@ export function createGame(ctx) {
     t.position.set(cellX(c), baseY, cellZ(r));
     t.userData.baseY = baseY;
     t.renderOrder = 3;
+    // I8: scale-in from 0 so selecting doesn't pop the markers in.
+    t.scale.setScalar(0.01);
+    t.userData.appear = 0;
     group.add(t);
     targets.push(t);
   }
@@ -962,9 +1067,86 @@ export function createGame(ctx) {
     for (const t of targets) group.remove(t);
     targets.length = 0;
     if (selRingMesh) { group.remove(selRingMesh); selRingMesh = null; }
+    dropSelectedPiece();
+    clearHoverRing();
   }
 
   function clearSelection() { selectedFrom = null; selMoves = []; closePromoPicker(); }
+
+  // ===========================================================================
+  // I2: hover affordance. board.js routes throttled cursor cells here on the
+  // local player's turn (and clears with -1 off-turn / on leave). We show a faint
+  // ring on a hoverable own-piece, or on a legal destination when a piece is
+  // selected. Purely additive — never mutates state or the wire.
+  // ===========================================================================
+  function setHover(cell) {
+    let next = null;
+    if (cell && Number.isInteger(cell.r) && Number.isInteger(cell.c) && inBounds(cell.r, cell.c)) {
+      next = { r: cell.r, c: cell.c };
+    }
+    if (next && hoverCell && next.r === hoverCell.r && next.c === hoverCell.c) return;
+    if (!next && !hoverCell) return;
+    hoverCell = next;
+    refreshHoverRing();
+  }
+
+  function hoverableAt(r, c) {
+    if (!myTurnNow() || busy || promoPick) return false;
+    // When a piece is selected, a hover on one of its legal destinations is the
+    // affordance; otherwise hover an own-piece you could pick up.
+    if (selectedFrom) return selMoves.some((m) => m.to.r === r && m.to.c === c);
+    const p = state.board[r][c];
+    return !!(p && p.color === myColor && legalMovesFrom(state, r, c).length > 0);
+  }
+
+  function refreshHoverRing() {
+    clearHoverRing();
+    if (!hoverCell) return;
+    const { r, c } = hoverCell;
+    // Don't double-ring the already-selected square.
+    if (selectedFrom && selectedFrom.r === r && selectedFrom.c === c) return;
+    if (!hoverableAt(r, c)) return;
+    hoverRingMesh = new THREE.Mesh(G.hoverRing, M.hover);
+    hoverRingMesh.rotation.x = Math.PI / 2;
+    hoverRingMesh.position.set(cellX(c), TILE_TOP + 0.0018, cellZ(r));
+    hoverRingMesh.renderOrder = 2;
+    group.add(hoverRingMesh);
+    startLoopIfNeeded();
+  }
+
+  function clearHoverRing() {
+    if (hoverRingMesh) { group.remove(hoverRingMesh); hoverRingMesh = null; }
+  }
+
+  // ===========================================================================
+  // I5: last-move trace. Two faint tinted quads on the from/to squares that fade
+  // out over ~1.2 s, so the waiting player and spectators (who get no turn cue)
+  // can see what just happened. Driven from performMove for every move path.
+  // ===========================================================================
+  function armTrace(from, to) {
+    ensureTraceMeshes();
+    if (!traceFromMesh) return;
+    traceFromMesh.position.set(cellX(from.c), TILE_TOP + 0.0014, cellZ(from.r));
+    traceToMesh.position.set(cellX(to.c), TILE_TOP + 0.0016, cellZ(to.r));
+    traceFromMesh.visible = traceToMesh.visible = true;
+    traceT = 0;
+    startLoop();
+  }
+  function ensureTraceMeshes() {
+    if (traceFromMesh || !group) return;
+    traceFromMesh = new THREE.Mesh(G.trace, M.traceFrom);
+    traceToMesh = new THREE.Mesh(G.trace, M.traceTo);
+    for (const t of [traceFromMesh, traceToMesh]) {
+      t.rotation.x = -Math.PI / 2;
+      t.renderOrder = 1;
+      t.visible = false;
+      group.add(t);
+    }
+  }
+  function hideTrace() {
+    if (traceFromMesh) traceFromMesh.visible = false;
+    if (traceToMesh) traceToMesh.visible = false;
+  }
 
   // ===========================================================================
   // Animation loop — gliding mover + idle bob/spin for the target tokens.
@@ -974,7 +1156,11 @@ export function createGame(ctx) {
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
   const easeInOut = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
 
-  function loopActive() { return glides.length > 0 || targets.length > 0 || promoChoiceMeshes.length > 0; }
+  function loopActive() {
+    return glides.length > 0 || targets.length > 0 || promoChoiceMeshes.length > 0 ||
+      fxAnims.length > 0 || checkPulseKing != null ||
+      (traceFromMesh && traceFromMesh.visible);
+  }
   function startLoopIfNeeded() { if (loopActive()) startLoop(); }
   function startLoop() {
     if (rafId != null || disposed) return;
@@ -989,6 +1175,10 @@ export function createGame(ctx) {
   }
 
   function stepAnim(dt) {
+    // B3: advance the shared idle clock ONCE per frame; both the target tokens
+    // and the promo tokens read it, so coexisting lists never double-step it.
+    idleT += dt;
+
     for (let i = glides.length - 1; i >= 0; i--) {
       const a = glides[i];
       a.t += dt;
@@ -996,53 +1186,201 @@ export function createGame(ctx) {
       const e = easeInOut(k);
       a.mesh.position.x = a.fromX + (a.toX - a.fromX) * e;
       a.mesh.position.z = a.fromZ + (a.toZ - a.fromZ) * e;
-      a.mesh.position.y = TILE_TOP + (a.arc ? Math.sin(k * Math.PI) * STEP * 0.35 : 0);
+      // Sliding pieces get a whisper of lift mid-glide; knights keep their arc.
+      const lift = a.arc ? Math.sin(k * Math.PI) * STEP * 0.35
+                         : Math.sin(k * Math.PI) * STEP * 0.05;
+      a.mesh.position.y = TILE_TOP + lift;
+      if (a.onPeak && !a.peaked && k >= 0.5) { a.peaked = true; a.onPeak(); }
       if (k >= 1) {
         a.mesh.position.set(a.toX, TILE_TOP, a.toZ);
         glides.splice(i, 1);
         if (a.onDone) a.onDone();
       }
     }
+
     if (targets.length > 0) {
-      idleT += dt;
       const bob = Math.sin(idleT * 3.0) * STEP * 0.04;
       for (const t of targets) {
+        // I8: ease the scale-in to 1 on appearance.
+        if (t.userData.appear < 1) {
+          t.userData.appear = Math.min(1, t.userData.appear + dt / 0.12);
+          t.scale.setScalar(t.userData.appear);
+        }
         t.position.y = t.userData.baseY + bob;
         t.rotation.z = idleT * 1.4;
       }
     }
     if (promoChoiceMeshes.length > 0) {
-      idleT += dt;
       for (const t of promoChoiceMeshes) t.rotation.y = idleT * 1.2;
+    }
+
+    stepFxAnims(dt);
+    stepTrace(dt);
+    stepCheckPulse(dt);
+  }
+
+  // Transient cosmetic animations: capture sink/fade, promotion scale-pop, mate
+  // king topple. No per-frame allocation; meshes/materials are reused.
+  function stepFxAnims(dt) {
+    for (let i = fxAnims.length - 1; i >= 0; i--) {
+      const a = fxAnims[i];
+      a.t += dt;
+      const k = Math.min(1, a.t / a.dur);
+      if (a.kind === "capture") {
+        // I4: shrink + sink + fade the doomed mesh, then dispose it.
+        const e = easeInOut(k);
+        a.mesh.scale.setScalar(a.s0 * (1 - 0.85 * e));
+        a.mesh.position.y = a.y0 - e * STEP * 0.5;
+        if (a.mat) { a.mat.transparent = true; a.mat.opacity = 1 - e; }
+        if (k >= 1) { disposePiece(a.mesh); fxAnims.splice(i, 1); }
+      } else if (a.kind === "pop") {
+        // Promotion settle: overshoot past 1 then ease back (subtle).
+        const o = 1 + Math.sin(k * Math.PI) * 0.18;
+        a.mesh.scale.setScalar(a.s0 * (k >= 1 ? 1 : o));
+        if (k >= 1) { a.mesh.scale.setScalar(a.s0); fxAnims.splice(i, 1); }
+      } else if (a.kind === "topple") {
+        // Mate: rotate the losing king onto its side and let it settle.
+        const e = easeInOut(k);
+        a.mesh.rotation.z = e * (Math.PI / 2) * a.dir;
+        a.mesh.position.y = TILE_TOP + Math.sin(k * Math.PI) * STEP * 0.04;
+        if (k >= 1) { a.mesh.rotation.z = (Math.PI / 2) * a.dir; fxAnims.splice(i, 1); }
+      } else {
+        fxAnims.splice(i, 1);
+      }
     }
   }
 
-  function animateMove(from, to, isKnight, onDone) {
+  function stepTrace(dt) {
+    if (!traceFromMesh || !traceFromMesh.visible) return;
+    traceT += dt;
+    const k = Math.min(1, traceT / TRACE_DUR);
+    // Quick rise, slow fall — pop in then linger then fade.
+    const a = k < 0.12 ? (k / 0.12) : (1 - (k - 0.12) / (1 - 0.12));
+    const op = Math.max(0, a);
+    M.traceFrom.opacity = op * 0.5;
+    M.traceTo.opacity = op * 0.62;
+    if (k >= 1) hideTrace();
+  }
+
+  function stepCheckPulse(dt) {
+    if (!checkPulseKing) return;
+    const mat = checkPulseKing.userData.pieceMat;
+    if (!mat) { checkPulseKing = null; return; }
+    checkPulseT += dt;
+    const pulse = 0.5 + 0.5 * Math.sin(checkPulseT * 6.0);
+    mat.emissive.set("#e0734a");
+    mat.emissiveIntensity = 0.25 + pulse * 0.55;
+  }
+
+  function animateMove(from, to, isKnight, onDone, onPeak) {
     const mesh = pieceMeshes[to.r][to.c];
     if (!mesh) { if (onDone) onDone(); return; }
+    // I7: scale glide time by Chebyshev distance so a queen crossing the board
+    // doesn't move as fast as a one-square king step (and short steps aren't
+    // sluggish). Knights keep their hop.
+    const maxStep = Math.max(Math.abs(to.r - from.r), Math.abs(to.c - from.c));
+    const dur = Math.min(0.42, 0.18 + 0.032 * maxStep);
     glides.push({
-      mesh, t: 0, dur: 0.26,
+      mesh, t: 0, dur,
       fromX: cellX(from.c), fromZ: cellZ(from.r),
       toX: cellX(to.c), toZ: cellZ(to.r),
-      arc: isKnight, onDone,
+      arc: isKnight, onDone, onPeak, peaked: false,
     });
     startLoop();
   }
 
   // ===========================================================================
   // performMove — apply a validated legal move. The logical state is the source
-  // of truth; meshes reconcile (paint) then the mover glides.
+  // of truth, but we GLIDE THE ACTUAL moving mesh (not a freshly-spawned one) and
+  // keep the captured mesh around to sink/fade it at the glide's peak. We seed the
+  // piece ledger before paint() so paint() leaves the mover/victim alone and only
+  // rebuilds the rest (castled rook, en-passant square, promotion swap).
   // ===========================================================================
   function performMove(move) {
     const movingPiece = state.board[move.from.r][move.from.c];
     const isKnight = movingPiece && movingPiece.type === "n";
+    const movingColor = movingPiece && movingPiece.color;
+    const isPromo = !!move.flags.promo;
+
+    // Grab the real meshes BEFORE state advances.
+    const mover = pieceMeshes[move.from.r][move.from.c];
+    let captured = null, capR = -1, capC = -1;
+    if (move.flags.ep) {
+      capR = move.flags.ep.r; capC = move.flags.ep.c;
+    } else if (state.board[move.to.r][move.to.c]) {
+      capR = move.to.r; capC = move.to.c;
+    }
+    if (capR >= 0) captured = pieceMeshes[capR][capC];
+
     state = applyMoveToState(state, move);
 
     busy = true;
     clearSelection();
     clearHighlights();
-    paint();
-    animateMove(move.from, move.to, isKnight, () => { busy = false; });
+
+    // B1/B2: seed the ledger so paint() doesn't recreate the mover, and so the
+    // victim's square (the `to` cell for a normal capture) isn't re-diffed into a
+    // brand-new mesh on top of the one we're animating. The mover is now logically
+    // at `to`; reparent it there in the ledger and free its old square.
+    if (mover) {
+      pieceMeshes[move.from.r][move.from.c] = null;
+      pieceMeshes[move.to.r][move.to.c] = mover;
+      mover.userData.cell = { r: move.to.r, c: move.to.c };
+    }
+    // Detach the captured mesh from the ledger so paint() won't dispose it now —
+    // we sink+fade it at the glide peak instead (I4).
+    if (captured) pieceMeshes[capR][capC] = null;
+
+    // For a promotion the gliding mesh is still the pawn; tell paint() to leave
+    // the destination cell alone so it doesn't dispose the pawn under us. We swap
+    // to the promoted mesh after the glide (onDone).
+    paintSkipCell = (isPromo && mover) ? move.to.r * 8 + move.to.c : -1;
+    paint(); // rebuilds rook on castle, en-passant square, everything but mover/victim
+    paintSkipCell = -1;
+
+    // I5: trace the move so the waiting player + spectators can read it.
+    armTrace(move.from, move.to);
+
+    const onPeak = () => {
+      if (captured) {
+        const mat = captured.userData.pieceMat;
+        // Flag transparent up front so the fade actually takes (avoids a one-frame
+        // shader recompile mid-anim). pieceMat is a per-piece clone, disposed with
+        // the mesh, so this never leaks onto a shared material.
+        if (mat) { mat.transparent = true; mat.needsUpdate = true; }
+        fxAnims.push({
+          kind: "capture", mesh: captured, mat,
+          t: 0, dur: 0.16, s0: captured.scale.x || 1, y0: captured.position.y,
+        });
+        captured = null;
+        startLoop();
+      }
+    };
+    const onDone = () => {
+      // Promotion: swap the pawn mesh for the promoted type with a scale-pop.
+      if (isPromo && mover) {
+        const newMesh = makePiece(move.flags.promo, movingColor);
+        newMesh.userData.isModel = modelsReady && !!modelTemplate[move.flags.promo];
+        newMesh.position.set(cellX(move.to.c), TILE_TOP, cellZ(move.to.r));
+        newMesh.userData.cell = { r: move.to.r, c: move.to.c };
+        group.add(newMesh);
+        if (pieceMeshes[move.to.r][move.to.c] === mover) pieceMeshes[move.to.r][move.to.c] = newMesh;
+        disposePiece(mover);
+        const s0 = newMesh.scale.x || 1;
+        newMesh.scale.setScalar(s0 * 0.4);
+        fxAnims.push({ kind: "pop", mesh: newMesh, t: 0, dur: 0.22, s0 });
+        startLoop();
+      }
+      busy = false;
+    };
+
+    if (mover) {
+      animateMove(move.from, move.to, isKnight, onDone, captured ? onPeak : null);
+    } else {
+      // No mover mesh (shouldn't happen in normal play) — still resolve cleanly.
+      if (captured) onPeak();
+      onDone();
+    }
     if (!pieceMeshes[move.to.r][move.to.c]) busy = false;
   }
 
@@ -1054,6 +1392,7 @@ export function createGame(ctx) {
       winner = other(state.turn);
       clearSelection(); clearHighlights();
       updateIdentityCue();
+      mateFlourish(state.turn); // topple the mated king (state.turn = loser)
       try { ctx.onGameOver?.({ winner, reason: "checkmate" }); } catch { /* */ }
       return;
     }
@@ -1062,11 +1401,54 @@ export function createGame(ctx) {
       winner = null;
       clearSelection(); clearHighlights();
       updateIdentityCue();
+      clearCheckPulse();
       try { ctx.onGameOver?.({ winner: null, reason: "stalemate" }); } catch { /* */ }
       return;
     }
+    // I3: pulse the king of the side now in check (or clear if no check).
+    updateCheckFlourish(status === "check");
     updateIdentityCue();
     refreshHighlights();
+  }
+
+  // I3: drive the in-check king's red emissive pulse. `inCheckNow` => start/keep
+  // pulsing the side-to-move's king; otherwise restore its material.
+  function updateCheckFlourish(inCheckNow) {
+    clearCheckPulse();
+    if (!inCheckNow) return;
+    const k = findKing(state.board, state.turn);
+    if (!k) return;
+    const km = pieceMeshes[k.r][k.c];
+    if (!km || !km.userData.pieceMat) return;
+    const mat = km.userData.pieceMat;
+    km.userData._ckR0 = mat.emissive.getHex();
+    km.userData._ckI0 = mat.emissiveIntensity;
+    checkPulseKing = km;
+    checkPulseT = 0;
+    startLoop();
+  }
+  function clearCheckPulse() {
+    const km = checkPulseKing;
+    checkPulseKing = null;
+    if (!km || !km.userData.pieceMat) return;
+    const mat = km.userData.pieceMat;
+    if (km.userData._ckR0 !== undefined) {
+      mat.emissive.setHex(km.userData._ckR0);
+      mat.emissiveIntensity = km.userData._ckI0;
+      delete km.userData._ckR0; delete km.userData._ckI0;
+    }
+  }
+
+  // Checkmate flourish: settle the losing king onto its side, no rule effect.
+  function mateFlourish(loserColor) {
+    clearCheckPulse();
+    const k = findKing(state.board, loserColor);
+    if (!k) return;
+    const km = pieceMeshes[k.r][k.c];
+    if (!km) return;
+    // Topple toward +X (a stable, board-bounded direction); reuse fxAnims.
+    fxAnims.push({ kind: "topple", mesh: km, t: 0, dur: 0.5, dir: 1 });
+    startLoop();
   }
 
   // ===========================================================================
@@ -1187,19 +1569,39 @@ export function createGame(ctx) {
     clearHighlights();
     const baseX = cellX(move.to.c);
     const baseZ = cellZ(move.to.r);
-    const lift = TILE_TOP + STEP * 1.15;
+    // B4: lower the floating row so it reads as anchored to the board from a
+    // seated angle, and give it a dark backing quad so the four choices read as
+    // a deliberate menu, not disconnected pieces.
+    const lift = TILE_TOP + STEP * 0.8;
     const spread = STEP * 0.92;
+    const count = PROMO_ORDER.filter((p) => options[p]).length || 1;
+
+    // Backing quad, flat just above the board under the row centre.
+    promoBackMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(spread * count + STEP * 0.5, STEP * 0.9),
+      M.promoBack
+    );
+    promoBackMesh.rotation.x = -Math.PI / 2;
+    promoBackMesh.position.set(baseX, TILE_TOP + 0.006, baseZ);
+    promoBackMesh.renderOrder = 4;
+    group.add(promoBackMesh);
+
+    let slot = 0;
     for (let i = 0; i < PROMO_ORDER.length; i++) {
       const promo = PROMO_ORDER[i];
       const m = options[promo];
       if (!m) continue;
       promoPick.moves[promo] = m;
-      const mat = (myColor === "white" ? M.white : M.black).clone();
-      const token = makeProceduralPiece(promo, mat);
+      // B4: use makePiece so the choices match the board pieces (model when
+      // loaded, procedural fallback otherwise) instead of always-procedural.
+      const token = makePiece(promo, myColor);
       token.scale.multiplyScalar(0.62);
-      const dx = (i - (PROMO_ORDER.length - 1) / 2) * spread;
+      // I9: tint the queen brightest so "which is which" reads at a glance.
+      const em = token.userData.pieceMat;
+      if (em) { em.emissive.set(promo === "q" ? "#e0a23a" : "#5a4a30"); em.emissiveIntensity = promo === "q" ? 0.4 : 0.15; }
+      const dx = (slot - (count - 1) / 2) * spread;
+      slot++;
       token.position.set(baseX + dx, lift, baseZ);
-      token.userData.pieceMat = mat;
       token.userData.promoChoice = promo;
       // Tag every submesh so a raycast hit on any part resolves the choice.
       token.traverse((o) => { if (o.isMesh) o.userData.promoChoice = promo; });
@@ -1211,19 +1613,14 @@ export function createGame(ctx) {
   }
 
   function closePromoPicker() {
+    if (promoBackMesh) { group.remove(promoBackMesh); promoBackMesh.geometry?.dispose?.(); promoBackMesh = null; }
     if (!promoPick) {
-      for (const t of promoChoiceMeshes) group.remove(t);
+      for (const t of promoChoiceMeshes) disposePiece(t);
       promoChoiceMeshes.length = 0;
       return;
     }
     promoPick = null;
-    for (const t of promoChoiceMeshes) {
-      group.remove(t);
-      t.userData.pieceMat?.dispose?.();
-      t.userData.baseGeo?.dispose?.();
-      t.userData.headGeo?.dispose?.();
-      if (t.userData.crossGeo) for (const cg of t.userData.crossGeo) cg.dispose?.();
-    }
+    for (const t of promoChoiceMeshes) disposePiece(t);
     promoChoiceMeshes.length = 0;
   }
 
@@ -1314,6 +1711,8 @@ export function createGame(ctx) {
     busy = false;
     clearSelection();
     clearHighlights();
+    // Drop any transient cosmetic anim that references meshes paint() may dispose.
+    clearTransientFx();
 
     if (!incoming) {
       state = initialState();
@@ -1326,6 +1725,20 @@ export function createGame(ctx) {
     }
     updateIdentityCue();
     paint();
+    // Re-derive the in-check pulse from the rebuilt position so a snapshot that
+    // lands mid-check still shows the cue (spectators/late-join). On game over we
+    // leave the king upright — applyState has no per-move topple context.
+    if (phase === "play") updateCheckFlourish(inCheck(state.board, state.turn));
+  }
+
+  // Stop & detach transient cosmetic animations without restoring materials of
+  // meshes that are about to be disposed (paint rebuilds them). Used by applyState
+  // and dispose so we never poke a freed mesh.
+  function clearTransientFx() {
+    fxAnims.length = 0;
+    checkPulseKing = null;
+    hideTrace();
+    traceT = TRACE_DUR;
   }
 
   // Decode a snapshot into a clean { board, turn, castling, ep } state.
@@ -1365,6 +1778,7 @@ export function createGame(ctx) {
     myColor = role === "host" ? "white" : role === "guest" ? "black" : null;
     applyFacing();
     clearSelection();
+    hoverCell = null;
     updateIdentityCue();
     refreshHighlights();
   }
@@ -1377,6 +1791,9 @@ export function createGame(ctx) {
     disposed = true;
     if (rafId != null) { caf(rafId); rafId = null; }
     glides.length = 0;
+    clearTransientFx();
+    if (traceFromMesh) { group.remove(traceFromMesh); traceFromMesh = null; }
+    if (traceToMesh) { group.remove(traceToMesh); traceToMesh = null; }
     closePromoPicker();
     clearHighlights();
     for (let r = 0; r < N; r++) {
@@ -1409,6 +1826,7 @@ export function createGame(ctx) {
     applyState,
     applyMove,
     onPointer,
+    setHover,
     hitToCell,
     publicState,
     setRole,

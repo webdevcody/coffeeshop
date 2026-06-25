@@ -18,9 +18,10 @@
 //     seat's turn AND the click targets the local colour. Spectators (no colour)
 //     render read-only from applyState and never have input.
 //
-// Token step model: 0 = yard, 1..51 = shared track squares, 52..57 = home
-// column (57 = finished/centre). The shared track is the canonical 52-square
-// clockwise ludo loop; each colour enters at its START offset.
+// Token step model: 0 = yard, 1..52 = shared track squares (step 52 is the
+// owner's home-entry square, the track tile directly feeding the home column),
+// 53..58 = home column (58 = finished/centre). The shared track is the canonical
+// 52-square clockwise ludo loop; each colour enters at its START offset.
 
 import { orientFor } from "./createGame.js";
 import { BOARD_SIZE, BOARD_HALF, PALETTE, meshOf, standard } from "./pieces.js";
@@ -40,7 +41,7 @@ const TRACK = [
   [14, 7], [14, 6], [13, 6], [12, 6], [11, 6], [10, 6], [9, 6], [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0], [7, 0],
 ];
 // Home columns (6 cells each, leading toward the centre). Index 0..5 maps to
-// steps 52..57; step 57 is rendered at the centre as "finished".
+// steps 53..58; step 58 is rendered at the centre as "finished".
 const HOME = {
   red: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5], [7, 6]],
   green: [[1, 7], [2, 7], [3, 7], [4, 7], [5, 7], [6, 7]],
@@ -61,8 +62,8 @@ const absSquare = (color, step) => (START[color] + step - 1) % 52;
 
 function cellOf(color, step) {
   if (step <= 0) return null;
-  if (step <= 51) return TRACK[absSquare(color, step)];
-  if (step <= 57) return HOME[color][Math.min(step - 52, 5)];
+  if (step <= 52) return TRACK[absSquare(color, step)];
+  if (step <= 58) return HOME[color][Math.min(step - 53, 5)];
   return HOME[color][5];
 }
 
@@ -74,8 +75,8 @@ function legalMoves(s, color) {
     const step = toks[i];
     if (step === 0) {
       if (s.die === 6) out.push(i); // leave yard only on a 6
-    } else if (step < 57 && step + s.die <= 57) {
-      out.push(i); // exact-count finish; can't overshoot 57
+    } else if (step < 58 && step + s.die <= 58) {
+      out.push(i); // exact-count finish; can't overshoot 58
     }
   }
   return out;
@@ -91,17 +92,17 @@ function applyTokenMove(s, color, idx) {
   let captured = false;
   let step = ns.tokens[color][idx];
   step = step === 0 ? 1 : step + ns.die;
-  if (step > 57) return { ns, captured }; // illegal overshoot guard (shouldn't happen)
+  if (step > 58) return { ns, captured }; // illegal overshoot guard (shouldn't happen)
   ns.tokens[color][idx] = step;
   // Capture: landing on a non-safe shared-track square sends opponents home.
-  if (step >= 1 && step <= 51) {
+  if (step >= 1 && step <= 52) {
     const sq = absSquare(color, step);
     if (!SAFE.has(sq)) {
       for (const oc of ns.order) {
         if (oc === color) continue;
         for (let j = 0; j < 4; j++) {
           const os = ns.tokens[oc][j];
-          if (os >= 1 && os <= 51 && absSquare(oc, os) === sq) { ns.tokens[oc][j] = 0; captured = true; }
+          if (os >= 1 && os <= 52 && absSquare(oc, os) === sq) { ns.tokens[oc][j] = 0; captured = true; }
         }
       }
     }
@@ -109,7 +110,7 @@ function applyTokenMove(s, color, idx) {
   return { ns, captured };
 }
 
-const allHome = (s, color) => s.tokens[color].every((t) => t === 57);
+const allHome = (s, color) => s.tokens[color].every((t) => t === 58);
 const curColor = (s) => s.order[s.turn % s.order.length];
 // Seat index of the player whose turn it is (seat N <-> COLORS[N]).
 const curSeat = (s) => COLORS.indexOf(curColor(s));
@@ -166,14 +167,22 @@ export function createGame(ctx) {
   const tokDarkMat = {};   // colour -> outline-ish base
   const quadMat = {};      // colour -> translucent home plate
   const pathMat = {};      // colour -> tinted entry/home-column path tiles
+  const ringMat = {};      // colour -> legal-move ring tinted to that identity (I6)
   for (const c of COLORS) {
     tokMat[c] = keep(standard(THREE, PALETTE.ludo[c], { roughness: 0.45, emissive: PALETTE.ludo[c], emissiveIntensity: 0.0 }));
     tokDarkMat[c] = keep(standard(THREE, PALETTE.ludoDark[c], { roughness: 0.55 }));
     quadMat[c] = keep(standard(THREE, PALETTE.ludo[c], { roughness: 0.85, transparent: true, opacity: 0.4, emissive: PALETTE.ludo[c], emissiveIntensity: 0.0 }));
     pathMat[c] = keep(standard(THREE, PALETTE.ludo[c], { roughness: 0.85, transparent: true, opacity: 0.55 }));
+    ringMat[c] = keep(standard(THREE, PALETTE.ludo[c], { emissive: PALETTE.ludo[c], emissiveIntensity: 0.7, transparent: true, opacity: 0.7, depthWrite: false }));
   }
   const safeMat = keep(standard(THREE, "#e8d9b6", { roughness: 0.85, emissive: "#caa84a", emissiveIntensity: 0.25 }));
   const glowMat = keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.6, transparent: true, opacity: 0.55, depthWrite: false }));
+  // Thin dark collar under every token so all four colours (esp. yellow on the
+  // cream board) read crisply from both seats (I4). Shared across all tokens.
+  const collarMat = keep(standard(THREE, "#241a10", { roughness: 0.7, transparent: true, opacity: 0.55, depthWrite: false }));
+  // Reusable flourish glow ring (capture/finish/win) — derived from snapshot
+  // diffs so host/guest/spectator all see it (I3).
+  const fxMat = keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.9, transparent: true, opacity: 0.0, depthWrite: false }));
 
   // ---- base board ---------------------------------------------------------
   const plankH = 0.022;
@@ -252,7 +261,16 @@ export function createGame(ctx) {
   // ---- tokens (4 per active colour) ---------------------------------------
   const tokenGeo = keep(new THREE.ConeGeometry(cell * 0.3, cell * 0.95, 14));
   const baseGeo = keep(new THREE.CylinderGeometry(cell * 0.34, cell * 0.34, cell * 0.12, 14));
+  // Flat dark collar ring that hugs the base — a crisp dark outline against the
+  // light board for every colour (I4).
+  const collarGeo = keep(new THREE.TorusGeometry(cell * 0.36, cell * 0.045, 6, 20));
   const tokenMeshes = {}; // colour -> [groupMesh,...]
+  // Animated display position per token (parallel to logical tokenPos); render()
+  // sets the target, update() eases the cone toward it so steps/captures glide
+  // and hop instead of teleporting (B2). Keyed [color][idx] — NOT a string key,
+  // so update()'s hot loop allocates nothing.
+  const tokAnim = {};
+  for (const c of COLORS) tokAnim[c] = [];
   for (const c of COLORS) {
     tokenMeshes[c] = [];
     for (let i = 0; i < 4; i++) {
@@ -261,6 +279,10 @@ export function createGame(ctx) {
       cone.position.y = cell * 0.5;
       const base = meshOf(THREE, baseGeo, tokDarkMat[c]);
       base.position.y = cell * 0.06;
+      const collar = meshOf(THREE, collarGeo, collarMat, false);
+      collar.rotation.x = Math.PI / 2;
+      collar.position.y = cell * 0.02;
+      tg.add(collar);
       tg.add(base);
       tg.add(cone);
       // hit-test target: tag the whole token group so a click on cone OR base resolves.
@@ -269,6 +291,7 @@ export function createGame(ctx) {
       base.userData.cell = { color: c, token: i };
       layoutRoot.add(tg);
       tokenMeshes[c].push(tg);
+      tokAnim[c][i] = { x: 0, z: 0, cx: 0, cz: 0, t: 1, moving: false, lift: 0, pop: 0 };
     }
   }
 
@@ -278,12 +301,37 @@ export function createGame(ctx) {
   for (const c of COLORS) {
     ringMeshes[c] = [];
     for (let i = 0; i < 4; i++) {
-      const ring = meshOf(THREE, ringGeo, glowMat, false);
+      // tint the "you can move this" ring to the player's own identity colour (I6).
+      const ring = meshOf(THREE, ringGeo, ringMat[c], false);
       ring.rotation.x = Math.PI / 2;
       ring.visible = false;
       layoutRoot.add(ring);
       ringMeshes[c].push(ring);
     }
+  }
+
+  // ---- flourish FX rings (capture / finish / win) -------------------------
+  // Small pool of expanding glow rings, reused across events; no per-frame alloc.
+  const fxRingGeo = keep(new THREE.TorusGeometry(cell * 0.5, cell * 0.08, 8, 24));
+  const fxPool = [];
+  for (let i = 0; i < 4; i++) {
+    // own material clone per ring so overlapping flourishes fade independently.
+    const m = keep(fxMat.clone());
+    const fx = meshOf(THREE, fxRingGeo, m, false);
+    fx.rotation.x = Math.PI / 2;
+    fx.visible = false;
+    layoutRoot.add(fx);
+    fxPool.push({ mesh: fx, mat: m, t: 0, life: 0, x: 0, z: 0 });
+  }
+  function spawnFx(x, z, color) {
+    let slot = fxPool.find((f) => f.life <= 0);
+    if (!slot) slot = fxPool[0];
+    slot.x = x; slot.z = z; slot.t = 0; slot.life = 0.7;
+    const hex = (color && PALETTE.ludo[color]) || PALETTE.accent;
+    slot.mat.color.set(hex);
+    slot.mat.emissive.set(hex);
+    slot.mesh.position.set(x, TOP + 0.025, z);
+    slot.mesh.visible = true;
   }
 
   // ---- die (cube with pip faces) ------------------------------------------
@@ -322,7 +370,10 @@ export function createGame(ctx) {
       pipPool[i].visible = true;
     }
   }
-  dieGroup.position.set(gx(7), TOP + dieSize * 0.7, gz(7));
+  // Float the die a little higher than before so its value never visually
+  // collides with the finished-token fan around the centre plate (I5).
+  const dieRestY = TOP + dieSize * 0.95;
+  dieGroup.position.set(gx(7), dieRestY, gz(7));
   dieGroup.visible = false;
   layoutRoot.add(dieGroup);
 
@@ -363,6 +414,15 @@ export function createGame(ctx) {
         text = `${name} — ${COLOR_NAME[curColor(s)]}'s turn`;
       }
     }
+    g.save();
+    // The placard is a flat plane on the canonical near (-Z) edge of the OUTER
+    // group, which per-seat self-orientation always brings to the seated viewer.
+    // After rotation.x = -PI/2 its top face reads 180° rotated from the seat, so
+    // text shows upside-down. Pre-rotate the canvas content 180° once so it reads
+    // upright for every chair (matches ultimatettt.js / battleship.js).
+    g.translate(160, 36);
+    g.rotate(Math.PI);
+    g.translate(-160, -36);
     g.fillStyle = "rgba(26,18,10,0.84)";
     const rr = 14;
     g.beginPath();
@@ -373,6 +433,7 @@ export function createGame(ctx) {
     g.textBaseline = "middle";
     g.fillStyle = accent;
     g.fillText(text, 160, 38);
+    g.restore();
     labelTex.needsUpdate = true;
   }
 
@@ -383,9 +444,11 @@ export function createGame(ctx) {
       const [yc, yr] = YARD[color][idx];
       return { x: gx(yc), z: gz(yr) };
     }
-    if (step >= 57) {
-      // fan finished tokens around the centre
-      const ang = (idx / 4) * Math.PI * 2;
+    if (step >= 58) {
+      // fan finished tokens around the centre; add a per-colour phase so finished
+      // cones of different colours don't land on the same point and z-fight in
+      // 3-4 player endgames.
+      const ang = (idx / 4) * Math.PI * 2 + COLORS.indexOf(color) * (Math.PI / 8);
       return { x: gx(7) + Math.cos(ang) * cell * 0.5, z: gz(7) + Math.sin(ang) * cell * 0.5 };
     }
     const cl = cellOf(color, step);
@@ -400,9 +463,53 @@ export function createGame(ctx) {
   // s.order tells us which colours are actually in play. Hiding the rest stops
   // phantom idle tokens/rings/quads of unused colours on a watcher's board.
   const inPlay = (c) => (Array.isArray(s.order) ? s.order.includes(c) : order.includes(c));
+
+  // ---- diff-driven flourish + animation state -----------------------------
+  // Remembered snapshot fields so render() can detect deltas (capture/finish/win,
+  // a fresh die roll) and drive purely-visual flourishes the same way for host,
+  // guest, and spectator (all of whom reach render() via applyState/pushState).
+  let prevTokens = null;     // { color: [steps] } from the last render
+  let prevDie = null;        // last shown die value (null when hidden)
+  let prevPhase = "play";
+  let winFx = 0;             // countdown that drives the win celebration
+  let dieAnimT = 0;          // die tumble timer (>0 while tumbling)
+  let myMovable = [];        // cached indices of the LOCAL colour's movable tokens
+  let hoverTok = -1;         // index of the locally-hovered own token (I2)
+
   function render() {
     const active = curColor(s);
     const activeSeat = curSeat(s);
+
+    // --- detect snapshot deltas for flourishes (host/guest/spectator-safe) ---
+    if (prevTokens) {
+      for (const c of COLORS) {
+        if (!inPlay(c)) continue;
+        const now = s.tokens[c], was = prevTokens[c];
+        if (!now || !was) continue;
+        for (let i = 0; i < 4; i++) {
+          // capture: an opponent token was reset to the yard (>0 -> 0). Burst the
+          // glow at the square where it was hit (its prior board cell).
+          if (was[i] > 0 && was[i] <= 52 && now[i] === 0) {
+            const cl = cellOf(c, was[i]);
+            if (cl) spawnFx(gx(cl[0]), gz(cl[1]), c);
+            const a = tokAnim[c][i];
+            if (a) a.pop = 1;            // scale-pop as it arcs home
+          } else if (was[i] < 58 && now[i] === 58) {
+            // finish: a token reached the centre.
+            const fp = tokenPos(c, i);
+            spawnFx(fp.x, fp.z, c);
+            const a = tokAnim[c][i];
+            if (a) a.pop = 1;
+          }
+        }
+      }
+    }
+    if (prevPhase !== "over" && s.phase === "over") winFx = 2.4; // win celebration
+    prevPhase = s.phase;
+
+    // fresh die roll: trigger a short tumble (I1).
+    if (s.die != null && prevDie !== s.die) dieAnimT = 0.42;
+    prevDie = s.die;
 
     // Iterate ALL colours (meshes exist for every colour); inPlay() hides those
     // not present in the live wire s.order, so a snapshot with more colours than
@@ -425,21 +532,30 @@ export function createGame(ctx) {
       tokMat[c].emissiveIntensity = mine ? 0.3 : 0.0;
       quadMat[c].emissiveIntensity = isActive ? 0.22 + 0.18 * (0.5 + 0.5 * Math.sin(pulse * 4)) : (mine ? 0.12 : 0.0);
 
+      const myCache = mine ? [] : null;
       for (let i = 0; i < 4; i++) {
         const p = tokenPos(c, i);
+        const a = tokAnim[c][i];
         const tg = tokenMeshes[c][i];
-        tg.position.set(p.x, TOP, p.z);
+        // Set the ANIMATION TARGET (eased in update); seed display pos on first
+        // render so tokens don't slide in from origin at mount.
+        if (a) {
+          if (prevTokens == null) {
+            a.cx = p.x; a.cz = p.z; a.x = p.x; a.z = p.z; a.t = 1; a.moving = false;
+            tg.position.set(p.x, TOP, p.z); // seed so render-only mounts are placed
+          } else if (a.x !== p.x || a.z !== p.z) {
+            a.x = p.x; a.z = p.z; a.t = 0; a.moving = true;
+          }
+        }
 
         const movable = s.phase === "play" && s.awaiting && c === active && legalMoves(s, c).includes(i);
+        if (myCache && movable) myCache.push(i);
         // legal-move ring only on the LOCAL player's own movable tokens.
         const ring = ringMeshes[c][i];
         ring.visible = movable && c === myColor;
-        if (ring.visible) {
-          ring.position.set(p.x, TOP + 0.02, p.z);
-          ring.scale.setScalar(1 + 0.12 * (0.5 + 0.5 * Math.sin(pulse * 6)));
-        }
-        tg.scale.setScalar(movable ? 1.12 : 1);
+        // position is finalised per-frame in update() from the eased display pos.
       }
+      if (myCache) myMovable = myCache;
     }
 
     // die
@@ -449,35 +565,110 @@ export function createGame(ctx) {
       const col = PALETTE.ludo[active] || "#fafafa";
       M.die.color.set(col);
       showDieValue(s.die);
-      // Hold the die still while a value is shown so the single lit (+Y) face
-      // reads cleanly; a continuous Y-spin makes 2/3/6 pip patterns ambiguous.
-      dieGroup.rotation.y = 0;
     }
     void activeSeat;
+
+    // snapshot for the next diff (deep-copy step arrays only).
+    prevTokens = {};
+    for (const c of COLORS) prevTokens[c] = s.tokens[c] ? s.tokens[c].slice() : [0, 0, 0, 0];
+
     refreshLabel();
   }
 
   function update(dt) {
-    pulse += (dt || 0.016);
-    // cheap continuous refresh of the pulsing cues without rebuilding geometry
+    const d = dt || 0.016;
+    pulse += d;
     const active = curColor(s);
+    const wave = 0.5 + 0.5 * Math.sin(pulse * 4);
+    const ringWave = 0.5 + 0.5 * Math.sin(pulse * 6);
+
+    // colour cues: active quad + active TOKENS breathe together (B4); local
+    // colour stays brightened; win celebration overrides with a slow pulse.
+    const celebrate = winFx > 0 ? 0.5 + 0.5 * Math.sin(pulse * 5) : 0;
     for (const c of COLORS) {
       const isActive = c === active && s.phase === "play";
       const mine = c === myColor;
-      quadMat[c].emissiveIntensity = isActive ? 0.22 + 0.18 * (0.5 + 0.5 * Math.sin(pulse * 4)) : (mine ? 0.12 : 0.0);
+      const isWinner = s.phase === "over" && c === s.winner;
+      quadMat[c].emissiveIntensity = isWinner
+        ? 0.25 + 0.35 * celebrate
+        : (isActive ? 0.22 + 0.18 * wave : (mine ? 0.12 : 0.0));
+      tokMat[c].emissiveIntensity = isWinner
+        ? 0.3 + 0.3 * celebrate
+        : (isActive ? 0.12 + 0.16 * wave : (mine ? 0.3 : 0.0));
     }
-    if (s.die != null) dieGroup.rotation.y = 0;
-    if (s.phase === "play" && s.awaiting) {
-      for (const c of COLORS) {
-        if (c !== myColor) continue;
-        const moves = legalMoves(s, c);
-        for (let i = 0; i < 4; i++) {
-          const ring = ringMeshes[c][i];
-          if (ring.visible && moves.includes(i)) {
-            ring.scale.setScalar(1 + 0.12 * (0.5 + 0.5 * Math.sin(pulse * 6)));
-          }
+    if (winFx > 0) winFx = Math.max(0, winFx - d);
+
+    // ease each token toward its target XZ with a small hop arc + capture pop.
+    for (const c of COLORS) {
+      if (!inPlay(c)) continue;
+      for (let i = 0; i < 4; i++) {
+        const a = tokAnim[c][i];
+        const tg = tokenMeshes[c][i];
+        if (!a || !tg) continue;
+        let y = TOP;
+        if (a.moving) {
+          a.t = Math.min(1, a.t + d * 3.2);
+          y = TOP + Math.sin(a.t * Math.PI) * cell * 0.45; // hop arc over the move
+          if (a.t >= 1) { a.moving = false; a.cx = a.x; a.cz = a.z; }
         }
+        // critically-damped glide of the display position toward the target so a
+        // step reads as a smooth hop and a capture as an arc back to the yard.
+        const k = Math.min(1, d * 11);
+        a.cx += (a.x - a.cx) * k;
+        a.cz += (a.z - a.cz) * k;
+        // hover lift for the locally-hovered own movable token (I2).
+        const hovered = c === myColor && hoverTok === i;
+        const liftTarget = hovered ? cell * 0.35 : 0;
+        a.lift += (liftTarget - a.lift) * Math.min(1, d * 12);
+        tg.position.set(a.cx, y + a.lift, a.cz);
+
+        // capture/finish scale pop (decays).
+        if (a.pop > 0) a.pop = Math.max(0, a.pop - d * 2.2);
+        const movable = myMovable.includes(i) && c === myColor;
+        const popScale = a.pop > 0 ? 1 + 0.35 * Math.sin(a.pop * Math.PI) : 1;
+        const hoverScale = hovered ? 1.12 : (movable ? 1.1 + 0.04 * ringWave : 1);
+        tg.scale.setScalar(popScale * hoverScale);
       }
+    }
+
+    // pulse + reposition ONLY the cached local movable rings (B3); follow the
+    // eased token so the ring rides with a gliding piece.
+    if (s.phase === "play" && s.awaiting && myColor) {
+      for (let i = 0; i < 4; i++) {
+        const ring = ringMeshes[myColor][i];
+        if (!ring || !ring.visible) continue;
+        const a = tokAnim[myColor][i];
+        ring.position.set(a.cx, TOP + 0.02, a.cz);
+        ring.scale.setScalar(1 + 0.12 * ringWave);
+      }
+    }
+
+    // die: brief tumble on a fresh roll, then settle to 0 so the lit +Y face
+    // reads cleanly (I1).
+    if (s.die != null) {
+      if (dieAnimT > 0) {
+        dieAnimT = Math.max(0, dieAnimT - d);
+        const f = dieAnimT / 0.42;            // 1 -> 0
+        dieGroup.rotation.y = f * Math.PI * 4;
+        dieGroup.rotation.x = f * Math.PI * 3;
+        dieGroup.position.y = dieRestY + Math.sin((1 - f) * Math.PI) * cell * 0.5;
+        if (dieAnimT === 0) { dieGroup.rotation.x = 0; dieGroup.rotation.y = 0; dieGroup.position.y = dieRestY; }
+      } else {
+        dieGroup.rotation.y = 0;
+        dieGroup.rotation.x = 0;
+      }
+    }
+
+    // advance flourish FX rings (expand + fade).
+    for (const f of fxPool) {
+      if (f.life <= 0) continue;
+      f.t += d;
+      const k = f.t / 0.7;                     // 0 -> 1
+      f.mat.opacity = Math.max(0, 0.8 * (1 - k));
+      const sc = 0.4 + 1.4 * k;
+      f.mesh.scale.setScalar(sc);
+      f.life -= d;
+      if (f.life <= 0) { f.mesh.visible = false; f.mat.opacity = 0; }
     }
   }
 
@@ -523,8 +714,13 @@ export function createGame(ctx) {
       return;
     }
     // Bonus roll for the same player on a 6 OR on a capture (standard Ludo).
-    if (was6 || res.captured) { s.die = null; s.awaiting = false; }
-    else nextTurn(s);
+    if (was6 || res.captured) {
+      s.die = null;
+      s.awaiting = false;
+      // Standard Ludo resets the six-streak on any non-6; a capture bonus rolled
+      // on a non-6 must not carry a stale streak into the 3-sixes forfeit (B5).
+      if (!was6) s.sixes = 0;
+    } else nextTurn(s);
     pushState();
   }
 
@@ -582,7 +778,7 @@ export function createGame(ctx) {
         tokens: Object.fromEntries(COLORS.map((c) => [
           c,
           (state.tokens && Array.isArray(state.tokens[c]))
-            ? state.tokens[c].slice(0, 4).map((n) => Math.max(0, Math.min(57, n | 0)))
+            ? state.tokens[c].slice(0, 4).map((n) => Math.max(0, Math.min(58, n | 0)))
             : [0, 0, 0, 0],
         ])),
         order: Array.isArray(state.order) && state.order.length ? state.order.slice() : order.slice(),
@@ -607,6 +803,20 @@ export function createGame(ctx) {
     render();
   }
   function setSeatRy(ry) { applyFacing(ry); }
+
+  // ---- hover affordance (I2) ----------------------------------------------
+  // board.js routes a resolved cell (or -1) here, gated to the local turn. Lift +
+  // highlight the locally-hovered own token only when it's a legal move so the
+  // player previews exactly what a click will move. Purely visual; no rules/sync.
+  function setHover(cell) {
+    let next = -1;
+    if (cell && cell !== -1 && cell.color === myColor && Number.isInteger(cell.token)
+        && s.phase === "play" && s.awaiting && curColor(s) === myColor
+        && myMovable.includes(cell.token)) {
+      next = cell.token;
+    }
+    hoverTok = next;
+  }
 
   function dispose() {
     if (group.parent) group.parent.remove(group);
@@ -633,6 +843,7 @@ export function createGame(ctx) {
     update,
     setRole,
     setSeatRy,
+    setHover,
     dispose,
     orientPolicy: "self",
   };

@@ -8,6 +8,7 @@ import { createEngine } from "./engine/scene.js";
 import { createControls } from "./engine/controls.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
+import { createRides } from "./entities/rides.js";
 import { RemotePlayers } from "./entities/remotePlayers.js";
 import { Network } from "./net/network.js";
 import { Voice } from "./net/voice.js";
@@ -25,6 +26,12 @@ const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer } = createEngine(canvas);
 const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
 const controls = createControls(canvas);
+// Rideables: a stealable car (parked just outside the cafe door) + a summonable
+// skateboard. Pushes the parked car's footprint into `colliders`; drives off the
+// shared `ground` so it can roam the whole expanded map. main.js calls
+// rides.update() each frame and branches on the returned mode.
+const isGroundFn = (x, z) => ground.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
+const rides = createRides(scene, { colliders, isGround: isGroundFn, carSpawn: { x: 4, z: 18, heading: 0 } });
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
 const network = new Network();
@@ -253,6 +260,7 @@ function mountInWorld(m, seatRy) {
     ctxExtra: {
       onHud: (text) => hud.setGameBanner(text),
       onControls: (defs, onClick) => hud.setGameControls(defs, onClick),
+      onFleet: (panels) => hud.setFleetPanels(panels),
     },
   });
   // We now own this table's mount — shed any ambient passersby mirror on it.
@@ -319,6 +327,7 @@ function onLocalStood() {
   if (inWorld.open) inWorld.unmount();
   hud.clearGameBanner();
   hud.clearGameControls();
+  hud.clearFleetPanels();
   controls.setLocked(false);
   currentRole = null;
   network.leaveGame();
@@ -424,18 +433,29 @@ function frame() {
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
 
   if (joined && local) {
-    const seatedView = syncSeatedCamera();
-    local.update(dt, camera, seatedView);
-    // True first-person while seated at a board: hide your OWN avatar so your body
-    // doesn't fill the screen (only affects your local view; others still see you).
-    if (local.character?.group) {
-      local.character.group.visible = !(seatedView && seatedView.active);
+    // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
+    // skip the normal walk update that frame and hide the on-foot avatar.
+    const ride = rides.update(dt, camera, controls, local);
+    if (ride.mode === "drive") {
+      if (local.character?.group) local.character.group.visible = false;
+      hud.setSitPrompt(ride.prompt);
+      hud.setShopVisible(false);
+      hud.setHeldItem(null);
+    } else {
+      const seatedView = syncSeatedCamera();
+      local.update(dt, camera, seatedView);
+      // True first-person while seated at a board: hide your OWN avatar so your body
+      // doesn't fill the screen (only affects your local view; others still see you).
+      if (local.character?.group) {
+        local.character.group.visible = !(seatedView && seatedView.active);
+      }
+      // A ride prompt (drive/skate) takes precedence over the sit prompt.
+      hud.setSitPrompt(ride.prompt || local.sitPromptText());
+      // Open the coffee-bar menu when standing in the order zone; reflect whatever
+      // you're holding (and the drop hint) the rest of the time.
+      hud.setShopVisible(nearBar() && !local.sitting);
+      hud.setHeldItem(local.heldName());
     }
-    hud.setSitPrompt(local.sitPromptText());
-    // Open the coffee-bar menu when standing in the order zone; reflect whatever
-    // you're holding (and the drop hint) the rest of the time.
-    hud.setShopVisible(nearBar() && !local.sitting);
-    hud.setHeldItem(local.heldName());
     maybeSendState();
   } else {
     // Gentle interior orbit of the room while the join card is up.
@@ -486,5 +506,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides };
 window.__coffeeReady = true;

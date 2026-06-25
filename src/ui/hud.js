@@ -288,6 +288,69 @@ export class HUD {
     }
   }
 
+  // Screen-space fleet-status cards (battleship). `panels` is
+  // [{ title, accent, sunk, total, ships:[{name,length,dead}] }] — rendered as DOM
+  // cards pinned to the screen corners so the table pedestal / 3D bodies across the
+  // table can never clip them. Empty/falsy panels hides the cards.
+  setFleetPanels(panels) {
+    if (!this._fleetPanels) {
+      const el = document.createElement("div");
+      el.className = "fleet-panels";
+      this.gameUi.appendChild(el);
+      this._fleetPanels = el;
+    }
+    const wrap = this._fleetPanels;
+    wrap.textContent = "";
+    if (!panels || !panels.length) {
+      wrap.classList.remove("show");
+      return;
+    }
+    for (const p of panels) {
+      const card = document.createElement("div");
+      card.className = "fleet-card" + (p.mine ? " mine" : "");
+      card.style.setProperty("--accent", p.accent || "#7fd1ff");
+
+      const head = document.createElement("div");
+      head.className = "fleet-head";
+      const title = document.createElement("span");
+      title.className = "fleet-title";
+      title.textContent = p.title;
+      const count = document.createElement("span");
+      count.className = "fleet-count";
+      count.textContent = `${p.sunk}/${p.total} sunk`;
+      head.appendChild(title);
+      head.appendChild(count);
+      card.appendChild(head);
+
+      for (const s of p.ships || []) {
+        const row = document.createElement("div");
+        row.className = "fleet-row" + (s.dead ? " dead" : "");
+        const name = document.createElement("span");
+        name.className = "fleet-ship";
+        name.textContent = s.name;
+        const pips = document.createElement("span");
+        pips.className = "fleet-pips";
+        for (let i = 0; i < s.length; i++) {
+          const pip = document.createElement("i");
+          pip.className = "fleet-pip";
+          pips.appendChild(pip);
+        }
+        row.appendChild(name);
+        row.appendChild(pips);
+        card.appendChild(row);
+      }
+      wrap.appendChild(card);
+    }
+    wrap.classList.add("show");
+  }
+
+  clearFleetPanels() {
+    if (this._fleetPanels) {
+      this._fleetPanels.textContent = "";
+      this._fleetPanels.classList.remove("show");
+    }
+  }
+
   // Show/hide the contextual "Press Space to sit / stand" prompt. Pass a falsy
   // value to hide it.
   setSitPrompt(text) {

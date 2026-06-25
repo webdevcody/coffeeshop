@@ -21,6 +21,18 @@
 //   * Input is gated on ctx.isLocalTurnAllowed() AND turn === myMark AND legality.
 //   * A spectator (myMark null, seatRy null) renders read-only from applyState and
 //     never has input.
+//
+// VISUAL CONTRACT (purely local, never networked, never reads/writes the wire):
+//   * A self-driven rAF clock (mirrors connect4) animates placement pops, the
+//     whose-turn lamp pulse, the forced-board glow and the win flourish, then
+//     PARKS when nothing is animating. dispose() cancels it.
+//   * Animations are LOCAL render only and gated on a "just placed" flag, so a
+//     full repaint (paint()/applyState — catch-up, resync, late join) SNAPS with
+//     no animation. A relayed move on a spectator/guest still pops because their
+//     applyMove → performMove sets that flag, and board.js's _specSkipSnapUntil
+//     window swallows the host's redundant post-move snapshot (uttt does NOT set
+//     spectatorAnimates:false, so the window is armed). Host/guest/spectator all
+//     converge on identical synced state regardless of animation.
 
 import { GameDesync } from "./createGame.js";
 import { BOARD_SIZE, BOARD_HALF, PALETTE, meshOf, standard } from "./pieces.js";
@@ -40,6 +52,9 @@ function winnerOf(cells) {
   if (cells.every((v) => v)) return "draw";
   return null;
 }
+
+// Smooth ease-in-out for the local animations (no allocation, cheap).
+const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 
 export function createGame(ctx) {
   const THREE = ctx.THREE;
@@ -67,10 +82,18 @@ export function createGame(ctx) {
     plank: keep(standard(THREE, "#3a281a", { roughness: 0.8 })),
     frame: keep(standard(THREE, PALETTE.frame, { roughness: 0.7 })),
     sub: keep(standard(THREE, "#e8d2ab", { roughness: 0.85 })),
-    // Forced sub-board: glows for everyone so the constraint reads at a glance.
-    subActive: keep(standard(THREE, "#fff0c8", { emissive: PALETTE.accent, emissiveIntensity: 0.5, roughness: 0.6 })),
-    subWonX: keep(standard(THREE, "#c4452f", { roughness: 0.5 })),
-    subWonO: keep(standard(THREE, "#4a85d6", { roughness: 0.5 })),
+    // Forced sub-board glows for everyone so the constraint reads at a glance.
+    // Two tiers: subActive (soft) is the "play anywhere" free-choice lit state on
+    // ALL undecided boards; subForced (stronger warm glow) marks the SINGLE board
+    // you're forced into so "go here" is unmistakable vs "anywhere".
+    subActive: keep(standard(THREE, "#fff0c8", { emissive: PALETTE.accent, emissiveIntensity: 0.32, roughness: 0.6 })),
+    subForced: keep(standard(THREE, "#fff4d2", { emissive: "#ffbf40", emissiveIntensity: 0.85, roughness: 0.5 })),
+    // Won sub-boards: keep the plate light/desaturated so the stamped big mark in
+    // the winner's saturated colour stays legible from across the room (a blue O on
+    // a blue plate or red X on a red plate washed out — I8). A thin emissive tint
+    // still tells you which side owns it.
+    subWonX: keep(standard(THREE, "#f3cfc6", { emissive: "#c4452f", emissiveIntensity: 0.22, roughness: 0.55 })),
+    subWonO: keep(standard(THREE, "#c9dcf3", { emissive: "#4a85d6", emissiveIntensity: 0.22, roughness: 0.55 })),
     subDraw: keep(standard(THREE, "#9a8f7a", { roughness: 0.7 })),
     gutter: keep(standard(THREE, "#2a1d12", { roughness: 0.85 })),
     x: keep(standard(THREE, "#c4452f", { roughness: 0.45 })),
@@ -78,6 +101,12 @@ export function createGame(ctx) {
     // Win highlight for the marks on the deciding meta-line.
     xWin: keep(standard(THREE, "#ff6a4d", { emissive: "#ff6a4d", emissiveIntensity: 0.6, roughness: 0.4 })),
     oWin: keep(standard(THREE, "#6aa8ff", { emissive: "#6aa8ff", emissiveIntensity: 0.6, roughness: 0.4 })),
+    // Last-move marker: a faint emissive ring under the most-recent mark so both
+    // players can track the reply / the cell that forced the current board.
+    lastRing: keep(standard(THREE, "#ffd166", { emissive: "#ffd166", emissiveIntensity: 0.7, roughness: 0.5, transparent: true, opacity: 0.85, depthWrite: false })),
+    // Hover ghost in the local player's own colour (low opacity, no depth write so
+    // it never z-fights the plate it floats over). Recoloured per side in setHover.
+    ghost: keep(standard(THREE, "#c4452f", { roughness: 0.5, transparent: true, opacity: 0.3, emissive: "#c4452f", emissiveIntensity: 0.25, depthWrite: false })),
     // Identity home bars + turn lamps, one per side. Emissive is driven purely
     // from local myMark/turn (never the wire) so a snapshot can't flip the cue.
     homeX: keep(standard(THREE, "#c4452f", { roughness: 0.5, emissive: "#c4452f", emissiveIntensity: 0 })),
@@ -168,18 +197,28 @@ export function createGame(ctx) {
   const bigOGeo = keep(new THREE.TorusGeometry(subSize * 0.3, subSize * 0.08, 10, 22));
   const bigMarks = Array(9).fill(null);
 
+  // Flat cell marks sit just above the plate (TOP+0.002) and BELOW the 0.03-tall
+  // hit collider (which spans TOP..TOP+0.03, so clicks still resolve via the
+  // collider regardless of the mark's exact height). Lowered from TOP+0.02 so the
+  // paper-thin bars sit ON the plate rather than visibly floating ~18mm above it.
+  const MARK_Y = TOP + 0.012;
+  const BIG_MARK_Y = TOP + 0.024;
+
   function makeMark(mark, big = false) {
     const g = new THREE.Group();
     if (mark === "X") {
       const mat = M.x;
       const geo = big ? bigXGeo : xGeo;
-      const a = meshOf(THREE, geo, mat);
+      // Flat cell bars are tiny decorative slivers; casting shadows from them onto
+      // the near-coplanar plate produced shadow acne / shimmer — disable casting on
+      // the small marks (big stamped winners keep casting for presence).
+      const a = meshOf(THREE, geo, mat, big);
       a.rotation.y = Math.PI / 4;
-      const b = meshOf(THREE, geo, mat);
+      const b = meshOf(THREE, geo, mat, big);
       b.rotation.y = -Math.PI / 4;
       g.add(a, b);
     } else {
-      const o = meshOf(THREE, big ? bigOGeo : oGeo, M.o);
+      const o = meshOf(THREE, big ? bigOGeo : oGeo, M.o, big);
       o.rotation.x = Math.PI / 2;
       g.add(o);
     }
@@ -188,27 +227,57 @@ export function createGame(ctx) {
 
   // ---- identity / turn cues (built once) -------------------------------------
   // Per side: a home-edge tint bar in its own colour just outside the field, and
-  // a turn lamp beside it. X home = -Z edge (host / moves-first), O home = +Z.
+  // a turn lamp beside it. Each side keeps its OWN colour/material (X red, O blue)
+  // so the two sides stay visually distinct, but the bars are positioned per-seat:
+  // the LOCAL mark's bar+lamp sit on the near (-Z) edge — which the framework's
+  // per-seat group rotation brings directly in front of the seated viewer — and the
+  // opponent's on the far (+Z) edge. So the host reads X-near, the guest reads
+  // O-near (opposite-but-correct), instead of X always landing on both near edges.
   const cue = { X: { bar: null, lamp: null }, O: { bar: null, lamp: null } };
+  const edgeZ = BOARD_HALF + 0.03;
+  // Resting emissive levels per lamp state so the pulse modulates around a base
+  // rather than recomputing magic numbers each frame.
+  const LAMP_BASE = { mine: 0.95, opp: 0.4, spectator: 0.7 };
   {
     const barGeo = keep(new THREE.BoxGeometry(BOARD_SIZE * 0.7, 0.006, 0.014));
     const lampGeo = keep(new THREE.SphereGeometry(0.013, 18, 14));
-    const edgeZ = BOARD_HALF + 0.03;
     const sides = [
-      { mark: "X", z: -edgeZ, barMat: M.homeX, lampMat: M.lampX },
-      { mark: "O", z: edgeZ, barMat: M.homeO, lampMat: M.lampO },
+      { mark: "X", barMat: M.homeX, lampMat: M.lampX },
+      { mark: "O", barMat: M.homeO, lampMat: M.lampO },
     ];
     for (const s of sides) {
       const bar = meshOf(THREE, barGeo, s.barMat, false);
-      bar.position.set(0, TOP + 0.004, s.z);
+      bar.position.set(0, TOP + 0.004, 0);
       group.add(bar);
       const lamp = meshOf(THREE, lampGeo, s.lampMat, false);
-      lamp.position.set(BOARD_SIZE * 0.42, TOP + 0.009, s.z);
+      lamp.position.set(BOARD_SIZE * 0.42, TOP + 0.009, 0);
       group.add(lamp);
       cue[s.mark].bar = bar;
       cue[s.mark].lamp = lamp;
     }
   }
+
+  // Place each side's cue on its edge: my mark on the near (-Z) edge that the
+  // framework rotates in front of me, the opponent's on the far (+Z) edge. myMark
+  // can change via setRole(), so this is re-run from there; fall back to the
+  // canonical X=-Z / O=+Z frame for the spectator (myMark null).
+  //
+  // NOTE: cue placement (my mark on -Z) and the framework's group rotation (by
+  // orientFor(seatRy)) are independent inputs that must agree. They do for the
+  // current 2-opposite-seat scheme (host=X seat ry 0 → -Z near; guest=O seat
+  // ry≈π → its -Z near after rotation). setSeatRy() also calls this defensively so
+  // a re-seat keeps the bars consistent with myMark.
+  function placeIdentityCues() {
+    const nearMark = myMark || "X";
+    const farMark = other(nearMark);
+    for (const [mark, z] of [[nearMark, -edgeZ], [farMark, edgeZ]]) {
+      const c = cue[mark];
+      if (!c.bar || !c.lamp) continue;
+      c.bar.position.z = z;
+      c.lamp.position.z = z;
+    }
+  }
+  placeIdentityCues();
 
   // ---- text placard on the LOCAL near edge -----------------------------------
   // Names THEIR OWN mark (derived from role, never the wire) + whose turn.
@@ -229,6 +298,8 @@ export function createGame(ctx) {
     g.clearRect(0, 0, 256, 64);
     let text;
     let color = "#f0e4cf";
+    // Whether it is the LOCAL player's turn — used to make "Your turn" pop.
+    const myTurn = !!myMark && phase === "play" && turn === myMark;
     if (!myMark) {
       const t = phase === "over"
         ? (winner ? `${winner} wins` : "Draw")
@@ -238,23 +309,40 @@ export function createGame(ctx) {
       const yours = phase === "over"
         ? (winner === myMark ? "You win!" : winner ? "You lose" : "Draw")
         : (turn === myMark ? "Your turn" : "Opponent's turn");
-      text = `You are ${myMark} — ${yours}`;
+      // Prepend a ► when it's your move so it reads as a clear call-to-act.
+      text = `You are ${myMark} — ${myTurn ? "▶ " : ""}${yours}`;
       color = MARK_HEX[myMark];
     }
+    g.save();
+    // The placard is a flat plane anchored to the LOCAL near (-Z) edge, which the
+    // board's per-seat self-orientation always brings to the seated viewer. After
+    // that rotation its flat top face reads 180° rotated from the seat, so the text
+    // shows upside-down (matching battleship.js drawLabel). Pre-rotate the canvas
+    // content 180° once so it reads upright for every seat.
+    g.translate(128, 32);
+    g.rotate(Math.PI);
+    g.translate(-128, -32);
+    // A brighter border when it's your turn frames the placard so "Your turn" pops.
     g.fillStyle = "rgba(28,20,12,0.82)";
+    g.strokeStyle = myTurn ? color : "rgba(0,0,0,0)";
+    g.lineWidth = myTurn ? 4 : 0;
     g.beginPath();
     const rr = 12;
     g.moveTo(rr, 0); g.arcTo(256, 0, 256, 64, rr); g.arcTo(256, 64, 0, 64, rr);
-    g.arcTo(0, 64, 0, 0, rr); g.arcTo(0, 0, 256, 0, rr); g.closePath(); g.fill();
+    g.arcTo(0, 64, 0, 0, rr); g.arcTo(0, 0, 256, 0, rr); g.closePath();
+    g.fill();
+    if (myTurn) g.stroke();
     g.font = "bold 30px sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = color;
     g.fillText(text, 128, 34);
+    g.restore();
     labelTex.needsUpdate = true;
   }
 
-  // Drive identity bar + turn lamp emissives (never reads the wire).
+  // Drive identity bar + turn lamp emissives (never reads the wire). The lit lamp's
+  // base level is set here; the per-frame pulse in stepLamps() modulates around it.
   function updateIdentityCues() {
     for (const mark of ["X", "O"]) {
       const c = cue[mark];
@@ -262,12 +350,23 @@ export function createGame(ctx) {
       const isMine = myMark != null && mark === myMark;
       const isTurn = phase === "play" && turn === mark;
       c.bar.material.emissiveIntensity = isMine ? 0.7 : 0.0;
-      c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
+      // A spectator has no "mine"; give the side-to-move a clear mid value rather
+      // than the dim opponent level so the whose-turn cue still reads for watchers.
+      const base = !myMark ? LAMP_BASE.spectator : isMine ? LAMP_BASE.mine : LAMP_BASE.opp;
+      c.lamp.material.emissiveIntensity = isTurn ? base : 0.0;
     }
   }
 
   // ---- rendering -------------------------------------------------------------
-  function setMark(B, i, mark) {
+  // Per-mark placement-pop animations: { B, i, t } scaling 0.6→1 with a tiny
+  // overshoot + a small drop over POP_DUR. Driven from the self clock; only ever
+  // started for a freshly-placed mark (gated on `animatePlace`), never on a full
+  // repaint, so catch-up / resync / late-join SNAP with no animation.
+  const POP_DUR = 0.16;
+  const pops = []; // active placement pops
+  let animatePlace = false; // true only across a single performMove
+
+  function setMark(B, i, mark, animate = false) {
     if (marks[B][i]) {
       group.remove(marks[B][i]);
       marks[B][i] = null;
@@ -275,9 +374,17 @@ export function createGame(ctx) {
     if (!mark) return;
     const g = makeMark(mark);
     const cc = cellCenter(B, i);
-    g.position.set(cc.x, TOP + 0.02, cc.z);
+    g.position.set(cc.x, MARK_Y, cc.z);
     group.add(g);
     marks[B][i] = g;
+    if (animate) {
+      // Drop the existing pop for this cell if any (a repaint mid-pop), then arm.
+      for (let k = pops.length - 1; k >= 0; k--) if (pops[k].B === B && pops[k].i === i) pops.splice(k, 1);
+      g.scale.setScalar(0.6);
+      g.position.y = MARK_Y + 0.012;
+      pops.push({ B, i, t: 0 });
+      ensureClock();
+    }
   }
 
   function setBigMark(B, mark) {
@@ -288,9 +395,27 @@ export function createGame(ctx) {
     if (mark !== "X" && mark !== "O") return;
     const g = makeMark(mark, true);
     const sc = subCenter(B);
-    g.position.set(sc.x, TOP + 0.03, sc.z);
+    g.position.set(sc.x, BIG_MARK_Y, sc.z);
+    g.scale.setScalar(1);
     bigMarks[B] = g;
     group.add(g);
+  }
+
+  // ---- last-move marker (a faint ring under the most-recent mark) ------------
+  // Reads off the synced `lastMove`, so spectators / late joiners see it correctly.
+  const lastRingGeo = keep(new THREE.TorusGeometry(cellSize * 0.36, cellSize * 0.04, 8, 22));
+  const lastRing = meshOf(THREE, lastRingGeo, M.lastRing, false);
+  lastRing.rotation.x = Math.PI / 2;
+  lastRing.visible = false;
+  group.add(lastRing);
+  function refreshLastRing() {
+    if (phase === "play" && lastMove && Number.isInteger(lastMove.B) && Number.isInteger(lastMove.i)) {
+      const cc = cellCenter(lastMove.B, lastMove.i);
+      lastRing.position.set(cc.x, MARK_Y - 0.001, cc.z);
+      lastRing.visible = true;
+    } else {
+      lastRing.visible = false;
+    }
   }
 
   function refreshPlates() {
@@ -300,10 +425,15 @@ export function createGame(ctx) {
       else if (bigWinner[B] === "O") plate.material = M.subWonO;
       else if (bigWinner[B] === "draw") plate.material = M.subDraw;
       // Forced board glows for EVERYONE (host, guest, spectator) while play is on.
-      else if (phase === "play" && (activeBoard === null || activeBoard === B)) plate.material = M.subActive;
+      // A SINGLE forced board gets the stronger subForced glow ("go here"); when
+      // play is anywhere (activeBoard null) all undecided boards get the softer
+      // subActive ("anywhere") so the two states read differently at a glance.
+      else if (phase === "play" && activeBoard === B) plate.material = M.subForced;
+      else if (phase === "play" && activeBoard === null) plate.material = M.subActive;
       else plate.material = M.sub;
     }
     updateIdentityCues();
+    refreshLastRing();
     refreshLabel();
   }
 
@@ -311,7 +441,9 @@ export function createGame(ctx) {
   // Rebuild the winning bigMark meshes fresh and assign the win material rather
   // than mutating the pooled big-mark meshes' shared material in place — that way
   // M.x/M.o are never permanently overwritten and a redundant call is harmless.
+  let winLine = null;            // the 3 sub-board indices of the deciding line
   function highlightMetaWin() {
+    winLine = null;
     if (phase !== "over" || (winner !== "X" && winner !== "O")) return;
     const big = bigWinner.map((x) => (x === "draw" ? null : x));
     let line = null;
@@ -326,6 +458,9 @@ export function createGame(ctx) {
       if (!g) continue;
       g.traverse((o) => { if (o.isMesh) o.material = winMat; });
     }
+    winLine = line;
+    winFx.t = 0;
+    ensureClock();
   }
 
   // ---- game logic ------------------------------------------------------------
@@ -359,7 +494,7 @@ export function createGame(ctx) {
   function performMove(B, i, mark) {
     cells[B][i] = mark;
     lastMove = { B, i };
-    setMark(B, i, mark);
+    setMark(B, i, mark, animatePlace);
     recomputeBig(B);
     if (bigWinner[B] === "X" || bigWinner[B] === "O") setBigMark(B, bigWinner[B]);
 
@@ -398,7 +533,9 @@ export function createGame(ctx) {
     const cell = hit && hit.cell;
     if (!cell || !Number.isInteger(cell.B) || !Number.isInteger(cell.i)) return;
     if (!legal(cell.B, cell.i)) return;
-    performMove(cell.B, cell.i, myMark);
+    clearHover();
+    animatePlace = true;
+    try { performMove(cell.B, cell.i, myMark); } finally { animatePlace = false; }
     try { ctx.net.sendMove({ type: "move", B: cell.B, i: cell.i }); } catch { /* */ }
     if (role === "host") pushSnapshot();
   }
@@ -409,8 +546,15 @@ export function createGame(ctx) {
   function applyMove(move) {
     if (phase !== "play") throw new GameDesync("uttt: not in play");
     if (!move || move.type !== "move") return false;
+    // Idempotency guard: an echoed/duplicated relay of the move we just applied is
+    // still "legal" by board state (its cell is now filled... no — its cell is
+    // filled, so legal() already rejects it). But a duplicate that arrives BEFORE
+    // the cell is registered, or any exact repeat of the last move, must not be
+    // applied twice as the (now flipped) turn. Reject an exact repeat of lastMove.
+    if (lastMove && move.B === lastMove.B && move.i === lastMove.i) return false;
     if (!legal(move.B, move.i)) throw new GameDesync("uttt: illegal move");
-    performMove(move.B, move.i, turn);
+    animatePlace = true;
+    try { performMove(move.B, move.i, turn); } finally { animatePlace = false; }
     if (role === "host") pushSnapshot();
     return true;
   }
@@ -430,8 +574,11 @@ export function createGame(ctx) {
   }
 
   function paint() {
+    // A full repaint SNAPS (animate=false) — never replays a flurry of pops on
+    // catch-up / resync / late join. Clear any in-flight pops first.
+    pops.length = 0;
     for (let B = 0; B < 9; B++) {
-      for (let i = 0; i < 9; i++) setMark(B, i, cells[B][i]);
+      for (let i = 0; i < 9; i++) setMark(B, i, cells[B][i], false);
       setBigMark(B, bigWinner[B] === "X" || bigWinner[B] === "O" ? bigWinner[B] : null);
     }
     refreshPlates();
@@ -482,20 +629,163 @@ export function createGame(ctx) {
     paint();
   }
 
+  // ============================================================================
+  // SELF-DRIVEN CLOCK — runs only while something animates, then parks. Mirrors
+  // connect4. Drives placement pops, the whose-turn lamp pulse and the win
+  // flourish. Purely LOCAL render; never touches state/snapshots/the wire.
+  // ============================================================================
+  const winFx = { t: 0 };
+  let rafId = 0;
+  let lastT = 0;
+  let pulsePhase = 0;
+
+  function now() {
+    return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+  }
+  function lampPulsing() {
+    return phase === "play" && (turn === "X" || turn === "O");
+  }
+  function needsAnim() {
+    return pops.length > 0 || lampPulsing() || (phase === "over" && winLine != null);
+  }
+  function ensureClock() {
+    if (rafId || typeof requestAnimationFrame !== "function") return;
+    lastT = now();
+    rafId = requestAnimationFrame(tick);
+  }
+  function tick() {
+    rafId = 0;
+    const t = now();
+    let dt = (t - lastT) / 1000;
+    lastT = t;
+    if (!(dt > 0)) dt = 0.016;
+    if (dt > 0.05) dt = 0.05;
+
+    stepPops(dt);
+    stepLamps(dt);
+    stepWinFx(dt);
+
+    if (needsAnim()) rafId = requestAnimationFrame(tick);
+  }
+
+  // Placement pop: scale 0.6 → 1 with a small overshoot, drop ~12mm onto the plate.
+  function stepPops(dt) {
+    for (let k = pops.length - 1; k >= 0; k--) {
+      const p = pops[k];
+      p.t += dt;
+      const g = marks[p.B] && marks[p.B][p.i];
+      if (!g) { pops.splice(k, 1); continue; }
+      const f = Math.min(1, p.t / POP_DUR);
+      const e = easeInOut(f);
+      // Overshoot peaks near the middle then settles to 1.
+      const s = 0.6 + 0.4 * e + 0.12 * Math.sin(Math.PI * f) * (1 - f);
+      g.scale.setScalar(s);
+      g.position.y = MARK_Y + 0.012 * (1 - e);
+      if (f >= 1) {
+        g.scale.setScalar(1);
+        g.position.y = MARK_Y;
+        pops.splice(k, 1);
+      }
+    }
+  }
+
+  // Whose-turn lamp pulse — modulates the lit lamp around its base emissive set in
+  // updateIdentityCues(). A wider, brighter swing when it's the LOCAL player's turn.
+  function stepLamps(dt) {
+    if (!lampPulsing()) return;
+    pulsePhase += dt;
+    const c = cue[turn];
+    if (!c || !c.lamp) return;
+    const isMine = myMark != null && turn === myMark;
+    const base = !myMark ? LAMP_BASE.spectator : isMine ? LAMP_BASE.mine : LAMP_BASE.opp;
+    const swing = isMine ? 0.4 : 0.14;
+    const speed = isMine ? 4.0 : 2.6;
+    c.lamp.material.emissiveIntensity = base + swing * (0.5 + 0.5 * Math.sin(pulsePhase * speed));
+  }
+
+  // Win flourish — a brief settle/scale-pop on the deciding meta-line big marks
+  // then a slow emissive heartbeat while the game is over. Reads off synced state.
+  function stepWinFx(dt) {
+    if (phase !== "over" || !winLine) return;
+    winFx.t += dt;
+    const popDur = 0.4;
+    const winMat = winner === "X" ? M.xWin : M.oWin;
+    for (const B of winLine) {
+      const g = bigMarks[B];
+      if (!g) continue;
+      if (winFx.t < popDur) {
+        const f = winFx.t / popDur;
+        g.scale.setScalar(1 + 0.15 * Math.sin(Math.PI * f));
+      } else {
+        g.scale.setScalar(1);
+      }
+    }
+    // slow heartbeat on the win emissive once settled.
+    if (winFx.t >= popDur) {
+      winMat.emissiveIntensity = 0.6 + 0.35 * (0.5 + 0.5 * Math.sin(winFx.t * 2.4));
+    }
+  }
+
+  // ============================================================================
+  // HOVER — a faint ghost mark in the local player's colour over a legal cell.
+  // Gated to the local turn by board.js (_turnAllowed) before setHover is called,
+  // and re-checked here against legal(). Purely local; hover is never networked.
+  // ============================================================================
+  let hoverGhost = null;
+  let hoverCell = null; // { B, i } currently previewed
+  function clearHover() {
+    if (hoverGhost) {
+      group.remove(hoverGhost);
+      hoverGhost = null;
+    }
+    hoverCell = null;
+  }
+  function setHover(cell) {
+    // board.js forwards the resolved userData.cell {B,i} or -1 on a miss.
+    const c = cell && typeof cell === "object" ? cell : null;
+    if (!myMark || !c || !Number.isInteger(c.B) || !Number.isInteger(c.i) || !legal(c.B, c.i)) {
+      clearHover();
+      return;
+    }
+    if (hoverCell && hoverCell.B === c.B && hoverCell.i === c.i) return;
+    clearHover();
+    const g = makeMark(myMark);
+    // Tint to the translucent ghost material; recolour per side so X/O read.
+    M.ghost.color.set(MARK_HEX[myMark]);
+    M.ghost.emissive.set(MARK_HEX[myMark]);
+    g.traverse((o) => { if (o.isMesh) o.material = M.ghost; });
+    const cc = cellCenter(c.B, c.i);
+    g.position.set(cc.x, MARK_Y, cc.z);
+    group.add(g);
+    hoverGhost = g;
+    hoverCell = { B: c.B, i: c.i };
+  }
+
   // ---- role / seat / lifecycle ----------------------------------------------
   function setRole(r) {
     role = r || "spectator";
     myMark = role === "host" ? "X" : role === "guest" ? "O" : null;
+    placeIdentityCues();
+    clearHover();
     refreshPlates();
   }
-  function setSeatRy() { updateIdentityCues(); }
+  function setSeatRy() {
+    // Defensive: keep the per-seat cue placement in sync with myMark on a re-seat
+    // (idempotent; placement assumes host=-Z / guest=+Z seating). Then refresh the
+    // emissive cues.
+    placeIdentityCues();
+    updateIdentityCues();
+  }
   function dispose() {
+    if (rafId && typeof cancelAnimationFrame === "function") { cancelAnimationFrame(rafId); rafId = 0; }
+    pops.length = 0;
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();
   }
 
   paint();
-  return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, dispose };
+  ensureClock(); // start the whose-turn lamp pulse for the opening turn
+  return { group, applyState, applyMove, onPointer, publicState, setRole, setSeatRy, setHover, dispose };
 }
 
 export default createGame;

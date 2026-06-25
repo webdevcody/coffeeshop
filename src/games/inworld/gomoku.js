@@ -6,14 +6,23 @@
 //   * The LOCAL player's side is derived purely from `role` (host=black, guest=
 //     white, spectator=none) and NEVER recomputed from a relayed snapshot, so a
 //     wire state can't flip "which colour is me".
-//   * The board is a FLAT board: the framework rotates the whole group by
-//     orientFor(seatRy) so the canonical near edge (the local player's home bar)
-//     ends up in front of the seated viewer. We therefore use the default orient
-//     policy (no orientPolicy:"self"); the host applies the rotation.
+//   * Per-seat facing is owned by the module (orientPolicy:"self"), exactly like
+//     reversi/chess. Cues/home edges are authored in ONE canonical frame (black
+//     home at -Z, white home at +Z); applyFacing() then rotates the group so each
+//     player's OWN colour home bar lands at their near edge regardless of which
+//     free chair they walked to: orientFor(seatRy) brings the canonical -Z edge
+//     near, and a further PI for white brings the +Z (white) edge near instead.
+//     Clicks resolve through hitToCell -> group.worldToLocal (which undoes the
+//     full rotation), so cells stay canonical under any facing.
 //   * Whose-turn is unmistakable: a per-side home bar glows in the local player's
 //     own colour ("this near side, in MY colour, is me"), and a turn lamp lights
-//     on the side to move (brighter when it's the local player's turn). All cue
-//     emissives are driven from local myColor/turn, never the wire.
+//     on the side to move (brighter when it's the local player's turn) and gently
+//     breathes so it reads as live. All cue emissives are driven from local
+//     myColor/turn, never the wire.
+//   * Wins are FREE-STYLE (an unbroken run of 5 OR MORE of one colour wins, and
+//     the whole run is highlighted). This is the common casual rule, symmetric for
+//     both players and recomputed locally on both sides, so it carries no sync
+//     risk; documented here so it isn't re-flagged as a bug.
 //   * A your-turn hover-ghost stone previews the move under the cursor in the
 //     local player's colour; it is shown only on the local player's turn while the
 //     game is in play, and only over empty intersections.
@@ -21,7 +30,7 @@
 // Spectators (role "spectator", seatRy null) render read-only from applyState and
 // never receive input (the framework gates pointer routing off for them).
 
-import { GameDesync } from "./createGame.js";
+import { GameDesync, orientFor } from "./createGame.js";
 import {
   BOARD_SIZE,
   BOARD_HALF,
@@ -83,7 +92,20 @@ export function createGame(ctx) {
 
   // ---- Local identity (derived from role, never the wire) -------------------
   let role = ctx.role;
+  let seatRy = ctx.seatRy;
   let myColor = role === "host" ? "black" : role === "guest" ? "white" : null;
+
+  // ---- Per-seat facing (module-owned; orientPolicy:"self") ------------------
+  // Home edges/cues are authored canonical (black -Z, white +Z). We rotate the
+  // whole group ourselves so each player's OWN colour home bar faces them:
+  //   orientFor(seatRy) brings the canonical -Z (black) edge near the seat;
+  //   a further PI for white brings the +Z (white) edge near instead.
+  // Clicks resolve via hitToCell -> group.worldToLocal (which undoes the full
+  // rotation), so cells stay canonical regardless of facing.
+  function applyFacing() {
+    const extra = myColor === "white" ? Math.PI : 0;
+    group.rotation.y = orientFor(seatRy) + extra;
+  }
 
   // ---- Authoritative-ish local game state -----------------------------------
   let board = Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
@@ -100,11 +122,31 @@ export function createGame(ctx) {
   const M = {
     board: keep(standard(THREE, PALETTE.woodBoard, { roughness: 0.8 })),
     edge: keep(standard(THREE, PALETTE.woodEdge, { roughness: 0.7 })),
-    line: keep(standard(THREE, "#3c2610", { roughness: 0.9 })),
-    // Two CLEARLY distinct stone materials: matte dark vs bright glossy.
-    black: keep(standard(THREE, PALETTE.stoneBlack, { roughness: 0.5, metalness: 0.05 })),
+    // Slightly darker grid so the lines read against the warm wood from both seats.
+    line: keep(standard(THREE, "#2e1c0b", { roughness: 0.9 })),
+    // Two CLEARLY distinct stone materials: matte dark vs bright glossy. The black
+    // stone gets a touch more spec + a faint rim emissive so it catches a highlight
+    // and reads as a 3D piece (not a dark hole) from the opposite (white) seat.
+    black: keep(standard(THREE, PALETTE.stoneBlack, {
+      roughness: 0.4,
+      metalness: 0.1,
+      emissive: "#222222",
+      emissiveIntensity: 0.05,
+    })),
     white: keep(standard(THREE, PALETTE.stoneWhite, { roughness: 0.3, metalness: 0.0 })),
     win: keep(standard(THREE, "#e23b4e", { emissive: "#e23b4e", emissiveIntensity: 0.7 })),
+    // Last-move marker: a thin accent ring parked at the most recent drop so both
+    // seats (and spectators) can follow the game from across the table.
+    last: keep(standard(THREE, PALETTE.accent, { emissive: PALETTE.accent, emissiveIntensity: 0.7, roughness: 0.5 })),
+    // Faint ground ring under the hover ghost so the target intersection reads.
+    ghostRing: keep(standard(THREE, PALETTE.accent, {
+      emissive: PALETTE.accent,
+      emissiveIntensity: 0.6,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false,
+      roughness: 0.5,
+    })),
     // Hover-ghost: a translucent preview of the LOCAL player's stone. Colour is
     // swapped to match myColor whenever the role changes (see retintGhost()).
     ghostBlack: keep(
@@ -198,11 +240,37 @@ export function createGame(ctx) {
   // setHover can place the ghost at the precise {r,c} even though the framework
   // only forwards the column to setHover.
   const ghost = meshOf(THREE, stoneGeo, M.ghostBlack, false);
+  // Purely decorative preview: never let it intercept the board ray (it sits above
+  // the per-cell colliders). Matches battleship's pattern of disabling raycast on
+  // decorative meshes so the tagged userData.cell colliders always win the hit-test.
+  ghost.raycast = () => {};
   ghost.visible = false;
-  // Lifted above real stones (TOP + 0.006) so the translucent preview never
-  // shares a depth plane with a just-placed stone (avoids z-fighting/flicker).
-  ghost.position.y = TOP + 0.012;
+  // Previews where the stone will actually rest (real stones' top ≈ TOP + 0.012).
+  // depthWrite:false + raycast disabled keep it from z-fighting the wood/colliders.
+  ghost.position.y = TOP + 0.007;
   group.add(ghost);
+
+  // Faint ground ring under the hover ghost so the hovered intersection reads
+  // clearly on the busy wood (shown/hidden with the ghost). Decorative — no ray.
+  const ringGeo = keep(new THREE.RingGeometry(STONE_R * 1.05, STONE_R * 1.35, 28));
+  const ghostRing = new THREE.Mesh(ringGeo, M.ghostRing);
+  ghostRing.rotation.x = -Math.PI / 2;
+  ghostRing.position.y = TOP + 0.0014;
+  ghostRing.raycast = () => {};
+  ghostRing.visible = false;
+  ghostRing.renderOrder = 2;
+  group.add(ghostRing);
+
+  // Single reusable last-move marker: a thin accent ring around the latest drop.
+  const lastRingGeo = keep(new THREE.RingGeometry(STONE_R * 1.08, STONE_R * 1.3, 28));
+  const lastRing = new THREE.Mesh(lastRingGeo, M.last);
+  lastRing.rotation.x = -Math.PI / 2;
+  lastRing.position.y = TOP + 0.0016;
+  lastRing.raycast = () => {};
+  lastRing.visible = false;
+  lastRing.renderOrder = 2;
+  group.add(lastRing);
+
   let hoverCell = null; // last {r,c} resolved by hitToCell, or null on a miss
   let ghostPulse = 0;
 
@@ -213,6 +281,7 @@ export function createGame(ctx) {
 
   function hideGhost() {
     ghost.visible = false;
+    ghostRing.visible = false;
     hoverCell = null;
   }
 
@@ -234,16 +303,115 @@ export function createGame(ctx) {
   function showGhostAt(r, c) {
     if (!canPlay(r, c)) {
       ghost.visible = false;
+      ghostRing.visible = false;
       return;
     }
-    ghost.position.set(ix(c), TOP + 0.012, ix(r));
+    const newlyShown = !ghost.visible;
+    ghost.position.set(ix(c), TOP + 0.007, ix(r));
+    ghostRing.position.set(ix(c), TOP + 0.0014, ix(r));
+    if (newlyShown) {
+      // Reset the pulse so the first visible frame isn't a random dim/bright flash
+      // (the per-frame update leaves opacity at an arbitrary value when hidden).
+      ghostPulse = 0;
+      ghost.material.opacity = myColor === "white" ? 0.55 : 0.5;
+    }
     ghost.visible = true;
+    ghostRing.visible = true;
+  }
+
+  // ---- Shared idle animation clock ------------------------------------------
+  // One on-demand rAF loop drives three purely-cosmetic effects: a stone-placement
+  // settle pop (I1), a win flourish on the five winning stones (I2), and a turn-lamp
+  // breathe (I6). It starts when there's work and stops when idle so the ambient/
+  // spectator path stays cheap. board.js also pumps update(dt) (the ghost pulse);
+  // these are independent. Gated behind requestAnimationFrame so headless checks
+  // stay synchronous (placements just snap to final position).
+  const RAF_OK = typeof requestAnimationFrame !== "undefined";
+  const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  const drops = []; // active settle tweens: { mesh, t, dur, baseY }
+  let winT = 0; // running clock for the win flourish (0 when no win)
+  let lampClock = 0; // running clock for the turn-lamp breathe
+  let rafId = 0;
+  let lastT = 0;
+
+  const STONE_REST_Y = TOP + 0.006;
+  // easeOutBack: gentle overshoot for the settle pop.
+  function easeOutBack(k) {
+    const s = 1.70158;
+    const t = k - 1;
+    return t * t * ((s + 1) * t + s) + 1;
+  }
+
+  function animActive() {
+    return drops.length > 0 || phase === "over" || (phase === "play" && myColor != null);
+  }
+
+  function startClock() {
+    if (rafId || disposed || !RAF_OK) return;
+    lastT = nowMs();
+    const tick = (t) => {
+      rafId = 0;
+      if (disposed) return;
+      const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
+      lastT = t;
+      stepAnim(dt);
+      if (animActive() && !disposed) rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stopClock() {
+    if (rafId && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+
+  function stepAnim(dt) {
+    // I1 — settle pop for newly placed stones (ease the y down with overshoot).
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      d.t += dt;
+      const k = Math.min(1, d.t / d.dur);
+      d.mesh.position.y = d.baseY + (1 - easeOutBack(k)) * 0.03;
+      if (k >= 1) {
+        d.mesh.position.y = d.baseY;
+        drops.splice(i, 1);
+      }
+    }
+    // I2 — win flourish: breathe the win emissive + a tiny one-shot vertical pop.
+    if (phase === "over" && winLine) {
+      winT += dt;
+      M.win.emissiveIntensity = 0.65 + 0.25 * Math.sin(winT * 3.4);
+      const lift = Math.max(0, 0.004 * (1 - winT / 0.5)); // one-shot settle
+      for (const [r, c] of winLine) {
+        const s = stones[r] && stones[r][c];
+        // Skip a stone still playing its placement settle (the just-played winning
+        // stone) so the two tweens don't fight on position.y; it joins next frame.
+        if (s && !drops.some((d) => d.mesh === s)) s.position.y = STONE_REST_Y + lift;
+      }
+    }
+    // I6 — turn-lamp breathe: the to-move side's lamp gently pulses.
+    if (phase === "play") {
+      lampClock += dt;
+      for (const color of ["black", "white"]) {
+        const c = cue[color];
+        if (!c.lamp) continue;
+        const isMine = myColor != null && color === myColor;
+        const isTurn = turn === color;
+        if (!isTurn) {
+          c.lamp.material.emissiveIntensity = 0;
+          continue;
+        }
+        const baseL = isMine ? 1.0 : 0.4;
+        const amp = isMine ? 0.18 : 0.1;
+        c.lamp.material.emissiveIntensity = baseL + amp * (0.5 + 0.5 * Math.sin(lampClock * 2.4));
+      }
+    }
   }
 
   // ---- Persistent identity / turn cues (built once, never rebuilt) ----------
   // Black home = -Z edge (canonical near edge, host/moves-first); white home = +Z.
-  // The framework rotates the whole group by orientFor(seatRy) so each client's OWN
-  // home bar ends up directly in front of them.
+  // applyFacing() rotates the whole group by orientFor(seatRy)(+PI for white) so
+  // each client's OWN colour home bar ends up directly in front of them.
   const cue = { black: { bar: null, lamp: null }, white: { bar: null, lamp: null } };
   {
     const barGeo = keep(new THREE.BoxGeometry(BOARD_SIZE * 0.7, 0.006, 0.012));
@@ -265,7 +433,9 @@ export function createGame(ctx) {
     }
   }
 
-  // Drive identity/turn cue emissives — purely from local myColor/turn.
+  // Drive identity/turn cue emissives — purely from local myColor/turn. The home
+  // bar is static; the to-move lamp's base level is set here and then breathed by
+  // the idle clock (stepAnim) while it runs.
   function updateIdentityCues() {
     for (const color of ["black", "white"]) {
       const c = cue[color];
@@ -275,18 +445,42 @@ export function createGame(ctx) {
       c.bar.material.emissiveIntensity = isMine ? 0.7 : 0.0;
       c.lamp.material.emissiveIntensity = isTurn ? (isMine ? 1.0 : 0.4) : 0.0;
     }
+    // (Re)arm or release the idle clock now that turn/phase may have changed.
+    if (animActive()) startClock();
+    else stopClock();
   }
 
   // ---- Stone rendering ------------------------------------------------------
-  function setStone(r, c, color) {
+  // `animate` true only for a freshly committed move (local click or relayed move),
+  // false for paint()/snapshot rebuilds so a resync never animates a teleport.
+  function setStone(r, c, color, animate) {
     let s = stones[r][c];
+    const created = !s;
     if (!s) {
       s = meshOf(THREE, stoneGeo, color === "black" ? M.black : M.white);
-      s.position.set(ix(c), TOP + 0.006, ix(r));
+      s.position.set(ix(c), STONE_REST_Y, ix(r));
       group.add(s);
       stones[r][c] = s;
     }
     s.material = color === "black" ? M.black : M.white;
+    if (created && animate && RAF_OK) {
+      // I1 — settle pop: ease in from just above the surface with a small overshoot.
+      s.position.y = STONE_REST_Y + 0.03;
+      drops.push({ mesh: s, t: 0, dur: 0.18, baseY: STONE_REST_Y });
+      startClock();
+    } else if (!animate) {
+      s.position.y = STONE_REST_Y; // ensure a rebuilt/snapped stone rests cleanly
+    }
+  }
+
+  // Move the last-move accent ring under the most recent drop (or hide it).
+  function paintLastMarker() {
+    if (lastDrop && board[lastDrop.r] && board[lastDrop.r][lastDrop.c]) {
+      lastRing.position.set(ix(lastDrop.c), TOP + 0.0016, ix(lastDrop.r));
+      lastRing.visible = true;
+    } else {
+      lastRing.visible = false;
+    }
   }
 
   function highlightWin() {
@@ -297,12 +491,23 @@ export function createGame(ctx) {
     }
   }
 
-  // Full repaint from `board`. Used by applyState and the initial draw.
+  // Full repaint from `board`. Used by applyState and the initial draw. Snapshots
+  // never animate (animate=false) so a resync/late-join is a clean teleport.
   function paint() {
+    drops.length = 0; // drop any in-flight settle tweens; we snap to the snapshot
     for (let r = 0; r < SIZE; r++)
       for (let c = 0; c < SIZE; c++) {
-        if (board[r][c]) setStone(r, c, board[r][c]);
-        else if (stones[r][c]) {
+        if (board[r][c]) {
+          setStone(r, c, board[r][c], false);
+          // B4 — reset any stone that was previously highlighted (e.g. a snapshot
+          // that rewinds an "over" state) back to its base colour + rest height
+          // before we re-highlight the (possibly new) winning line.
+          const s = stones[r][c];
+          if (s) {
+            s.material = board[r][c] === "black" ? M.black : M.white;
+            s.position.y = STONE_REST_Y;
+          }
+        } else if (stones[r][c]) {
           group.remove(stones[r][c]);
           stones[r][c] = null;
         }
@@ -310,6 +515,8 @@ export function createGame(ctx) {
     // Recompute the winning line locally from the snapshot's last drop so a relayed
     // "over" state highlights the same five — without trusting any wire line.
     winLine = null;
+    winT = 0;
+    M.win.emissiveIntensity = 0.7;
     if (phase === "over" && winner && lastDrop) {
       const { r, c } = lastDrop;
       if (board[r] && board[r][c] === winner) {
@@ -317,6 +524,7 @@ export function createGame(ctx) {
       }
     }
     highlightWin();
+    paintLastMarker();
     hideGhost();
     updateIdentityCues();
   }
@@ -325,7 +533,8 @@ export function createGame(ctx) {
   function performMove(r, c, color) {
     board[r][c] = color;
     lastDrop = { r, c };
-    setStone(r, c, color);
+    setStone(r, c, color, true); // committed move -> animate the settle pop
+    paintLastMarker();
     hideGhost();
 
     const line = winningLine(board, r, c, color);
@@ -333,6 +542,7 @@ export function createGame(ctx) {
       winLine = line;
       winner = color;
       phase = "over";
+      winT = 0; // start the win flourish from the top
       highlightWin();
       updateIdentityCues();
       try {
@@ -390,7 +600,7 @@ export function createGame(ctx) {
   }
 
   // ---- Relayed move (host -> guest, or guest -> host) -----------------------
-  function applyMove(move) {
+  function applyMove(move, byRole) {
     if (!move || move.type !== "move") return false;
     if (phase !== "play") throw new GameDesync("gomoku: not in play");
     const { r, c } = move;
@@ -404,6 +614,15 @@ export function createGame(ctx) {
     )
       throw new GameDesync("gomoku: bad cell");
     if (board[r][c]) throw new GameDesync("gomoku: occupied");
+    // Cross-check the mover's identity (host=black, guest=white) against whose turn
+    // it logically is. A mis-stamped/out-of-turn relayed move (e.g. a guest move
+    // racing the host's turn flip) would otherwise be committed in the WRONG colour
+    // with no desync — corrupting the authoritative state the host then broadcasts.
+    // Routing it through GameDesync triggers the framework's self-healing resync.
+    const moverColor =
+      byRole === "host" ? "black" : byRole === "guest" ? "white" : null;
+    if (moverColor != null && moverColor !== turn)
+      throw new GameDesync("gomoku: wrong mover");
     // The colour is whoever is to move — derived locally, not from the wire.
     performMove(r, c, turn);
     // Host re-broadcasts authoritative state after applying a relayed guest move.
@@ -518,17 +737,22 @@ export function createGame(ctx) {
     myColor = role === "host" ? "black" : role === "guest" ? "white" : null;
     retintGhost();
     hideGhost();
+    applyFacing(); // colour may flip -> re-derive the white half-turn
     updateIdentityCues();
   }
-  function setSeatRy() {
-    // Orientation is applied by the framework (orientFor(seatRy)); we only refresh
-    // the local cue emissives.
+  function setSeatRy(ry) {
+    // We own per-seat facing now (orientPolicy:"self"); a re-seat must re-orient
+    // the board to the new chair (orientFor handles a null spectator ry), then
+    // refresh the local cue emissives.
+    seatRy = ry;
+    applyFacing();
     updateIdentityCues();
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    stopClock();
     hideGhost();
     // Remove the live per-cell stone meshes from the group before teardown.
     for (let r = 0; r < SIZE; r++)
@@ -543,11 +767,16 @@ export function createGame(ctx) {
     for (const o of owned) o.dispose?.();
   }
 
-  // Initial draw.
+  // Initial facing + draw.
+  applyFacing();
   paint();
 
   return {
     group,
+    // We own per-seat facing (applyFacing). board.js must NOT also rotate us, or
+    // the two transforms fight. Clicks still resolve via our hitToCell ->
+    // group.worldToLocal, so cells stay canonical under the extra rotation.
+    orientPolicy: "self",
     applyState,
     applyMove,
     onPointer,

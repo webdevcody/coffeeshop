@@ -100,7 +100,10 @@ export function createGame(ctx) {
   const M = {
     plank: keep(standard(THREE, "#3a281a", { roughness: 0.85 })),
     dot: keep(standard(THREE, "#d8c39a", { roughness: 0.55, metalness: 0.1 })),
-    edgeOpen: keep(standard(THREE, "#5a4633", { roughness: 0.8, transparent: true, opacity: 0.22, depthWrite: false })),
+    // I5: open-edge slots were near-invisible (#5a4633 @0.22) against the dark
+    // plank from the far seat. Lighten + raise opacity and add a faint emissive so
+    // the legal lattice reads from both seats. depthWrite stays off (no z-fight).
+    edgeOpen: keep(standard(THREE, "#6b5640", { roughness: 0.8, transparent: true, opacity: 0.32, emissive: "#6b5640", emissiveIntensity: 0.08, depthWrite: false })),
     red: keep(standard(THREE, RED, { roughness: 0.45, metalness: 0.1 })),
     blue: keep(standard(THREE, BLUE, { roughness: 0.45, metalness: 0.1 })),
     boxRed: keep(standard(THREE, "#e08a7e", { roughness: 0.6, transparent: true, opacity: 0.72, emissive: RED, emissiveIntensity: 0.12 })),
@@ -130,6 +133,15 @@ export function createGame(ctx) {
 
   const span = BOARD_SIZE * 0.86;
   const gap = span / (DOTS - 1);
+
+  // I6: stack the playfield layers so coplanar geometry never z-fights. Box fills
+  // sit lowest (on the plank), then dots, then the open/claimed bars a hair above
+  // them, then the hover ghost above the bar it previews so it reads as floating
+  // over the slot rather than shimmering against the open bar underneath.
+  const Y_BOX = TOP + 0.008;       // box fill (just above plank)
+  const Y_DOT = TOP + gap * 0.05;  // dots
+  const Y_BAR = TOP + gap * 0.055; // edge bars (dots + bars no longer coplanar)
+  const Y_GHOST = TOP + gap * 0.075; // hover ghost rides above the open bar
   const x0 = -span / 2, z0 = -span / 2;
   const dotX = (c) => x0 + c * gap;
   const dotZ = (r) => z0 + r * gap;
@@ -141,7 +153,7 @@ export function createGame(ctx) {
   for (let r = 0; r < DOTS; r++)
     for (let c = 0; c < DOTS; c++) {
       const d = meshOf(THREE, dotGeo, M.dot);
-      d.position.set(dotX(c), TOP + gap * 0.05, dotZ(r));
+      d.position.set(dotX(c), Y_DOT, dotZ(r));
       group.add(d);
     }
 
@@ -158,7 +170,7 @@ export function createGame(ctx) {
     for (let c = 0; c < BOXN; c++) {
       const px = midX(c), pz = dotZ(r);
       const bar = meshOf(THREE, hBarGeo, M.edgeOpen);
-      bar.position.set(px, TOP + gap * 0.05, pz);
+      bar.position.set(px, Y_BAR, pz);
       group.add(bar);
       edgeBars.h[`${r},${c}`] = bar;
       edgePos.h[`${r},${c}`] = { x: px, z: pz };
@@ -171,7 +183,7 @@ export function createGame(ctx) {
     for (let c = 0; c < DOTS; c++) {
       const px = dotX(c), pz = midZ(r);
       const bar = meshOf(THREE, vBarGeo, M.edgeOpen);
-      bar.position.set(px, TOP + gap * 0.05, pz);
+      bar.position.set(px, Y_BAR, pz);
       group.add(bar);
       edgeBars.v[`${r},${c}`] = bar;
       edgePos.v[`${r},${c}`] = { x: px, z: pz };
@@ -222,6 +234,11 @@ export function createGame(ctx) {
   const beaconBaseY = TOP + gap * 1.15;
   beacon.position.set(0, beaconBaseY, 0);
   group.add(beacon);
+  // I3: target X-tilt the cone eases toward (set by refreshBeacon, applied in
+  // update). Seed it at the canonical first-mover tilt so the cone starts settled
+  // rather than snapping on the first frame.
+  let beaconTargetTiltX = -Math.PI * 0.62;
+  beacon.rotation.x = beaconTargetTiltX;
 
   // ---- hover ghost ---------------------------------------------------------
   const ghostH = meshOf(THREE, hBarGeo, M.ghost, false);
@@ -231,6 +248,33 @@ export function createGame(ctx) {
   group.add(ghostH);
   group.add(ghostV);
   let hoverCell = null;
+
+  // ---- I4: "this move scores" box-completion preview -----------------------
+  // A hovered edge can close at most two boxes (one each side). Two reusable
+  // glow tiles, tinted to myColor, light up the box footprints the hovered edge
+  // would claim. Read-only (a dry-run of applyEdge's close test, no mutation),
+  // local-only, and gated by isMyTurn() so opponents/spectators never see it.
+  const previewGeo = keep(new THREE.BoxGeometry(gap * 0.7, 0.004, gap * 0.7));
+  M.preview = keep(standard(THREE, RED, { roughness: 0.5, emissive: RED, emissiveIntensity: 0.7, transparent: true, opacity: 0.4, depthWrite: false }));
+  const previewTiles = [
+    meshOf(THREE, previewGeo, M.preview, false),
+    meshOf(THREE, previewGeo, M.preview, false),
+  ];
+  for (const t of previewTiles) { t.visible = false; group.add(t); }
+
+  // ---- animation state (eased visual transitions; never touches logic) -----
+  // Each entry drives one mesh's transform/material over a short duration. The
+  // logical board is committed before animations start, so sync is untouched —
+  // a hard resync (applyState) simply snaps everything to its settled pose.
+  const edgeAnims = []; // { bar, t, dur, axis } draw-in stroke for a claimed edge
+  const boxAnims = [];  // { mesh, t, dur } out-back pop for a filled box
+  let extraTurnFlash = 0; // I2: "you go again" pulse timer (seconds remaining)
+  let overFlash = 0;      // I8: winner bloom timer (seconds remaining)
+  const easeOutBack = (x) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+  };
+  const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3);
 
   // ---- per-turn cue derivation (LOCAL state only) --------------------------
   const legalBars = [];
@@ -277,7 +321,7 @@ export function createGame(ctx) {
       M.beacon.color.set(tint);
       M.beacon.emissive.set(tint);
       M.beacon.emissiveIntensity = winner ? 0.5 : 0.15;
-      beacon.rotation.set(0, 0, 0);
+      beaconTargetTiltX = 0; // I3: ease back upright in update()
       return;
     }
     const tint = turn === "red" ? RED : BLUE;
@@ -290,7 +334,9 @@ export function createGame(ctx) {
     // tip toward whichever rail that colour sits at (blue=-Z near by layout).
     const towardNear =
       myColor != null ? turn === myColor : turn === (myColor || "blue");
-    beacon.rotation.set(towardNear ? Math.PI * 0.62 : -Math.PI * 0.62, 0, 0);
+    // I3: set a target tilt and let update() lean the cone toward the new side,
+    // instead of teleporting the apex on every turn change.
+    beaconTargetTiltX = towardNear ? -Math.PI * 0.62 : Math.PI * 0.62;
   }
 
   function refreshCues() {
@@ -302,9 +348,30 @@ export function createGame(ctx) {
 
   // ---- hover ghost handling ------------------------------------------------
   const GHOST_EMISSIVE_BASE = 0.6;
+  // Dry-run: which boxes (if any) would drawing edge {o,r,c} close RIGHT NOW?
+  // Mirrors applyEdge's tryClose check without mutating `st`. Treats the edge as
+  // present, then tests the two adjacent boxes for all four sides. Read-only.
+  function boxesClosedBy(o, r, c) {
+    const has = (eo, er, ec) =>
+      (eo === o && er === r && ec === c) ||
+      (eo === "h" ? !!st.h[er]?.[ec] : !!st.v[er]?.[ec]);
+    const closes = (br, bc) => {
+      if (br < 0 || br >= BOXN || bc < 0 || bc >= BOXN) return false;
+      if (st.boxes[br][bc]) return false;
+      return has("h", br, bc) && has("h", br + 1, bc) && has("v", br, bc) && has("v", br, bc + 1);
+    };
+    const out = [];
+    if (o === "h") { if (closes(r - 1, c)) out.push([r - 1, c]); if (closes(r, c)) out.push([r, c]); }
+    else { if (closes(r, c - 1)) out.push([r, c - 1]); if (closes(r, c)) out.push([r, c]); }
+    return out;
+  }
+  function clearPreview() {
+    for (const t of previewTiles) t.visible = false;
+  }
   function clearGhost() {
     ghostH.visible = false;
     ghostV.visible = false;
+    clearPreview();
     // Reset the pulsed emissive so a hidden ghost never keeps the last pulse
     // value when it is shown again.
     M.ghost.emissiveIntensity = GHOST_EMISSIVE_BASE;
@@ -322,46 +389,124 @@ export function createGame(ctx) {
     M.ghost.color.set(tint);
     M.ghost.emissive.set(tint);
     const g = o === "h" ? ghostH : ghostV;
-    g.position.set(pos.x, TOP + gap * 0.05, pos.z);
+    g.position.set(pos.x, Y_GHOST, pos.z);
     g.visible = true;
+    // I4: light the box footprint(s) this edge would score, in myColor.
+    const scoring = boxesClosedBy(o, r, c);
+    if (scoring.length) {
+      M.preview.color.set(tint);
+      M.preview.emissive.set(tint);
+      for (let i = 0; i < scoring.length && i < previewTiles.length; i++) {
+        const [br, bc] = scoring[i];
+        previewTiles[i].position.set(midX(bc), Y_BOX + 0.001, midZ(br));
+        previewTiles[i].visible = true;
+      }
+    }
   }
 
   // ---- per-frame breathing pulse -------------------------------------------
   let pulseT = 0;
   function update(dt) {
-    pulseT += dt || 0.016;
+    const d = Math.min(0.05, dt || 0.016); // clamp so a long frame can't overshoot
+    pulseT += d;
     const wave = 0.5 + 0.5 * Math.sin(pulseT * 4.0);
     const myTurn = isMyTurn();
     // legal-edge glow breathes on the local turn
     const glow = myTurn ? 0.22 + 0.4 * wave : 0.0;
     for (const bar of legalBars) bar.material.emissiveIntensity = glow;
     // local lamp breathes a touch brighter on its turn
-    if (myColor && myTurn) home[myColor].lamp.material.emissiveIntensity = 0.7 + 0.45 * wave;
-    // beacon bob + gentle spin while in play
+    if (myColor && myTurn) {
+      // I2: extra-turn flash brightens the local lamp on top of the breathe.
+      const boost = extraTurnFlash > 0 ? 0.6 * (extraTurnFlash / 0.6) : 0;
+      home[myColor].lamp.material.emissiveIntensity = 0.7 + 0.45 * wave + boost;
+    }
+    // beacon bob + gentle spin + eased lean toward the side-to-move
     if (phase === "play") {
       beacon.position.y = beaconBaseY + Math.sin(pulseT * 2.2) * gap * 0.08;
       beacon.rotation.y = pulseT * 0.8;
     }
+    // I3: ease the X-tilt toward its target instead of snapping on turn change.
+    beacon.rotation.x += (beaconTargetTiltX - beacon.rotation.x) * Math.min(1, d * 8);
+
+    // I2: extra-turn beacon pulse (decays); brightens the side-to-move tint.
+    if (extraTurnFlash > 0) {
+      extraTurnFlash = Math.max(0, extraTurnFlash - d);
+      M.beacon.emissiveIntensity = 0.55 + 0.6 * (extraTurnFlash / 0.6);
+    }
+    // I8: one-shot winner bloom on game over (rise then settle).
+    if (overFlash > 0) {
+      overFlash = Math.max(0, overFlash - d);
+      const k = overFlash / 0.4;            // 1→0
+      const bloom = Math.sin((1 - k) * Math.PI); // 0→1→0
+      const base = winner ? 0.5 : 0.15;
+      M.beacon.emissiveIntensity = base + 0.5 * bloom;
+      if (winner) home[winner].rail.material.emissiveIntensity = 0.6 + 0.6 * bloom;
+    }
+
     if (ghostH.visible || ghostV.visible) {
       M.ghost.emissiveIntensity = 0.4 + 0.4 * wave;
+      M.preview.emissiveIntensity = 0.45 + 0.35 * wave;
+    }
+
+    // I1: eased edge "ink stroke" — grow the claimed bar along its long axis from
+    // the centre out. (No per-bar emissive: the claimed-bar materials are shared
+    // and use a black emissive, so a glow here would be invisible or leak.)
+    for (let i = edgeAnims.length - 1; i >= 0; i--) {
+      const a = edgeAnims[i];
+      a.t += d;
+      const k = Math.min(1, a.t / a.dur);
+      const s = 0.2 + 0.8 * easeOutCubic(k);
+      if (a.o === "h") a.bar.scale.x = s; else a.bar.scale.z = s;
+      if (k >= 1) { a.bar.scale.set(1, 1, 1); edgeAnims.splice(i, 1); }
+    }
+    // I1: eased box "pop + settle" — out-back scale up from a small low fill.
+    for (let i = boxAnims.length - 1; i >= 0; i--) {
+      const a = boxAnims[i];
+      a.t += d;
+      const k = Math.min(1, a.t / a.dur);
+      const e = easeOutBack(k);
+      const sxz = 0.55 + 0.45 * e;
+      a.mesh.scale.set(sxz, 0.01 + 0.99 * Math.min(1, e), sxz);
+      if (k >= 1) { a.mesh.scale.set(1, 1, 1); boxAnims.splice(i, 1); }
     }
   }
 
   // ---- painters ------------------------------------------------------------
-  function setEdge(o, r, c, player) {
+  // `animate` is true only for a live local/relayed move; paint() (resync) passes
+  // false so a hard snapshot settles instantly with no half-played transition.
+  function setEdge(o, r, c, player, animate = false) {
     const bar = edgeBars[o][`${r},${c}`];
-    if (bar) bar.material = player === "red" ? M.red : player === "blue" ? M.blue : M.edgeOpen;
+    if (!bar) return;
+    bar.material = player === "red" ? M.red : player === "blue" ? M.blue : M.edgeOpen;
+    if (player && animate) {
+      // I1: "ink stroke" — grow the bar along its long axis from a stub to full.
+      bar.scale.set(1, 1, 1);
+      if (o === "h") bar.scale.x = 0.2; else bar.scale.z = 0.2;
+      edgeAnims.push({ bar, o, t: 0, dur: 0.2 });
+    } else if (bar.scale.x !== 1 || bar.scale.z !== 1) {
+      bar.scale.set(1, 1, 1);
+    }
   }
-  function setBox(r, c, player) {
+  function setBox(r, c, player, animate = false) {
     if (boxMeshes[r][c]) { group.remove(boxMeshes[r][c]); boxMeshes[r][c] = null; }
     if (!player) return;
     const m = meshOf(THREE, boxGeo, player === "red" ? M.boxRed : M.boxBlue, false);
-    m.position.set(midX(c), TOP + 0.008, midZ(r));
+    m.position.set(midX(c), Y_BOX, midZ(r));
     group.add(m);
     boxMeshes[r][c] = m;
+    if (animate) {
+      // I1: out-back "pop + settle" from a small, low fill to its full footprint.
+      m.scale.set(0.55, 0.01, 0.55);
+      boxAnims.push({ mesh: m, t: 0, dur: 0.22 });
+    }
   }
 
   function paint() {
+    // A hard resync supersedes any in-flight transitions; drop them so update()
+    // never tugs a mesh that paint() just rebuilt or settled.
+    edgeAnims.length = 0;
+    boxAnims.length = 0;
+    extraTurnFlash = 0;
     for (let r = 0; r < DOTS; r++) for (let c = 0; c < BOXN; c++) setEdge("h", r, c, st.h[r][c]);
     for (let r = 0; r < BOXN; r++) for (let c = 0; c < DOTS; c++) setEdge("v", r, c, st.v[r][c]);
     for (let r = 0; r < BOXN; r++) for (let c = 0; c < BOXN; c++) setBox(r, c, st.boxes[r][c]);
@@ -372,13 +517,17 @@ export function createGame(ctx) {
   // ---- move application ----------------------------------------------------
   function performMove(o, r, c, player) {
     const completed = applyEdge(st, o, r, c, player);
-    setEdge(o, r, c, player);
-    for (const [br, bc] of completed) setBox(br, bc, player);
+    setEdge(o, r, c, player, true);
+    for (const [br, bc] of completed) setBox(br, bc, player, true);
     hoverCell = null;
+    // I2: "you go again" — when the LOCAL player closes a box (and the game isn't
+    // over), pulse the beacon/lamp so the keep-your-turn rule is legible.
+    if (completed.length > 0 && player === myColor && !isFull(st)) extraTurnFlash = 0.6;
     if (isFull(st)) {
       phase = "over";
       const t = tally(st);
       winner = t.red === t.blue ? null : t.red > t.blue ? "red" : "blue";
+      overFlash = 0.4; // I8: one-shot winner bloom
       try { ctx.onGameOver({ winner, reason: "filled", score: t }); } catch { /* ignore */ }
       refreshCues();
       return;
@@ -430,13 +579,20 @@ export function createGame(ctx) {
     };
   }
   function publicState() { return snapshot(); }
+  // Host-gated internally so the initial/reset publish (B1) is a no-op for
+  // guest/spectator instances, mirroring connect4's pushState().
   function pushSnapshot() {
+    if (role !== "host") return;
     const s = snapshot();
     try { ctx.net.sendState(s, s); } catch { /* ignore */ }
   }
 
   // Idempotent rebuild from an authoritative snapshot. NEVER touches myColor/role.
   function applyState(state) {
+    // A hard resync supersedes any in-flight flourish; clear the transient timers
+    // so update() doesn't tug emissive/transform after the board was rebuilt.
+    extraTurnFlash = 0;
+    overFlash = 0;
     if (!state) {
       st = emptyState();
       turn = "red";
@@ -462,6 +618,13 @@ export function createGame(ctx) {
     }
     hoverCell = null;
     paint();
+    // Snap the beacon tilt to the (now-refreshed) target so a resync doesn't
+    // visibly swing the cone across the board.
+    beacon.rotation.x = beaconTargetTiltX;
+    // Re-seed the server's cached snapshot on a host reset so a spectator that
+    // joins after the reset (but before the next move) hydrates against the fresh
+    // board. Host-gated inside pushSnapshot(); no-op for guest/spectator. (B1)
+    if (!state) pushSnapshot();
   }
 
   function setRole(r) {
@@ -490,6 +653,15 @@ export function createGame(ctx) {
 
   // initial layout + paint
   paint();
+  // Snap the beacon to its initial target tilt so a guest (whose first-mover side
+  // is the opponent) starts settled rather than leaning across on the first frame.
+  beacon.rotation.x = beaconTargetTiltX;
+
+  // B1: publish the authoritative empty board once on mount so a spectator/late
+  // guest that requestState()s before the first edge hydrates a real snapshot,
+  // marks itself _hydrated, and never drops the first relayed move. Host-gated
+  // inside pushSnapshot(); a no-op for guest/spectator instances.
+  pushSnapshot();
 
   return {
     group,
@@ -502,6 +674,16 @@ export function createGame(ctx) {
     setSeatRy,
     setHover,
     dispose,
+    // NOTE on B3: the audit suggested spectatorAnimates:false on the premise that
+    // this module "has no animation." That is no longer true — applyMove now runs
+    // performMove, which eases the edge ink-stroke + box pop (I1) on the RECEIVING
+    // side too. So we keep the framework DEFAULT (animate). This opts INTO the
+    // one-shot, time-bounded post-move snapshot suppression (board.js _onMove),
+    // exactly like the sister full-info game connect4: the redundant echo is
+    // swallowed for ~one window so a guest/spectator animation completes, and the
+    // very next snapshot/move always re-converges — so a dropped relay self-heals
+    // within a frame budget. Flipping this to false would tear down every relayed
+    // move's animation instantly. (Left undefined === default true.)
   };
 }
 

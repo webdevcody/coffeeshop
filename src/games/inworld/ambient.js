@@ -25,6 +25,14 @@
 
 import { mountAmbientBoard } from "./board.js";
 
+// How long (ms) a freshly-claimed table stays suppressed after the local player
+// sits, bridging the gap until InWorldBoard.mount() (async — it awaits a dynamic
+// import) finally sets activeTableId. A safety backstop only: the claim is dropped
+// the instant getActiveTableId() reports the table, so this just covers the race +
+// the rare aborted mount. Far longer than any import; short enough that a passerby
+// mirror reappears promptly after the player walks away.
+const AMBIENT_CLAIM_MS = 5000;
+
 export class AmbientBoards {
   // deps: {
   //   network,                       // the Network (we subscribe to "ambient")
@@ -43,15 +51,36 @@ export class AmbientBoards {
     //   pendingClear(bool)
     // }
     this._mounts = new Map();
+    // tableId -> expiry timestamp (ms). A table the local player just sat at is
+    // "claimed" so a stray ambient snapshot can't re-mount a z-fighting mirror
+    // during the async-mount window (see releaseTable / _shouldSkip).
+    this._claimed = new Map();
 
     if (this.network) this.network.on("ambient", (m) => this._onAmbient(m));
+  }
+
+  _now() {
+    return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
   }
 
   // The table InWorldBoard owns (seated play / spectating / menu) must NOT also
   // get an ambient mirror — that client already renders it. A null gameId/pub
   // payload (reset/cleared/no game) also has nothing to show.
   _shouldSkip(tableId) {
-    return tableId === this.getActiveTableId();
+    // The seated mount has caught up — the claim is now redundant (drop it so a
+    // later walk-away lets the passerby mirror return).
+    if (tableId === this.getActiveTableId()) {
+      this._claimed.delete(tableId);
+      return true;
+    }
+    // Still inside the async-mount window after a sit: suppress until it resolves
+    // (or the claim expires, covering a rare aborted mount).
+    const exp = this._claimed.get(tableId);
+    if (exp != null) {
+      if (this._now() < exp) return true;
+      this._claimed.delete(tableId);
+    }
+    return false;
   }
 
   // ---- inbound ambient snapshot -------------------------------------------
@@ -199,13 +228,19 @@ export class AmbientBoards {
   // do not wait for mount() to resolve. A late ambient snapshot for this table is
   // re-skipped via _shouldSkip() once mount() finishes setting activeTableId.
   releaseTable(tableId) {
-    if (typeof tableId === "string") this._remove(tableId);
+    if (typeof tableId !== "string") return;
+    // Claim the table through the async-mount gap so a stray ambient snapshot that
+    // arrives before activeTableId catches up can't re-mount a mirror that z-fights
+    // the incoming seated board (double fleet placards + a flickering hover ghost).
+    this._claimed.set(tableId, this._now() + AMBIENT_CLAIM_MS);
+    this._remove(tableId);
   }
 
   // Drop everything (e.g. on socket close — the boards are stale and main.js
   // unmounts the owned one too). New ambient snapshots re-mount on reconnect.
   clear() {
     for (const tableId of [...this._mounts.keys()]) this._remove(tableId);
+    this._claimed.clear();
   }
 
   // Pump real-time ambient sims (pong/tron/ludo run their own animation off the

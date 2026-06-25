@@ -41,6 +41,7 @@
 // First to 7 wins. An in-world canvas placard shows the live score and which
 // paddle is YOURS.
 
+import { orientFor } from "./createGame.js";
 import { BOARD_SIZE, PALETTE, meshOf, standard } from "./pieces.js";
 
 // ---- field constants (canonical) ----
@@ -53,6 +54,15 @@ const MAX_BOUNCE = 0.42 * Math.PI;
 const RECONCILE_RATE = 9;   // per-second ease toward authority
 const RESEED_DIST = 12;     // canonical units: gap above which we snap not ease
 const SEND_HZ = 50;
+// Guest-presence gate: the guest streams steering intent on a ~50ms throttle tick
+// even when idle, so a connected-but-stationary guest refreshes this constantly.
+// If no intent has arrived for this long mid-match the host pauses (freezes ball,
+// no scoring) so it can't run up the score against a departed opponent.
+const GUEST_TIMEOUT_MS = 1500;
+const REMATCH_MS = 4000;    // host auto-returns to lobby this long after a win
+const PADDLE_DEADZONE = 0.5; // canonical units: guest stops easing inside this gap
+const HIT_POP_MS = 130;     // ball squash-pop duration on a paddle reflect
+const SCORE_POP_MS = 450;   // canvas score-digit flash duration on a point
 
 // Map field units -> local board metres (court inscribed in the playable square).
 const COURT_W = BOARD_SIZE * 0.9;             // lateral extent (x -> world X)
@@ -65,6 +75,12 @@ export function createGame(ctx) {
   group.name = "pong";
 
   let role = ctx.role;
+  // Our physical chair ry. We declare orientPolicy:"self", so board.js does NOT
+  // rotate our group (board.js._orient returns early) — we must rotate it
+  // ourselves per seat, exactly like battleship. orientFor(seatRy) brings this
+  // seat's near edge to local -Z; the viewFlip below then selects host-vs-guest
+  // end within that frame, so the two compose correctly.
+  let seatRy = ctx.seatRy;
   // IDENTITY is now MUTABLE so a live role transition (board.js InWorldBoard
   // .setRole performs an IN-PLACE role change without remounting) can recompute
   // every view-critical value. It is still derived ONLY from role, NEVER from the
@@ -101,6 +117,28 @@ export function createGame(ctx) {
 
   // host's integrated view of the guest paddle intent
   let guestDir = 0;               // -1/0/1 canonical lateral steering from guest
+  // Host presence gate: stays false until the guest's first steering intent
+  // arrives, so the host can't start serving/scoring against an empty seat. The
+  // guest streams intent on a throttle tick even when idle (see update()), so a
+  // connected-but-stationary guest still flips this within ~50ms.
+  let guestSeen = false;
+  // Mid-match departure gate (host only): last time a guest steering intent
+  // arrived. While 'play', if this goes stale the host pauses physics so it can't
+  // score against an empty seat. Seeded to nowMs() at construction; meaningful
+  // only once guestSeen flips. paused mirrors that state for placard text.
+  let lastGuestInputAt = 0;
+  let paused = false;
+  // Rematch timer (host only): set when a match ends so the court auto-returns to
+  // lobby (then re-serves once the guest is still present) instead of dying.
+  let rematchAt = 0;
+  // One-shot flourish counters streamed to guests/spectators so all three views
+  // animate the same pops. hitSeq bumps on every paddle reflect; scoreSeq bumps on
+  // every point. Each client compares against a locally-remembered value.
+  let hitSeq = 0, scoreSeq = 0;
+  let seenHitSeq = 0, seenScoreSeq = 0;
+  let hitAt = 0;                  // local ms timestamp of the last hit pop
+  let scoreFlashAt = 0;           // local ms timestamp of the last score flash
+  let scoreFlashSide = null;      // which canonical side ("A"/"B") just scored
   // guest local prediction + reconciliation
   let myPredX = W / 2;            // guest's predicted own paddle (canonical x)
   let lastSentDir = 0;
@@ -172,6 +210,17 @@ export function createGame(ctx) {
     mine: keep(standard(THREE, myColor || PALETTE.pongLeft, {
       emissive: myColor || PALETTE.pongLeft, emissiveIntensity: 0.7, transparent: true, opacity: 0.45, depthWrite: false,
     })),
+    // Steady, dim grounding ring under the OPPONENT paddle so both paddles read as
+    // grounded discs from either seat — fainter than `mine` and never pulses, so it
+    // never reads as "yours". Colour refreshed alongside `mine` on role change.
+    oppRing: keep(standard(THREE, oppColor || PALETTE.pongRight, {
+      emissive: oppColor || PALETTE.pongRight, emissiveIntensity: 0.45, transparent: true, opacity: 0.28, depthWrite: false,
+    })),
+    // Soft round contact shadow disc that follows the ball for grounding (cheaper
+    // and cleaner than a real shadow caster on a tiny fast sphere).
+    shadow: keep(standard(THREE, "#000000", {
+      roughness: 1, metalness: 0, transparent: true, opacity: 0.28, depthWrite: false,
+    })),
   };
 
   const plankH = 0.018;
@@ -180,30 +229,49 @@ export function createGame(ctx) {
   floor.position.y = plankH / 2;
   group.add(floor);
 
-  // midline across the court (perpendicular to length, at y=H/2)
-  const midline = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W, 0.002, 0.005)), M.line, false);
-  midline.position.set(0, TOP + 0.002, 0);
+  // midline across the court (perpendicular to length, at y=H/2). A hair taller and
+  // lifted off the floor top with a winning renderOrder so it never z-fights into a
+  // flickery hairline when viewed from a low seated angle.
+  const midline = meshOf(THREE, keep(new THREE.BoxGeometry(COURT_W, 0.004, 0.008)), M.line, false);
+  midline.position.set(0, TOP + 0.004, 0);
+  midline.renderOrder = 2;
   group.add(midline);
 
-  // side walls (lateral bounds at x=0 and x=W) — thin gold rails for readability
-  const wallGeo = keep(new THREE.BoxGeometry(0.006, 0.01, COURT_H));
+  // side walls (lateral bounds at x=0 and x=W) — gold rails for readability. Widened
+  // and lifted a touch so they're legible from both seats without z-fighting.
+  const wallGeo = keep(new THREE.BoxGeometry(0.01, 0.014, COURT_H));
   const wallL = meshOf(THREE, wallGeo, M.line, false);
   const wallR = meshOf(THREE, wallGeo, M.line, false);
-  wallL.position.set(-COURT_W / 2, TOP + 0.005, 0);
-  wallR.position.set(COURT_W / 2, TOP + 0.005, 0);
+  wallL.position.set(-COURT_W / 2, TOP + 0.007, 0);
+  wallR.position.set(COURT_W / 2, TOP + 0.007, 0);
+  wallL.renderOrder = 2; wallR.renderOrder = 2;
   group.add(wallL, wallR);
 
   // paddles: A (host/colorA) and B (guest/colorB). They travel along world X.
+  // No shadow cast: thin fast slivers shimmer the shadow map; the grounding rings
+  // (myHalo / oppRing) provide the contact cue instead — cheaper and cleaner.
   const padGeo = keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX, 0.025, PADDLE_T * SZ * 1.6));
-  const padA = meshOf(THREE, padGeo, M.colorA);
-  const padB = meshOf(THREE, padGeo, M.colorB);
-  padA.position.y = padB.position.y = TOP + 0.013;
+  const padA = meshOf(THREE, padGeo, M.colorA, false);
+  const padB = meshOf(THREE, padGeo, M.colorB, false);
+  const PAD_Y = TOP + 0.013;
+  padA.position.y = padB.position.y = PAD_Y;
   group.add(padA, padB);
 
-  const ballGeo = keep(new THREE.SphereGeometry(BALL_R * SX * 1.3, 14, 12));
-  const ballMesh = meshOf(THREE, ballGeo, M.ball);
-  ballMesh.position.y = TOP + 0.02;
+  // Ball rests ON the floor top (bottom tangent to plank) rather than floating a
+  // few mm above relative to its own radius. A hair of clearance avoids z-fighting.
+  const BALL_RADIUS = BALL_R * SX * 1.3;
+  const ballGeo = keep(new THREE.SphereGeometry(BALL_RADIUS, 14, 12));
+  const ballMesh = meshOf(THREE, ballGeo, M.ball, false);
+  const BALL_Y = TOP + BALL_RADIUS + 0.001;
+  ballMesh.position.y = BALL_Y;
   group.add(ballMesh);
+
+  // Soft contact shadow disc under the ball (grounding cue, follows in render()).
+  const ballShadow = meshOf(THREE, keep(new THREE.CircleGeometry(BALL_RADIUS * 1.15, 18)), M.shadow, false);
+  ballShadow.rotation.x = -Math.PI / 2;
+  ballShadow.position.y = TOP + 0.0015;
+  ballShadow.renderOrder = 1;
+  group.add(ballShadow);
 
   // ----- IDENTITY CUE: glowing home strip + halo under MY paddle -----
   // Always built; visibility is toggled by whether this client owns a paddle, so
@@ -215,8 +283,17 @@ export function createGame(ctx) {
   group.add(homeStrip);
   myHalo = meshOf(THREE, keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX * 1.25, 0.002, PADDLE_T * SZ * 2.4)), M.mine, false);
   myHalo.position.y = TOP + 0.004;
+  myHalo.renderOrder = 3;
   myHalo.visible = !!myColor;
   group.add(myHalo);
+
+  // Steady faint grounding ring under the OPPONENT paddle (always the far +Z paddle
+  // for a seated player; both paddles for a spectator). Tracks in render().
+  const oppRing = meshOf(THREE, keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX * 1.18, 0.002, PADDLE_T * SZ * 2.1)), M.oppRing, false);
+  oppRing.position.y = TOP + 0.0035;
+  oppRing.renderOrder = 3;
+  oppRing.visible = !!oppColor; // a seated player has an opponent; spectator handled in render()
+  group.add(oppRing);
 
   // ----- SCOREBOARD placard (canvas texture) -----
   // A flat placard laid just beyond MY near edge (so it reads upright at the
@@ -244,6 +321,15 @@ export function createGame(ctx) {
     if (!scoreCanvas || !scoreTex) return;
     const g = scoreCanvas.getContext("2d");
     g.clearRect(0, 0, 512, 128);
+    // The placard is a flat plane laid via rotation.x=-PI/2 at the local -Z near
+    // edge; after that the canvas top (+V, where we draw) points toward the seated
+    // viewer, so unrotated text reads UPSIDE-DOWN. Pre-rotate the 2D canvas 180°
+    // (same fix as battleship's drawLabel) so the score/status read upright. The
+    // left/right my-vs-opp placement and textAlign mirror correctly under this.
+    g.save();
+    g.translate(256, 64);
+    g.rotate(Math.PI);
+    g.translate(-256, -64);
     // background pill
     g.fillStyle = "rgba(6,10,24,0.82)";
     roundRect(g, 6, 6, 500, 116, 18); g.fill();
@@ -252,16 +338,34 @@ export function createGame(ctx) {
     const oppScore = isSpectator ? scoreB : (mySide === "A" ? scoreB : scoreA);
     const myHex = myColor || PALETTE.pongLeft;
     const opHex = oppColor || PALETTE.pongRight;
+    // The left digit is canonical side A for a spectator, else MY side.
+    const leftSide = isSpectator ? "A" : mySide;
+    const rightSide = isSpectator ? "B" : (mySide === "A" ? "B" : "A");
+
+    // Score-pop: the just-scored digit briefly swells (eased) so a point reads as a
+    // satisfying "+1". Driven by scoreFlashAt/scoreFlashSide; the digit pulse decays
+    // to 1.0 over SCORE_POP_MS. Kept purely cosmetic, identical for all viewers
+    // because it keys off the synced scores.
+    const flashT = scoreFlashAt ? Math.min(1, (nowMs() - scoreFlashAt) / SCORE_POP_MS) : 1;
+    const popAmt = flashT < 1 ? (1 - flashT) : 0; // 1 -> 0
+    const digit = (txt, hex, align, x, side) => {
+      const isFlashing = popAmt > 0 && side != null && side === scoreFlashSide;
+      const sc = isFlashing ? 1 + 0.45 * popAmt : 1;
+      g.save();
+      // scale about the digit's anchor (its baseline x, vertical centre y=56)
+      g.translate(x, 56);
+      g.scale(sc, sc);
+      g.translate(-x, -56);
+      g.textAlign = align;
+      g.fillStyle = isFlashing ? mixToWhite(hex, 0.5 * popAmt) : hex;
+      g.font = "bold 64px sans-serif";
+      g.fillText(txt, x, 56);
+      g.restore();
+    };
 
     g.textBaseline = "middle";
-    g.font = "bold 64px sans-serif";
-    // my score (left), my colour
-    g.textAlign = "left";
-    g.fillStyle = myHex;
-    g.fillText(String(myScore), 40, 56);
-    g.fillStyle = opHex;
-    g.textAlign = "right";
-    g.fillText(String(oppScore), 472, 56);
+    digit(String(myScore), myHex, "left", 40, leftSide);
+    digit(String(oppScore), opHex, "right", 472, rightSide);
     // dash centre
     g.fillStyle = "#e9e2d0";
     g.textAlign = "center";
@@ -271,17 +375,67 @@ export function createGame(ctx) {
     // labels / status line
     g.font = "bold 26px sans-serif";
     let status;
-    if (isSpectator) status = "SPECTATING  (A vs B)";
-    else if (phase === "over") {
+    const showChip = (cx) => { // small colour chip marking the local player
+      g.save();
+      g.fillStyle = myHex;
+      roundRect(g, cx, 90, 18, 18, 4); g.fill();
+      g.restore();
+    };
+    if (isSpectator) {
+      status = "SPECTATING  (A vs B)";
+      g.fillStyle = "#cdd6e8";
+      g.textAlign = "center";
+      g.fillText(status, 256, 100);
+    } else if (phase === "over") {
       const iWon = (winner === "A" && mySide === "A") || (winner === "B" && mySide === "B");
       status = iWon ? "YOU WIN!" : "YOU LOSE";
-    } else if (phase === "lobby") status = "Waiting...";
-    else status = "YOU ▼   (A/D or ← → to move)";
-    g.fillStyle = "#cdd6e8";
-    g.textAlign = "center";
-    g.fillText(status, 256, 100);
+      // gold underline beneath the WINNING side's digit for a clear result framing
+      const winIsLeft = winner === leftSide;
+      g.save();
+      g.strokeStyle = PALETTE.gold; g.lineWidth = 5;
+      g.beginPath();
+      const ux = winIsLeft ? 40 : 446;
+      g.moveTo(ux, 96); g.lineTo(ux + 46, 96); g.stroke();
+      g.restore();
+      g.font = "bold 30px sans-serif";
+      g.fillStyle = iWon ? PALETTE.gold : "#cdd6e8";
+      g.textAlign = "center";
+      g.fillText(status, 256, 100);
+    } else if (phase === "lobby") {
+      status = paused ? "Opponent away…" : "Waiting…";
+      // mark which paddle is the local player's even before play starts
+      g.fillStyle = "#cdd6e8";
+      g.textAlign = "left";
+      g.fillText("YOU", 64, 100);
+      showChip(40);
+      g.textAlign = "right";
+      g.fillStyle = "#9fb0c8";
+      g.fillText(status, 472, 100);
+    } else {
+      // play: clear whose paddle is yours
+      g.fillStyle = myHex;
+      g.textAlign = "left";
+      g.fillText("YOU", 64, 100);
+      showChip(40);
+      g.textAlign = "right";
+      if (paused) { // host only: opponent went quiet mid-match
+        g.fillStyle = "#e3b34a";
+        g.fillText("Opponent away…", 472, 100);
+      } else {
+        g.fillStyle = "#cdd6e8";
+        g.fillText("A/D · ← →", 472, 100);
+      }
+    }
 
+    g.restore();
     scoreTex.needsUpdate = true;
+  }
+  // Blend a hex colour toward white by t in [0,1] (cheap, allocation-light).
+  function mixToWhite(hex, t) {
+    const c = hex.replace("#", "");
+    const r = parseInt(c.slice(0, 2), 16), gg = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
+    const m = (v) => Math.round(v + (255 - v) * t);
+    return "rgb(" + m(r) + "," + m(gg) + "," + m(b) + ")";
   }
   function roundRect(g, x, y, w, h, r) {
     g.beginPath();
@@ -312,9 +466,16 @@ export function createGame(ctx) {
   function startMatch() {
     if (phase !== "lobby") return;
     phase = "play";
+    paused = false;
+    rematchAt = 0;
+    winner = null;
     scoreA = scoreB = 0;
     serve(Math.random() < 0.5 ? 1 : -1);
     paintScore();
+    // Stream the serve immediately so the guest's lobby->play transition is crisp
+    // instead of waiting up to one SEND_HZ tick (otherwise the guest briefly shows a
+    // centred lobby ball after the host has already served).
+    pushState();
   }
 
   // ----- host physics -----
@@ -328,6 +489,7 @@ export function createGame(ctx) {
     if (phase !== "play") return;
 
     const prevY = ball.y;
+    const prevX = ball.x;
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
 
@@ -344,8 +506,15 @@ export function createGame(ctx) {
         ? (prevY >= py && ball.y <= py)   // host end (low y)
         : (prevY <= py && ball.y >= py);  // guest end (high y)
       if (!crossed) return false;
-      if (Math.abs(ball.x - px) <= PADDLE_HALF + BALL_R) {
-        const rel = (ball.x - px) / PADDLE_HALF; // -1..1
+      // Test lateral overlap at the EXACT crossing point (interpolate ball.x to
+      // y=py) rather than at the post-step position. At high speed the ball can move
+      // several units laterally per frame; sampling the swept crossing x prevents a
+      // one-frame mis-hit / tunnel near a paddle edge.
+      const denom = ball.y - prevY;
+      const tCross = Math.abs(denom) > 1e-6 ? (py - prevY) / denom : 1;
+      const xAt = prevX + (ball.x - prevX) * Math.max(0, Math.min(1, tCross));
+      if (Math.abs(xAt - px) <= PADDLE_HALF + BALL_R) {
+        const rel = Math.max(-1, Math.min(1, (xAt - px) / PADDLE_HALF)); // -1..1
         const ang = rel * MAX_BOUNCE;
         let speed = Math.hypot(ball.vx, ball.vy) * SPEEDUP;
         speed = Math.min(speed, BALL_MAX);
@@ -353,11 +522,16 @@ export function createGame(ctx) {
         const outYSign = dirToward < 0 ? 1 : -1; // host paddle sends ball +y, guest -y
         ball.vy = outYSign * speed * Math.cos(ang);
         ball.vx = speed * Math.sin(ang);
+        ball.x = xAt; // resolve to the crossing point so the bounce reads true
         ball.y = py + outYSign * (BALL_R + 0.01);
         // Re-clamp lateral bounds after the paddle reflect rewrites ball.x/ball.vx
         // so a near-wall hit can never leave the ball penetrating the side rail.
         if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); }
         else if (ball.x > W - BALL_R) { ball.x = W - BALL_R; ball.vx = -Math.abs(ball.vx); }
+        // One-shot hit flourish: bump the synced counter so every viewer pops the
+        // ball + paddle on the same reflect; locally trigger it now for the host.
+        hitSeq = (hitSeq + 1) & 0xffff;
+        triggerHit();
         return true;
       }
       return false;
@@ -371,18 +545,45 @@ export function createGame(ctx) {
   }
 
   function afterPoint() {
+    // Who scored this point (ball.y<-2 => host end passed => B scored).
+    const scorer = ball.y < H / 2 ? "B" : "A";
+    scoreSeq = (scoreSeq + 1) & 0xffff;
+    triggerScore(scorer);
     if (scoreA >= TARGET || scoreB >= TARGET) {
       phase = "over";
       winner = scoreA > scoreB ? "A" : "B";
+      // Park the ball at centre so host/guest/spectator all rest in the same place
+      // (instead of frozen at the scoring overshoot off the end of the court).
+      ball.x = W / 2; ball.y = H / 2; ball.vx = 0; ball.vy = 0;
+      // Schedule an automatic return to the lobby so a finished court isn't dead
+      // forever — the guest-presence gate then re-serves a fresh match.
+      rematchAt = nowMs() + REMATCH_MS;
       paintScore();
       try { ctx.onGameOver({ winner: winner === "A" ? "host" : "guest", reason: "score" }); } catch { /* */ }
     } else {
       // loser serves toward the winner-of-point's opponent: serve toward whoever
-      // just conceded so play resumes from centre. Serve away from last scorer.
-      // ball.y<-2 means the HOST end was passed (host conceded) -> serve toward
-      // the host end (dir -1); ball.y>H+2 means the guest conceded -> serve +1.
+      // just conceded so play resumes from centre. ball.y<-2 means the HOST end was
+      // passed (host conceded) -> serve toward the host end (dir -1); ball.y>H+2
+      // means the guest conceded -> serve +1.
       serve(ball.y < H / 2 ? -1 : 1);
     }
+    paintScore();
+    // Stream the new ball/score immediately so the guest sees a crisp point/serve
+    // transition rather than the stale pre-point ball for up to one SEND_HZ tick.
+    pushState();
+  }
+
+  // ----- flourish triggers (local; counters in the snapshot keep all viewers synced) -----
+  function triggerHit() { hitAt = nowMs(); }
+  function triggerScore(side) {
+    scoreFlashAt = nowMs();
+    scoreFlashSide = side;
+  }
+  // Repaint the score canvas only while a digit pop is animating, then once more to
+  // settle (so the canvas isn't redrawn every frame the rest of the time).
+  function repaintFlash() {
+    if (!scoreFlashAt) return;
+    if (nowMs() - scoreFlashAt >= SCORE_POP_MS) { scoreFlashAt = 0; paintScore(); return; }
     paintScore();
   }
 
@@ -392,6 +593,9 @@ export function createGame(ctx) {
       phase, winner,
       bx: ball.x, by: ball.y, bvx: ball.vx, bvy: ball.vy,
       pA, pB, sA: scoreA, sB: scoreB,
+      // One-shot flourish counters: a guest/spectator pops the ball/score when these
+      // change vs the last applied value. Pure cosmetics; never affect simulation.
+      hit: hitSeq, scr: scoreSeq, scrSide: scoreFlashSide,
     };
   }
   function pushState() {
@@ -417,15 +621,56 @@ export function createGame(ctx) {
     // ball
     const bx = isHost ? ball.x : view.x;
     const by = isHost ? ball.y : view.y;
-    ballMesh.position.set(fX(bx), ballMesh.position.y, fZ(by));
+    const bX = fX(bx), bZ = fZ(by);
+    // Hit pop: an eased squash-and-rebound on a paddle reflect (1 -> 1.32 -> 1).
+    const now = nowMs();
+    let pop = 1;
+    if (hitAt) {
+      const h = (now - hitAt) / HIT_POP_MS;
+      if (h >= 1) { hitAt = 0; }
+      else {
+        // ease-out hump: rises fast, settles back to 1 (sin gives a smooth 0->1->0)
+        pop = 1 + 0.32 * Math.sin(Math.min(1, h) * Math.PI);
+      }
+    }
+    ballMesh.position.set(bX, BALL_Y, bZ);
+    ballMesh.scale.setScalar(pop);
+    // soft contact shadow tracks the ball; grows a touch with the pop
+    ballShadow.position.x = bX;
+    ballShadow.position.z = bZ;
+    ballShadow.scale.setScalar(pop);
 
     // identity halo follows MY paddle (which is always at -Z near edge)
     if (myHalo && myColor) {
       const myMesh = mySide === "A" ? padA : padB;
       myHalo.position.x = myMesh.position.x;
       myHalo.position.z = myMesh.position.z;
-      const t = nowMs() / 1000;
+      const t = now / 1000;
       M.mine.emissiveIntensity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3));
+    }
+    // steady opponent grounding ring: for a seated player it follows the OPP paddle
+    // (the +Z far one); for a spectator we hide it (both paddles already coloured).
+    if (oppRing) {
+      if (isSpectator) {
+        oppRing.visible = false;
+      } else {
+        oppRing.visible = !!oppColor;
+        const oppMesh = mySide === "A" ? padB : padA;
+        oppRing.position.x = oppMesh.position.x;
+        oppRing.position.z = oppMesh.position.z;
+      }
+    }
+
+    // brief paddle emissive spike on a hit, on whichever paddle the ball is nearest
+    if (hitAt) {
+      const spike = 0.35 + 0.5 * pop;
+      // ball near host end -> padA hit; near guest end -> padB hit (view-frame safe
+      // because we compare canonical by, not the rendered z).
+      if (by < H / 2) { M.colorA.emissiveIntensity = spike; M.colorB.emissiveIntensity = 0.35; }
+      else { M.colorB.emissiveIntensity = spike; M.colorA.emissiveIntensity = 0.35; }
+    } else {
+      M.colorA.emissiveIntensity = 0.35;
+      M.colorB.emissiveIntensity = 0.35;
     }
   }
 
@@ -435,10 +680,44 @@ export function createGame(ctx) {
     dt = Math.min(dt, 0.05); // clamp big stalls
 
     if (isHost) {
-      if (phase === "lobby") startMatch();
-      physics(dt);
+      const now = nowMs();
+      // Guest-departure gate: once a guest has been seen, if no steering intent has
+      // arrived for GUEST_TIMEOUT_MS the opponent has gone quiet/left. Freeze the
+      // ball at centre and don't advance the score; resume on the next intent. This
+      // mirrors the empty-seat lobby gate but for a mid-match departure.
+      const guestStale = guestSeen && (now - lastGuestInputAt > GUEST_TIMEOUT_MS);
+      if (phase === "play" && guestStale && !paused) {
+        paused = true;
+        ball.x = W / 2; ball.y = H / 2; ball.vx = 0; ball.vy = 0;
+        paintScore();
+      } else if (paused && !guestStale) {
+        // opponent returned: re-serve toward them and resume
+        paused = false;
+        serve(serveDir || 1);
+        paintScore();
+      }
+      // Rematch: a finished match auto-returns to the lobby after a beat so the
+      // court isn't dead forever; the guest-presence gate then serves a new game.
+      if (phase === "over" && rematchAt && now >= rematchAt) {
+        rematchAt = 0;
+        phase = "lobby"; winner = null;
+        scoreA = scoreB = 0;
+        ball.x = W / 2; ball.y = H / 2; ball.vx = 0; ball.vy = 0;
+        paintScore();
+        pushState();
+      }
+      // Stay in 'lobby' (ball centred, no scoring, 'Waiting...' shown) until a
+      // guest is actually present, so the host can't rack up points against an
+      // empty seat before an opponent connects.
+      if (phase === "lobby" && guestSeen && !guestStale) startMatch();
+      if (!paused) physics(dt);
+      else { // keep paddles tracking input even while paused, but don't move the ball
+        const myDir = localDirCanonical();
+        pA = clampPaddle(pA + myDir * PADDLE_SPEED * dt);
+      }
       sendAcc += dt;
       if (sendAcc >= 1 / SEND_HZ) { sendAcc = 0; pushState(); }
+      repaintFlash();
       render();
       return;
     }
@@ -451,7 +730,11 @@ export function createGame(ctx) {
       if (Number.isFinite(pB)) {
         const gap = pB - myPredX;
         if (Math.abs(gap) > RESEED_DIST) myPredX = pB;
-        else myPredX = clampPaddle(myPredX + gap * Math.min(1, dt * RECONCILE_RATE));
+        // Dead-zone: skip the ease when settled & idle so a stationary paddle stops
+        // dead instead of asymptotically creeping toward a slightly-lagged authority.
+        else if (dir !== 0 || Math.abs(gap) > PADDLE_DEADZONE) {
+          myPredX = clampPaddle(myPredX + gap * Math.min(1, dt * RECONCILE_RATE));
+        }
       }
       // stream intent (canonical dir) on change or throttle tick
       inputAcc += dt;
@@ -475,12 +758,21 @@ export function createGame(ctx) {
         view.y += (ay - view.y) * k;
       }
     }
+    repaintFlash();
     render();
   }
 
   // ----- host receives guest steering intent -----
   function onInput(input, byRole) {
     if (!isHost || byRole !== "guest" || !input) return;
+    // Every guest intent (sent on a ~50ms throttle even when idle) refreshes the
+    // presence timestamp, which drives both the empty-seat lobby gate and the
+    // mid-match departure gate.
+    lastGuestInputAt = nowMs();
+    // First guest signal of any kind means an opponent is seated: release the
+    // lobby gate so the host may serve. If we were still showing 'Waiting...',
+    // refresh the placard once the gate clears (startMatch repaints on serve).
+    if (!guestSeen) { guestSeen = true; if (phase === "lobby") paintScore(); }
     if (Number.isFinite(input.dir)) {
       guestDir = input.dir > 0 ? 1 : input.dir < 0 ? -1 : 0;
     }
@@ -495,6 +787,9 @@ export function createGame(ctx) {
       pA = pB = W / 2; myPredX = W / 2;
       view = { x: W / 2, y: H / 2, vx: 0, vy: 0 };
       auth = null;
+      paused = false; rematchAt = 0;
+      hitAt = 0; scoreFlashAt = 0; scoreFlashSide = null;
+      seenHitSeq = 0; seenScoreSeq = 0;
       paintScore();
       render();
       return;
@@ -502,6 +797,7 @@ export function createGame(ctx) {
     // NEVER recompute local role/side from the wire.
     if (isHost) return;
 
+    const prevPhase = phase;
     phase = state.phase || "play";
     winner = state.winner || null;
     scoreA = state.sA | 0;
@@ -509,12 +805,32 @@ export function createGame(ctx) {
     if (Number.isFinite(state.pA)) pA = state.pA;
     if (Number.isFinite(state.pB)) pB = state.pB;
 
-    auth = { x: state.bx, y: state.by, vx: state.bvx, vy: state.bvy };
-    const gap = Math.hypot(auth.x - view.x, auth.y - view.y);
-    if (gap > RESEED_DIST || (view.vx === 0 && view.vy === 0)) {
-      view.x = auth.x; view.y = auth.y;
+    // One-shot flourishes: replay the host's hit/score pops when their counters
+    // advance, so guest + spectator animate identically. Pure cosmetics.
+    if (Number.isFinite(state.hit) && state.hit !== seenHitSeq) {
+      seenHitSeq = state.hit;
+      triggerHit();
     }
-    view.vx = auth.vx; view.vy = auth.vy;
+    if (Number.isFinite(state.scr) && state.scr !== seenScoreSeq) {
+      seenScoreSeq = state.scr;
+      triggerScore(state.scrSide || null);
+    }
+
+    auth = { x: state.bx, y: state.by, vx: state.bvx, vy: state.bvy };
+    // On a non-play phase (lobby / over) the ball isn't being integrated, so snap
+    // the view straight to authority and stop dead — otherwise a stale dead-reckoned
+    // ball hangs in a corner while the placard reads WIN/LOSE.
+    if (phase !== "play") {
+      view.x = auth.x; view.y = auth.y; view.vx = 0; view.vy = 0;
+    } else {
+      const gap = Math.hypot(auth.x - view.x, auth.y - view.y);
+      // Snap (not ease) on a large discontinuity, when starting from rest, or right
+      // after a serve/lobby->play transition so the new serve reads crisply.
+      if (gap > RESEED_DIST || (view.vx === 0 && view.vy === 0) || prevPhase !== "play") {
+        view.x = auth.x; view.y = auth.y;
+      }
+      view.vx = auth.vx; view.vy = auth.vy;
+    }
     lastStateAt = nowMs();
 
     paintScore();
@@ -551,8 +867,19 @@ export function createGame(ctx) {
       M.mine.emissive?.set?.(hex);
       M.mine.needsUpdate = true;
     }
+    // refresh the opponent grounding ring colour for the new seat
+    if (M.oppRing) {
+      const oh = oppColor || PALETTE.pongRight;
+      M.oppRing.color?.set?.(oh);
+      M.oppRing.emissive?.set?.(oh);
+      M.oppRing.needsUpdate = true;
+    }
     if (homeStrip) homeStrip.visible = !!myColor;
     if (myHalo) myHalo.visible = !!myColor;
+    if (oppRing) oppRing.visible = !!oppColor && !isSpectator;
+    // a host taking the seat (e.g. spectator->host promotion) should start the
+    // presence gate fresh so it doesn't immediately think the guest is stale.
+    if (isHost) lastGuestInputAt = nowMs();
 
     // attach/detach key listeners to match the new role (only guests steer)
     if (isGuest) attachKeys(); else detachKeys();
@@ -563,7 +890,13 @@ export function createGame(ctx) {
     paintScore();
     render();
   }
-  function setSeatRy() { /* self-oriented: seat ry is irrelevant to our render */ }
+  function setSeatRy(r) {
+    // self-oriented: we own facing, so a seat change must re-rotate the group to
+    // keep THIS player's own end at the near (-Z) edge.
+    seatRy = r;
+    applyFacing();
+    render();
+  }
 
   function dispose() {
     detachKeys();
@@ -571,7 +904,14 @@ export function createGame(ctx) {
     for (const o of owned) o.dispose?.();
   }
 
+  // Rotate the group for THIS seat (orientPolicy:"self" => board.js won't).
+  function applyFacing() {
+    group.rotation.y = orientFor(seatRy);
+  }
+
   // initial paint
+  lastGuestInputAt = nowMs(); // seed the presence gate so it doesn't read stale pre-join
+  applyFacing();
   paintScore();
   render();
 

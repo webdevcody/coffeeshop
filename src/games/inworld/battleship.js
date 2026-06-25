@@ -199,6 +199,16 @@ const PEG_Y = SURF_Y + 0.006;
 const HULL_H = CELL * 0.5;
 const HULL_Y = SURF_Y + HULL_H / 2;
 
+// The two grids reach local ±0.696 in Z, but the chairs sit at only ±0.85 from the
+// table centre — leaving ~0.15 of clearance, so the OPPONENT across the table leans
+// their torso right over the far grid's edge (the "belly overlapping the board"
+// report). Shrink the whole board so its far edge pulls in to ~±0.54, clearing the
+// seated avatar's torso. Everything (grids, colliders, ships, FX) is a child of the
+// group, so the scale is uniform and the world-space raycast / camera framing follow
+// automatically. The seated camera already pulls back (SEATED_CAM_ZOOM) so the
+// smaller board still reads large on screen.
+const BOARD_SCALE = 0.78;
+
 // ===========================================================================
 // THE MODULE
 // ===========================================================================
@@ -206,6 +216,7 @@ export function createGame(ctx) {
   const THREE = ctx.THREE;
   const group = new THREE.Group();
   group.name = "battleship";
+  group.scale.setScalar(BOARD_SCALE); // pull the board in so opponents don't lean over it
 
   let role = ctx.role;
   let seatRy = ctx.seatRy;
@@ -218,6 +229,9 @@ export function createGame(ctx) {
   // Clear/Ready) as a screen-space DOM bar instead of 3D pillars on the board — so
   // they never overlap the ships/grid or interrupt placing.
   const controlsHook = typeof ctx.onControls === "function" ? ctx.onControls : null;
+  // Same idea for the two fleet-status panels — render them as DOM so the table
+  // pedestal / 3D bodies can't clip them.
+  const fleetHook = typeof ctx.onFleet === "function" ? ctx.onFleet : null;
 
   // ── Phase / turn state ──────────────────────────────────────────────────
   let phase = "placement"; // "placement" | "playing" | "over"
@@ -248,6 +262,15 @@ export function createGame(ctx) {
   const tracking = { host: new Map(), guest: new Map() };
   const sunkBy = { host: new Set(), guest: new Set() };
   let pendingFire = null; // shot I sent and await a result for
+  // Cosmetic impact params handed from the (immediate) state resolution to the
+  // decorative missile's onArrive, so the blast lines up with the projectile
+  // landing WITHOUT the state/turn handback waiting on the animation (B1).
+  let incomingImpact = null;
+  // SPECTATOR-ONLY (I7): the set of "side:x,y" shot keys we've already rendered, so
+  // applyState can diff a fresh snapshot and play a one-shot impact ONLY for a
+  // single newly-added shot per side (a late-joiner catch-up adds many at once and
+  // is skipped, avoiding a fireworks dump).
+  let specShotKeys = new Set();
 
   // ── Placement-phase interaction state ───────────────────────────────────
   let placeIndex = 0;
@@ -280,7 +303,10 @@ export function createGame(ctx) {
     ghostOk: new THREE.MeshStandardMaterial({ color: "#4fd18a", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.55, depthWrite: false }),
     ghostBad: new THREE.MeshStandardMaterial({ color: "#e2503c", roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.5, depthWrite: false }),
     enemyLive: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.16, depthWrite: false }),
-    target: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.8, depthWrite: false }),
+    // ONE shared, animated ring material for ALL un-fired target rings (I6) — its
+    // opacity is bobbed once per frame in stepAnim, replacing the per-cell clone +
+    // dispose churn (up to ~100 material allocs/disposals per turn flip).
+    targetShared: new THREE.MeshBasicMaterial({ color: "#7fd1ff", transparent: true, opacity: 0.8, depthWrite: false }),
     reticleOk: new THREE.MeshBasicMaterial({ color: "#7fffb0", transparent: true, opacity: 0.95, depthWrite: false }),
     reticleBad: new THREE.MeshBasicMaterial({ color: "#ff6a5a", transparent: true, opacity: 0.95, depthWrite: false }),
     splash: new THREE.MeshBasicMaterial({ color: "#eef6ff", transparent: true, opacity: 0.9, depthWrite: false }),
@@ -337,6 +363,10 @@ export function createGame(ctx) {
   // Fleet-status placards (canvas-textured planes). Spectator: both. Seated: one
   // for the enemy fleet (what I must sink) and one for my own losses.
   const panels = []; // { mesh, cv, tex, firer }
+  // Sink-flourish (I3): when a ship sinks we stamp { firer → { id, until } } and
+  // the placard row glows + redraws while the timer runs (purely local cosmetic).
+  const panelFlash = { host: null, guest: null };
+  const PANEL_FLASH_MS = 900;
 
   // HUD billboard (canvas-textured plane above the board, faces camera).
   let hudMesh = null;
@@ -345,6 +375,9 @@ export function createGame(ctx) {
   // seat's near edge (local −Z ocean) to the front. No extra per-role PI.
   function applyFacing() {
     group.rotation.y = orientFor(seatRy);
+    // NOTE: do NOT start the loop here — applyFacing runs during init (before the
+    // rAF state exists). setSeatRy/setRole call startLoop() after init so the HUD
+    // billboard re-counters the new group rotation even when the loop was idle (I9).
   }
 
   buildStaticBoard();
@@ -536,7 +569,21 @@ export function createGame(ctx) {
   // ship rows by name + live/sunk pips; the row is struck-through + dimmed when
   // the ship is sunk. firer = the side that SANK those ships.
   // ===========================================================================
+  // Data for the two fleet status panels (DOM rendering).
+  function fleetPanelData(firer) {
+    const ownerSide = firer === "host" ? "guest" : "host";
+    const isMine = mySide && ownerSide === mySide;
+    const accent = firer === "host" ? SIDE_COLOR.host : SIDE_COLOR.guest;
+    const title = mySide ? (isMine ? "Your Fleet" : "Enemy Fleet") : (ownerSide === "host" ? "Host Fleet" : "Guest Fleet");
+    const sunkSet = sunkBy[firer];
+    return {
+      title, accent, mine: !!isMine, firer, sunk: sunkSet.size, total: FLEET.length,
+      ships: FLEET.map((s) => ({ name: s.name, length: s.length, dead: sunkSet.has(s.id) })),
+    };
+  }
+
   function buildPanels() {
+    if (fleetHook) { refreshPanels(); return; } // DOM panels instead of 3D placards
     const W = GRID_SPAN * 0.5;
     const H = GRID_SPAN * 0.46;
     const make = (firer, x) => {
@@ -570,6 +617,14 @@ export function createGame(ctx) {
 
   // firer's pips = ships firer has sunk on the opponent. Title names whose fleet.
   function refreshPanels() {
+    if (fleetHook) {
+      // DOM panels: hand both fleet-status cards to the host app to render as
+      // screen-space DOM so the table pedestal / 3D bodies can never clip them.
+      // Order matches the 3D path: [the enemy fleet I'm sinking, my own fleet].
+      const firers = mySide ? [mySide, oppSide] : ["host", "guest"];
+      try { fleetHook(firers.map((f) => fleetPanelData(f))); } catch { /* transport optional */ }
+      return;
+    }
     for (const p of panels) {
       const cv = p.cv, tex = p.tex;
       if (!cv || !tex) continue;
@@ -599,15 +654,30 @@ export function createGame(ctx) {
 
       let yy = 76;
       const rowH = (cv.height - 96) / FLEET.length;
+      // Active sink-flourish for this placard's fleet (I3): a 0→1 fade.
+      const flash = panelFlash[p.firer];
+      let flashGlow = 0;
+      if (flash) {
+        const left = flash.until - nowMs();
+        flashGlow = left > 0 ? Math.max(0, Math.min(1, left / PANEL_FLASH_MS)) : 0;
+      }
       for (const spec of FLEET) {
         const dead = sunkBy[p.firer].has(spec.id);
+        const glowing = flash && flash.id === spec.id && flashGlow > 0;
+        if (glowing) {
+          // Brief warm glow band behind the just-sunk row.
+          g.fillStyle = `rgba(216,68,44,${0.45 * flashGlow})`;
+          roundRect(g, 14, yy - rowH * 0.42, cv.width - 28, rowH * 0.84, 8);
+          g.fill();
+        }
         g.textAlign = "left";
         g.textBaseline = "middle";
         g.font = "bold 20px sans-serif";
-        g.fillStyle = dead ? "#7d4a4a" : "#dfe9f2";
+        // Brighter strike colour + darker base so dead rows read clearly (I5).
+        g.fillStyle = dead ? "#c8786e" : "#dfe9f2";
         g.fillText(spec.name, 22, yy);
         if (dead) {
-          g.strokeStyle = "#b1463c";
+          g.strokeStyle = "#d8543c";
           g.lineWidth = 2;
           const w = g.measureText(spec.name).width;
           g.beginPath();
@@ -622,13 +692,36 @@ export function createGame(ctx) {
         for (let i = 0; i < spec.length; i++) {
           g.beginPath();
           g.arc(px0 + i * pipGap + pipGap / 2, yy, pipR, 0, Math.PI * 2);
-          g.fillStyle = dead ? "#8a1c0c" : accent;
+          g.fillStyle = dead ? "#c83828" : accent;
           g.fill();
         }
         yy += rowH;
       }
       tex.needsUpdate = true;
     }
+  }
+
+  // Trigger the sink-flourish on the placard whose `firer` just sank `shipId`.
+  // No-op if no ship id (a plain hit/miss). Drives a brief redraw window via the
+  // animation loop; safe on every client (derived from existing sunkBy data).
+  function flashPanelRow(firer, shipId) {
+    if (!shipId || !SHIP_IDS.has(shipId)) return;
+    panelFlash[firer] = { id: shipId, until: nowMs() + PANEL_FLASH_MS };
+    refreshPanels();
+    startLoop();
+  }
+
+  // Advance/expire the placard sink-flourish; redraw while any is live (I3).
+  function stepPanelFlash() {
+    let any = false;
+    for (const firer of ["host", "guest"]) {
+      const f = panelFlash[firer];
+      if (!f) continue;
+      if (f.until - nowMs() <= 0) { panelFlash[firer] = null; refreshPanels(); }
+      else any = true;
+    }
+    if (any) refreshPanels();
+    return any;
   }
 
   // ===========================================================================
@@ -749,7 +842,6 @@ export function createGame(ctx) {
     tex.needsUpdate = true;
   }
 
-  function clip(s, n) { return s && s.length > n ? s.slice(0, n - 1) + "…" : s; }
   function roundRect(g, x, y, w, h, r) {
     g.beginPath();
     g.moveTo(x + r, y);
@@ -766,6 +858,7 @@ export function createGame(ctx) {
   // ===========================================================================
   const shells = [];
   const blooms = [];
+  const hullPops = []; // { group, t, dur } settle-in pops for freshly placed hulls (I1)
   let rafId = null;
   let lastT = 0;
   let idleT = 0;
@@ -786,7 +879,8 @@ export function createGame(ctx) {
     return new THREE.Vector3((Math.random() - 0.5) * GRID_SPAN * 0.5, SURF_Y + GRID_SPAN * 0.55, ENEMY_CZ + GRID_SPAN * 0.2);
   }
   // Launch the ported missile arcing to the target cell's render position. onArrive
-  // fires on impact (used for incoming shots to resolve the defender's grid).
+  // is now PURELY COSMETIC (plays the impact blast where the missile lands) — the
+  // shot result + turn handback are resolved immediately, never gated on this (B1).
   function launchMissile(x, y, which, origin, onArrive) {
     const target = new THREE.Vector3(cellX(x), SURF_Y + CELL * 0.4, cellZView(y, which));
     missiles.launch(origin, target, { duration: 1.0, arc: GRID_SPAN * 0.5, onArrive });
@@ -794,7 +888,10 @@ export function createGame(ctx) {
   }
   // Play the ported impact effect at a target cell — water geyser on a miss, the
   // big fireball + flying debris + a revealed burning ship section on a hit/sink.
-  function playImpact(x, y, which, outcome, sunkId) {
+  // `orient` is the real ship orientation when known (defender side); the firer
+  // doesn't know it, so it falls back to "horizontal" (B3).
+  const MAX_DAMAGE_TILES = 12; // cap the live burning sections so they don't pile up (B2)
+  function playImpact(x, y, which, outcome, sunkId, orient) {
     _v3.set(cellX(x), SURF_Y, cellZView(y, which));
     if (outcome === "miss") {
       fx.splash(_v3);
@@ -802,14 +899,50 @@ export function createGame(ctx) {
       const color = sunkId ? shipHullColor(sunkId) : 0x556069;
       fx.bigExplosion(_v3);
       fx.debris.burst(_v3, 18, color);
-      fx.damage.add(_v3, color, "horizontal", sunkId ? sunkId !== "submarine" : false);
+      // structure stub on any hit to a larger ship — not only on the sinking blow:
+      // a mid-hit on a non-submarine still reveals a superstructure stub (B3).
+      const structure = sunkId ? sunkId !== "submarine" : outcome === "hit";
+      fx.damage.add(_v3, color, orient === "vertical" ? "vertical" : "horizontal", structure);
+      pruneDamageTiles();
     }
     startLoop();
+  }
+
+  // Retire the oldest burning ship sections once we exceed the cap so they can't
+  // accumulate for the whole game on the firing client (B2). fx.damage.tiles is
+  // the ported DamageSystem's live list; each tile owns its group + dispose().
+  function pruneDamageTiles() {
+    const tiles = fx.damage && fx.damage.tiles;
+    if (!Array.isArray(tiles)) return;
+    while (tiles.length > MAX_DAMAGE_TILES) {
+      const old = tiles.shift();
+      if (!old) break;
+      try { fx.damage.root.remove(old.group); } catch { /* ignore */ }
+      try { old.dispose?.(); } catch { /* ignore */ }
+    }
   }
   const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   const raf = (fn) => (typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(fn) : setTimeout(() => fn(nowMs()), 16));
   const caf = (id) => (typeof cancelAnimationFrame !== "undefined" ? cancelAnimationFrame(id) : clearTimeout(id));
   const easeOut = (x) => 1 - (1 - x) * (1 - x);
+
+  // Is anything still animating? Used to let the rAF self-cancel when idle (I9)
+  // instead of spinning forever. The HUD billboard only needs re-tracking when the
+  // group rotation changes (seat/role change), which re-arms the loop explicitly.
+  function hasAnimWork() {
+    return (
+      shells.length > 0 ||
+      blooms.length > 0 ||
+      hullPops.length > 0 ||
+      targetRings.length > 0 ||
+      (reticle && reticle.visible) ||
+      !!(panelFlash.host || panelFlash.guest) ||
+      (ghostMesh && phase === "placement") ||
+      flourishQueue.length > 0 ||
+      missiles.active ||
+      fx.active
+    );
+  }
 
   function startLoop() {
     if (rafId != null) return;
@@ -818,7 +951,11 @@ export function createGame(ctx) {
       const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
       lastT = t;
       stepAnim(dt);
-      rafId = raf(tick); // HUD billboard always needs tracking; cheap when idle
+      // Self-cancel when nothing is animating (I9) — re-armed by the fire/impact/
+      // aim/seat paths that already call startLoop(). One final billboard sync was
+      // done in stepAnim, so the HUD stays correct until the next change.
+      if (hasAnimWork()) rafId = raf(tick);
+      else rafId = null;
     };
     rafId = raf(tick);
   }
@@ -851,16 +988,41 @@ export function createGame(ctx) {
         blooms.splice(i, 1);
       }
     }
+    // Placement ghost pulse (I2): breathe the preview opacity so it reads as a live
+    // preview. Cheap — only runs while a ghost exists during placement.
+    if (ghostMesh && phase === "placement") {
+      idleT += dt;
+      const pulse = 0.5 + 0.5 * Math.sin(idleT * 4.2);
+      M.ghostOk.opacity = 0.42 + 0.22 * pulse;
+      M.ghostBad.opacity = 0.4 + 0.18 * pulse;
+    }
+    // Settle-in pops for freshly placed hulls (I1): 0.85→1.0 with a tiny overshoot.
+    for (let i = hullPops.length - 1; i >= 0; i--) {
+      const p = hullPops[i];
+      p.t += dt;
+      const k = Math.min(1, p.t / p.dur);
+      const e = easeOut(k);
+      const base = p.group.userData.popBase || 1;
+      // slight overshoot near the end for a lively settle, easing back to 1.0
+      const overshoot = Math.sin(k * Math.PI) * 0.06;
+      p.group.scale.setScalar(base * (0.85 + 0.15 * e + overshoot));
+      if (k >= 1) {
+        p.group.scale.setScalar(base);
+        hullPops.splice(i, 1);
+      }
+    }
     if (targetRings.length > 0 || (reticle && reticle.visible)) {
       idleT += dt;
       const bob = Math.sin(idleT * 3.2) * CELL * 0.06;
+      const rz = idleT * 1.6;
+      // Animate the ONE shared ring material's opacity a single time (I6).
+      M.targetShared.opacity = 0.55 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4));
       for (const t of targetRings) {
         t.position.y = t.userData.baseY + bob;
-        t.rotation.z = idleT * 1.6;
-        t.material.opacity = 0.55 + 0.3 * (0.5 + 0.5 * Math.sin(idleT * 4));
+        t.rotation.z = rz;
       }
       if (reticle && reticle.visible) {
-        reticle.rotation.z = idleT * 1.6;
+        reticle.rotation.z = rz;
         const s = 1 + Math.sin(idleT * 5) * 0.08;
         reticle.scale.setScalar(s);
       }
@@ -868,6 +1030,10 @@ export function createGame(ctx) {
     // Ported missile flight + particle/debris/damage systems (cosmetic).
     missiles.update(dt);
     fx.update(dt);
+    // Advance/redraw the placard sink-flourish while one is live (I3).
+    stepPanelFlash();
+    // Fire any due victory ripples (I4).
+    stepFlourish();
     // Billboard the HUD toward the camera (counter the group's own Y rotation so
     // the text stays upright + readable from any seat).
     if (hudMesh) hudMesh.rotation.y = -group.rotation.y;
@@ -937,7 +1103,10 @@ export function createGame(ctx) {
     return g;
   }
 
-  function rebuildHulls() {
+  // popLastId: when set, the hull whose shipId matches gets a brief settle-in pop
+  // (I1) — used only when a single ship was just placed by the local player.
+  function rebuildHulls(popLastId) {
+    hullPops.length = 0; // any in-flight pops belong to hulls about to be rebuilt
     for (const h of hullMeshes) {
       h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
       group.remove(h);
@@ -948,7 +1117,17 @@ export function createGame(ctx) {
       const h = buildHull(ship);
       group.add(h);
       hullMeshes.push(h);
+      if (popLastId && ship.id === popLastId) startHullPop(h);
     }
+  }
+
+  // A short ease-out scale-in so a freshly placed hull settles rather than snapping
+  // (I1). Stores the hull's authored scale and lerps from 0.85→1.0 over ~160ms.
+  function startHullPop(h) {
+    h.userData.popBase = h.scale.x; // warships are uniform-scaled
+    hullPops.push({ group: h, t: 0, dur: 0.16 });
+    h.scale.setScalar(h.userData.popBase * 0.85);
+    startLoop();
   }
 
   // SPECTATOR-ONLY: render BOTH revealed fleets — host on the OCEAN grid (−Z),
@@ -1039,6 +1218,7 @@ export function createGame(ctx) {
     }
     group.add(g);
     ghostMesh = g;
+    startLoop(); // animate the ghost pulse (I2)
   }
 
   function tryPlaceAt(x, y) {
@@ -1048,7 +1228,7 @@ export function createGame(ctx) {
     if (!canPlace(myPlacements, ship)) return false;
     myPlacements.push(ship);
     placeIndex = myPlacements.length;
-    rebuildHulls();
+    rebuildHulls(ship.id); // settle-in pop on the just-placed hull (I1)
     refreshGhost();
     refreshButtons();
     refreshHud();
@@ -1165,10 +1345,13 @@ export function createGame(ctx) {
     tracking[mySide].set(key, { outcome, sunk: sunkId });
     shots[mySide].push({ x, y, outcome, sunk: sunkId });
     placeMarker(x, y, outcome, "enemy", enemyShotMarks);
-    playImpact(x, y, "enemy", outcome, sunkId);
+    // The firer doesn't know the enemy ship's orientation; playImpact falls back
+    // to "horizontal" (B3). Damage tiles are capped inside playImpact (B2).
+    playImpact(x, y, "enemy", outcome, sunkId, "horizontal");
     if (outcome === "sunk" && sunkId) sunkBy[mySide].add(sunkId);
     pendingFire = null;
     refreshPanels();
+    flashPanelRow(mySide, sunkId); // sink-flourish on the enemy placard (I3)
     if (sunkBy[mySide].size === FLEET.length) {
       endGame(mySide, "fleet-sunk");
       sendReveal();
@@ -1187,9 +1370,15 @@ export function createGame(ctx) {
     shots[oppSide].push({ x, y, outcome: res.outcome, sunk: res.sunk });
     tracking[oppSide].set(x + "," + y, { outcome: res.outcome, sunk: res.sunk });
     placeMarker(x, y, res.outcome, "ocean", oceanShotMarks);
-    playImpact(x, y, "ocean", res.outcome, res.sunk);
+    // Cosmetic impact rides the missile's arrival (~1s later) so the blast lines up
+    // with the projectile landing — but the STATE + reply below are resolved NOW
+    // (B1) so the turn handback never waits on an animation. The true ship
+    // orientation is known here (defender's grid), so the burning section sits
+    // correctly (B3).
+    incomingImpact = { x, y, outcome: res.outcome, sunk: res.sunk, orient: orientationAt(x, y) };
     if (res.outcome === "sunk" && res.sunk) sunkBy[oppSide].add(res.sunk);
     refreshPanels();
+    flashPanelRow(oppSide, res.sunk);
 
     const reply = { type: "result", x, y, outcome: res.outcome };
     if (res.outcome === "sunk") reply.sunk = res.sunk;
@@ -1204,6 +1393,16 @@ export function createGame(ctx) {
     refreshEnemyLive();
     if (role === "host") pushSnapshot();
     refreshHud();
+  }
+
+  // The ship id occupying MY ocean cell (x,y), or null. Only valid on the
+  // defender (myOcean.occ is the local layout) — used to orient the burning
+  // damage section correctly (B3).
+  function orientationAt(x, y) {
+    const id = myOcean.occ[idx(x, y)];
+    if (!id) return "horizontal";
+    const ship = myPlacements.find((s) => s.id === id);
+    return ship ? ship.orientation : "horizontal";
   }
 
   // ===========================================================================
@@ -1224,8 +1423,8 @@ export function createGame(ctx) {
   }
 
   function refreshEnemyLive() {
-    // Clear old rings + lane.
-    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    // Clear old rings + lane. Rings share M.targetShared — never dispose it here (I6).
+    for (const t of targetRings) group.remove(t);
     targetRings.length = 0;
     if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
@@ -1237,11 +1436,12 @@ export function createGame(ctx) {
     enemyLivePlate.renderOrder = 1;
     group.add(enemyLivePlate);
 
-    // A bobbing target ring on every un-fired enemy cell.
+    // A bobbing target ring on every un-fired enemy cell — all SHARE one material
+    // (M.targetShared), animated once per frame in stepAnim (I6).
     for (let y = 0; y < GRID; y++) {
       for (let x = 0; x < GRID; x++) {
         if (tracking[mySide].has(x + "," + y)) continue;
-        const ring = new THREE.Mesh(G.ring, M.target.clone());
+        const ring = new THREE.Mesh(G.ring, M.targetShared);
         ring.rotation.x = Math.PI / 2;
         const baseY = SURF_Y + CELL * 0.13;
         ring.position.set(cellX(x), baseY, cellZView(y, "enemy"));
@@ -1258,14 +1458,16 @@ export function createGame(ctx) {
   function ensureReticle() {
     if (reticle) return reticle;
     const g = new THREE.Group();
-    const ring = new THREE.Mesh(G.ring.clone(), M.reticleOk.clone());
+    // Parts SHARE the M.reticleOk/M.reticleBad materials directly — updateReticle
+    // swaps between the two shared mats, so no per-part clone is needed (I6).
+    const ring = new THREE.Mesh(G.ring.clone(), M.reticleOk);
     ring.rotation.x = Math.PI / 2;
     g.add(ring);
     // crosshair lines
     const barGeo = new THREE.BoxGeometry(CELL * 0.74, 0.0015, CELL * 0.06);
     const barGeo2 = new THREE.BoxGeometry(CELL * 0.06, 0.0015, CELL * 0.74);
-    const h = new THREE.Mesh(barGeo, M.reticleOk.clone());
-    const v = new THREE.Mesh(barGeo2, M.reticleOk.clone());
+    const h = new THREE.Mesh(barGeo, M.reticleOk);
+    const v = new THREE.Mesh(barGeo2, M.reticleOk);
     g.add(h); g.add(v);
     g.userData.parts = [ring, h, v];
     g.renderOrder = 5;
@@ -1285,8 +1487,12 @@ export function createGame(ctx) {
     let row = aimRow;
     if (row < 0 || row >= GRID) row = nearestUnfiredRow(aimCol);
 
-    // Column lane highlight (full enemy column under the pointer).
+    const fired = row >= 0 && row < GRID && tracking[mySide].has(aimCol + "," + row);
+
+    // Column lane highlight (full enemy column under the pointer). Tint it red too
+    // when the aimed cell is already fired so the lane + reticle agree (I10).
     laneMesh = new THREE.Mesh(new THREE.BoxGeometry(CELL * 0.94, 0.0016, GRID_SPAN), M.enemyLive.clone());
+    laneMesh.material.color.set(fired ? "#ff6a5a" : "#7fd1ff");
     laneMesh.material.opacity = 0.28;
     laneMesh.position.set(cellX(aimCol), SURF_Y + 0.002, ENEMY_CZ);
     laneMesh.renderOrder = 2;
@@ -1294,7 +1500,6 @@ export function createGame(ctx) {
 
     if (row < 0 || row >= GRID) { clearReticle(); return; }
     const r = ensureReticle();
-    const fired = tracking[mySide].has(aimCol + "," + row);
     const mat = fired ? M.reticleBad : M.reticleOk;
     for (const p of r.userData.parts) p.material = mat;
     r.position.set(cellX(aimCol), SURF_Y + CELL * 0.16, cellZView(row, "enemy"));
@@ -1442,9 +1647,21 @@ export function createGame(ctx) {
       case "fire": {
         if (phase !== "playing") throw new GameDesync("battleship: fire before play");
         if (!mySide) return true; // spectators never receive raw fires (server-gated)
-        // Ported incoming missile: arc onto MY ocean, then resolve the shot against
-        // my private grid when it lands (logic UNCHANGED — only the visual leads it).
-        launchMissile(move.x, move.y, "ocean", incomingLaunchOrigin(), () => receiveIncomingFire(move.x, move.y));
+        // Resolve + reply + flip the turn IMMEDIATELY (B1): the shot result and turn
+        // handback must NOT wait for the cosmetic missile flight, otherwise the
+        // attacker stalls ~1s per shot and a throttled/backgrounded defender (whose
+        // rAF is paused) could never fire onArrive — leaving the match wedged with
+        // no result on the wire. The incoming missile is purely decorative now.
+        incomingImpact = null;
+        receiveIncomingFire(move.x, move.y); // sets incomingImpact (if a fresh shot)
+        // The decorative missile's arrival plays the geyser/blast where it lands, so
+        // the FX still lines up with the projectile — but if it's swallowed (already
+        // fired cell, no impact recorded) nothing happens, and the state is already
+        // committed regardless of whether the rAF ever advances.
+        const impact = incomingImpact;
+        incomingImpact = null;
+        launchMissile(move.x, move.y, "ocean", incomingLaunchOrigin(),
+          impact ? () => playImpact(impact.x, impact.y, "ocean", impact.outcome, impact.sunk, impact.orient) : null);
         return true;
       }
       case "result": {
@@ -1476,7 +1693,7 @@ export function createGame(ctx) {
     fx.clear();
     missiles.clear();
     clearReticle();
-    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    for (const t of targetRings) group.remove(t); // shared material — don't dispose (I6)
     targetRings.length = 0;
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     clearMarkers();
@@ -1500,6 +1717,11 @@ export function createGame(ctx) {
       hoverCell = null;
       aimCol = aimRow = -1;
       myOcean = freshOceanState();
+      incomingImpact = null;
+      specShotKeys = new Set();
+      panelFlash.host = panelFlash.guest = null;
+      flourishFired = false;
+      flourishQueue.length = 0;
       // SPECTATOR-ONLY: a reset reshuffles the deployment, so drop revealed fleets;
       // the seated players re-send them when they re-deploy.
       revealFleets.host = null;
@@ -1527,6 +1749,10 @@ export function createGame(ctx) {
     }
 
     const srcShots = state.shots || {};
+    // SPECTATOR FX diff (I7): collect shots that are NEW vs. the previously-rendered
+    // snapshot; we only animate when exactly one new shot lands on a side.
+    const nextSpecKeys = new Set();
+    const specNew = { host: [], guest: [] };
     for (const side of ["host", "guest"]) {
       const list = Array.isArray(srcShots[side]) ? srcShots[side] : [];
       for (const s of list) {
@@ -1544,9 +1770,26 @@ export function createGame(ctx) {
           // Spectator (canonical frame): host's shots on the enemy grid, guest's
           // on the ocean grid — a fixed, layout-free view of both shot streams.
           placeMarker(s.x, s.y, outcome, side === "host" ? "enemy" : "ocean", side === "host" ? enemyShotMarks : oceanShotMarks);
+          const key = side + ":" + s.x + "," + s.y;
+          nextSpecKeys.add(key);
+          if (!specShotKeys.has(key)) specNew[side].push({ x: s.x, y: s.y, outcome, sunk: sunkId });
         }
       }
     }
+
+    // Spectator one-shot impact FX for a SINGLE freshly-added shot per side (I7).
+    // Skip the bulk catch-up (a late joiner gets many new shots at once) so we
+    // don't dump a wall of explosions. Cosmetic only — never touches state.
+    if (!mySide && phase === "playing" && specShotKeys.size > 0) {
+      for (const side of ["host", "guest"]) {
+        if (specNew[side].length === 1) {
+          const s = specNew[side][0];
+          playImpact(s.x, s.y, side === "host" ? "enemy" : "ocean", s.outcome, s.sunk, "horizontal");
+          if (s.sunk) flashPanelRow(side, s.sunk);
+        }
+      }
+    }
+    if (!mySide) specShotKeys = nextSpecKeys;
 
     if (state.sunk) {
       for (const side of ["host", "guest"]) {
@@ -1558,11 +1801,24 @@ export function createGame(ctx) {
     if (mySide && phase === "playing") {
       const mine = shots[mySide].length;
       const theirs = shots[oppSide].length;
-      myTurn = first === mySide ? mine <= theirs : mine < theirs;
-      pendingFire = null;
+      const computed = first === mySide ? mine <= theirs : mine < theirs;
+      // B4: if we have a shot in flight whose result isn't yet reflected in THIS
+      // snapshot, stay locked (keep pendingFire, myTurn=false) so a recovery/late
+      // snapshot can't briefly re-enable a second shot before the result lands.
+      if (pendingFire && !tracking[mySide].has(pendingFire.x + "," + pendingFire.y)) {
+        myTurn = false; // keep pendingFire — the result is still outstanding
+      } else {
+        myTurn = computed;
+        pendingFire = null;
+      }
     } else {
       myTurn = false;
+      pendingFire = null;
     }
+
+    // I4: when a remote client first learns the game is over via this snapshot,
+    // play the one-shot victory flourish (guarded inside winFlourish to fire once).
+    if (phase === "over" && winner) winFlourish(winner);
 
     rebuildHulls();
     // SPECTATOR-ONLY: re-assert the revealed fleets after a snapshot repaint (a
@@ -1622,8 +1878,55 @@ export function createGame(ctx) {
     refreshButtons();
     refreshPanels();
     refreshHud();
+    winFlourish(winnerSide); // celebratory ripples over the loser's grid (I4)
     try { ctx.onGameOver({ winner: winnerSide, reason: reason || "fleet-sunk" }); } catch { /* ignore */ }
     if (role === "host") pushSnapshot();
+  }
+
+  // I4 — a brief, cosmetic victory flourish: a handful of staggered blasts walking
+  // across the LOSER's sunk cells (host/guest/spectator-safe; runs once per game).
+  // The flourish never touches state — it's a one-shot timed ripple sequence.
+  let flourishFired = false;
+  const flourishQueue = []; // { x, y, which, at } pending ripples
+  function winFlourish(winnerSide) {
+    if (flourishFired || !winnerSide) return;
+    flourishFired = true;
+    const loser = winnerSide === "host" ? "guest" : "host";
+    // The loser's grid in THIS view: seated → my ocean if I lost, else enemy grid;
+    // spectator → host on enemy grid, guest on ocean grid (canonical frame).
+    let which;
+    if (mySide) which = loser === mySide ? "ocean" : "enemy";
+    else which = loser === "host" ? "enemy" : "ocean";
+    // Ripple across the cells where the loser's ships were hit/sunk (their shots
+    // landed on the loser are tracked under tracking[winnerSide] — those are the
+    // winner's shots on the loser). Fall back to a sweep if none are tracked.
+    const cells = [];
+    for (const [key, info] of tracking[winnerSide]) {
+      if (info && (info.outcome === "hit" || info.outcome === "sunk")) {
+        const [cx, cy] = key.split(",").map(Number);
+        if (inGrid(cx, cy)) cells.push({ x: cx, y: cy });
+      }
+    }
+    if (cells.length === 0) return;
+    // Stagger the ripples so they read as a celebratory wave, not one big flash.
+    const base = nowMs();
+    cells.slice(0, 12).forEach((c, i) => flourishQueue.push({ x: c.x, y: c.y, which, at: base + i * 90 }));
+    startLoop();
+  }
+
+  // Fire any due ripples from the win-flourish queue (I4). Cosmetic only.
+  function stepFlourish() {
+    if (flourishQueue.length === 0) return false;
+    const t = nowMs();
+    for (let i = flourishQueue.length - 1; i >= 0; i--) {
+      const f = flourishQueue[i];
+      if (t >= f.at) {
+        _v3.set(cellX(f.x), SURF_Y, cellZView(f.y, f.which));
+        fx.bigExplosion(_v3);
+        flourishQueue.splice(i, 1);
+      }
+    }
+    return flourishQueue.length > 0;
   }
 
   function sendReveal() {
@@ -1659,6 +1962,7 @@ export function createGame(ctx) {
     refreshGhost();
     refreshEnemyLive();
     refreshHud();
+    startLoop(); // re-sync the HUD billboard to the new facing even when idle (I9)
   }
 
   function setSeatRy(ry) {
@@ -1667,6 +1971,7 @@ export function createGame(ctx) {
     refreshEnemyLive();
     refreshGhost();
     refreshHud();
+    startLoop(); // re-sync the HUD billboard to the new facing even when idle (I9)
   }
 
   // ===========================================================================
@@ -1674,6 +1979,7 @@ export function createGame(ctx) {
   // ===========================================================================
   function dispose() {
     if (controlsHook) { try { controlsHook([], null); } catch { /* ignore */ } }
+    if (fleetHook) { try { fleetHook([]); } catch { /* ignore */ } }
     if (rafId != null) { caf(rafId); rafId = null; }
     for (const b of blooms) { b.mesh.material?.dispose?.(); b.mesh.geometry?.dispose?.(); }
     shells.length = 0;
@@ -1682,10 +1988,12 @@ export function createGame(ctx) {
     try { fx.dispose(); } catch { /* ignore */ }
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
-    for (const t of targetRings) { group.remove(t); t.material.dispose?.(); }
+    for (const t of targetRings) group.remove(t); // M.targetShared disposed via M loop below
     targetRings.length = 0;
     if (reticle) {
-      reticle.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); if (c.material) c.material.dispose?.(); });
+      // Parts share M.reticleOk/M.reticleBad (disposed via the M loop) — only free
+      // the cloned geometry here, never the shared materials (I6).
+      reticle.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
       group.remove(reticle);
       reticle = null;
     }
