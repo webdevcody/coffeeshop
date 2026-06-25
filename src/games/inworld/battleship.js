@@ -422,15 +422,34 @@ export function createGame(ctx) {
     return mesh;
   }
 
+  // Shrink the font until `text` fits `maxW` (no clipping/overflow).
+  function fitFont(g, text, maxW, startPx, weight) {
+    let px = startPx;
+    const w = weight ? weight + " " : "";
+    g.font = `${w}${px}px sans-serif`;
+    while (px > 12 && g.measureText(text).width > maxW) {
+      px -= 2;
+      g.font = `${w}${px}px sans-serif`;
+    }
+  }
+
   function drawLabel(cv, tex, text, color) {
     if (!cv || !tex) return;
     const g = cv.getContext("2d");
     g.clearRect(0, 0, cv.width, cv.height);
+    g.save();
+    // The control pillars sit at YOUR ocean's NEAR edge; after the board's per-seat
+    // self-orientation their flat top faces read 180° rotated from the seat (the
+    // labels showed upside-down). Pre-rotate the canvas 180° so they read upright.
+    g.translate(cv.width / 2, cv.height / 2);
+    g.rotate(Math.PI);
+    g.translate(-cv.width / 2, -cv.height / 2);
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = color;
-    g.font = "bold 48px sans-serif";
+    fitFont(g, text, cv.width - 28, 48, "bold");
     g.fillText(text, cv.width / 2, cv.height / 2);
+    g.restore();
     tex.needsUpdate = true;
   }
 
@@ -467,8 +486,8 @@ export function createGame(ctx) {
   // the ship is sunk. firer = the side that SANK those ships.
   // ===========================================================================
   function buildPanels() {
-    const W = GRID_SPAN * 0.66;
-    const H = GRID_SPAN * 0.62;
+    const W = GRID_SPAN * 0.5;
+    const H = GRID_SPAN * 0.46;
     const make = (firer, x) => {
       const canCreate = typeof document !== "undefined" && document.createElement;
       const cv = canCreate ? document.createElement("canvas") : null;
@@ -575,9 +594,9 @@ export function createGame(ctx) {
     const mat = tex
       ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false })
       : new THREE.MeshBasicMaterial({ color: "#0c2036", transparent: true, opacity: 0.85, depthWrite: false });
-    const w = GRID_SPAN * 1.15;
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.375), mat);
-    mesh.position.set(0, SURF_Y + GRID_SPAN * 0.62, 0);
+    const w = GRID_SPAN * 0.9;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.36), mat);
+    mesh.position.set(0, SURF_Y + GRID_SPAN * 0.5, 0);
     mesh.renderOrder = 30;
     mesh.userData.cv = cv;
     mesh.userData.tex = tex;
@@ -651,12 +670,13 @@ export function createGame(ctx) {
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = color;
-    g.font = "bold 46px sans-serif";
-    g.fillText(clip(title, 28), cv.width / 2, 68);
+    // Auto-fit so the full line always fits the canvas — no more clipped edges.
+    fitFont(g, title, cv.width - 44, 46, "bold");
+    g.fillText(title, cv.width / 2, 70);
     if (sub) {
       g.fillStyle = "#dfe9f2";
-      g.font = "24px sans-serif";
-      g.fillText(clip(sub, 56), cv.width / 2, 128);
+      fitFont(g, sub, cv.width - 36, 26, "");
+      g.fillText(sub, cv.width / 2, 134);
     }
     tex.needsUpdate = true;
   }
