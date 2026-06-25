@@ -700,6 +700,11 @@ export function createGame(ctx) {
     // catch-up / resync / late join. Clear any in-flight pops first.
     pops.length = 0;
     subPops.length = 0;
+    // Drop any stale local hover ghost too: a resync can land while the side-to-move
+    // is hovering, and setMark below rebuilds the marks but never touches the ghost,
+    // which would then float over a freshly-painted cell. The next pointermove re-arms
+    // it within the hover throttle if it's still our turn (mirrors connect4 clearScene).
+    clearHover();
     for (let B = 0; B < 9; B++) {
       for (let i = 0; i < 9; i++) setMark(B, i, cells[B][i], false);
       setBigMark(B, bigWinner[B] === "X" || bigWinner[B] === "O" ? bigWinner[B] : null);
@@ -980,7 +985,15 @@ export function createGame(ctx) {
   function setHover(cell) {
     // board.js forwards the resolved userData.cell {B,i} or -1 on a miss.
     const c = cell && typeof cell === "object" ? cell : null;
-    if (!myMark || !c || !Number.isInteger(c.B) || !Number.isInteger(c.i) || !legal(c.B, c.i)) {
+    // Gate on whose turn it actually is (mirrors connect4's canPlayLocally /
+    // mancala's setHover). board.js routes hover whenever we're SEATED here, NOT
+    // only on our turn, so without `turn === myMark` the off-turn player would see
+    // their OWN placement ghost float over a legal cell they cannot yet play (the
+    // forced-board glow + legal-hint rims already show the constraint to both sides;
+    // the colour ghost is a "you may place HERE NOW" affordance and must stay local
+    // to the side to move). isLocalTurnAllowed() also drops it once the game is over.
+    if (!myMark || turn !== myMark || !ctx.isLocalTurnAllowed() ||
+        !c || !Number.isInteger(c.B) || !Number.isInteger(c.i) || !legal(c.B, c.i)) {
       clearHover();
       return;
     }

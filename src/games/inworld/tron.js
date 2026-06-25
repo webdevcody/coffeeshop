@@ -161,7 +161,12 @@ export function createGame(ctx) {
     if (isHost()) hostTurn(0, eff);
     else { try { ctx.net.sendInput({ turn: eff }); } catch { /* */ } }
   };
-  window.addEventListener("keydown", onKeyDown);
+  // Headless guard (matches the banner's `typeof document` guard below): a non-
+  // browser instantiation (SSR/test) has no `window`, so attaching unconditionally
+  // would throw at construction. Only seated players ever steer, but we attach for
+  // every role and gate inside onKeyDown so an in-place spectator->seat promotion
+  // (setRole) needs no re-attach.
+  if (typeof window !== "undefined") window.addEventListener("keydown", onKeyDown);
 
   // ---- geometry / materials ----
   const owned = [];
@@ -472,6 +477,15 @@ export function createGame(ctx) {
   const PIP_POP_MS = 360;
   const pipPopAt = [new Array(WIN_SCORE).fill(-1e9), new Array(WIN_SCORE).fill(-1e9)];
   const prevScores = [0, 0];
+  // FX-arming gate (join glitch): crash rings + pip pops fire on a transition vs the
+  // last-seen value, but the initial wasAlive=[true,true]/prevScores=[0,0] don't match
+  // an in-progress game, so a guest/spectator's FIRST authoritative snapshot would
+  // replay a death explosion + score-fill pops for events it never witnessed. The host
+  // is authoritative from tick 0 (its construction render is the empty spawn, nothing to
+  // replay), so it's armed immediately; guests/spectators arm only AFTER their first
+  // applyState has synced wasAlive/prevScores to the true state. renderGrid still syncs
+  // those caches every paint regardless of this flag — only the cosmetic fire is gated.
+  let fxPrimed = role === "host";
   // Pip XZ is view-dependent: side 0 (cyan / host) sits beyond the canonical near
   // edge, side 1 (orange / guest) beyond the far edge. viewSign flips both so the
   // LOCAL player's own-colour pips read on THEIR near side from either chair.
@@ -523,7 +537,9 @@ export function createGame(ctx) {
         const tx = gx(c.x), tz = gz(c.y);
         // CRASH FLOURISH: fire a ring when this cycle just died (alive->dead). At
         // round reset both come back alive, which re-arms wasAlive without firing.
-        if (wasAlive[i] && !c.alive) {
+        // Gated on fxPrimed so a mid-game joiner's first snapshot doesn't explode a
+        // cycle that already died before it was watching (wasAlive still synced below).
+        if (fxPrimed && wasAlive[i] && !c.alive) {
           crashAt[i] = nowMs();
           crashRings[i].position.set(tx, crashRings[i].position.y, tz);
         }
@@ -556,7 +572,9 @@ export function createGame(ctx) {
     for (let side = 0; side < 2; side++) {
       const s = scores[side] | 0;
       const was = prevScores[side] | 0;
-      if (s > was) for (let k = was; k < s && k < pips[side].length; k++) pipPopAt[side][k] = nowMs();
+      // Gated on fxPrimed: a joiner's first snapshot already carries earned points; we
+      // resync prevScores below without popping pips for rounds it never saw won.
+      if (fxPrimed && s > was) for (let k = was; k < s && k < pips[side].length; k++) pipPopAt[side][k] = nowMs();
       prevScores[side] = s;
       for (let k = 0; k < pips[side].length; k++) {
         pips[side][k].material = k < s ? pipOnMat[side] : pipOffMat;
@@ -903,6 +921,9 @@ export function createGame(ctx) {
     roundWinner = Number.isInteger(state.roundWinner) ? state.roundWinner : null;
     matchWinner = Number.isInteger(state.matchWinner) ? state.matchWinner : null;
     renderGrid();
+    // The first authoritative snapshot has now synced wasAlive/prevScores to the true
+    // state; arm cosmetic FX so subsequent crashes/points animate normally.
+    fxPrimed = true;
   }
 
   function onPointer() { /* real-time: keyboard only */ }
@@ -927,6 +948,14 @@ export function createGame(ctx) {
     applyHeadMaterials();
     buildIdentityMeshes();
     positionPips();
+    // A spectator<->guest transition flips viewSign, but renderGrid only positions a
+    // trail mesh when it's CREATED (existing cells just get a material swap), so the
+    // live trail would stay at its old-view, mirror-flipped world positions. Drop the
+    // pooled meshes so renderGrid rebuilds every cell through gx/gz at the new
+    // orientation. The heads re-snap via renderGrid's big-jump test (old vs flipped
+    // target exceeds the threshold). host<->spectator keeps viewSign so this is a
+    // cheap no-op rebuild there.
+    clearTrails();
     renderGrid();
   }
   // orientPolicy:"self" — board.js does NOT rotate this group, so an in-place
@@ -934,7 +963,7 @@ export function createGame(ctx) {
   // local -Z. applyFacing() composes orientFor(seatRy) with the viewSign flip.
   function setSeatRy(ry) { seatRy = ry; applyFacing(); renderGrid(); }
   function dispose() {
-    window.removeEventListener("keydown", onKeyDown);
+    if (typeof window !== "undefined") window.removeEventListener("keydown", onKeyDown);
     clearTrails();
     if (group.parent) group.parent.remove(group);
     for (const o of owned) o.dispose?.();

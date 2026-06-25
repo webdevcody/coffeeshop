@@ -1459,6 +1459,7 @@ export function createGame(ctx) {
     try { ctx.net.sendMove({ type: "start", first }); } catch { /* transport optional */ }
     refreshEnemyLive();
     refreshHud();
+    startLoop(); // animate the whose-turn cue from the instant play begins (even going 2nd)
     pushSnapshot();
   }
 
@@ -1607,7 +1608,7 @@ export function createGame(ctx) {
     // Clear old rings + lane. Rings share M.targetShared — never dispose it here (I6).
     for (const t of targetRings) group.remove(t);
     targetRings.length = 0;
-    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh.material.dispose?.(); laneMesh = null; }
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
     if (!myTurnNow()) { clearReticle(); return; }
 
@@ -1665,7 +1666,7 @@ export function createGame(ctx) {
   // pick that column's nearest un-fired cell and also light the column as a lane.
   function updateReticle() {
     // refresh the column lane.
-    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh.material.dispose?.(); laneMesh = null; }
     if (!myTurnNow() || aimCol < 0 || aimCol >= GRID) { clearReticle(); return; }
 
     let row = aimRow;
@@ -1698,7 +1699,7 @@ export function createGame(ctx) {
 
   function clearReticle() {
     if (reticle) reticle.visible = false;
-    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh.material.dispose?.(); laneMesh = null; }
   }
 
   // ===========================================================================
@@ -1825,6 +1826,7 @@ export function createGame(ctx) {
         refreshButtons();
         refreshEnemyLive();
         refreshHud();
+        startLoop(); // keep the loop alive so the turn cue animates even when we go 2nd
         pushSnapshot();
         return true;
       }
@@ -2021,6 +2023,11 @@ export function createGame(ctx) {
     refreshGhost();
     refreshEnemyLive();
     refreshHud();
+    // A snapshot that (re)enters play must keep the rAF alive even when it isn't our
+    // turn yet — otherwise the whose-turn rail pulse (P2 #7) + last-shot halos sit
+    // frozen for the waiting player / spectator until the next shot re-arms the loop.
+    // startLoop() self-idles when there's nothing left to animate.
+    startLoop();
   }
 
   // ===========================================================================
@@ -2149,6 +2156,14 @@ export function createGame(ctx) {
     }
     applyFacing();
     rebuildHulls();
+    // A spectator promoted to a seat must DROP any opponent fleet it rendered while
+    // watching — otherwise the enemy's revealed ships stay in the scene, visible to
+    // the now-seated player (hidden-info leak + clutter). rebuildRevealFleets() frees
+    // those meshes and early-returns now that mySide is set; null the stored layouts
+    // too so a later demotion can't re-render this stale reveal before a fresh one
+    // arrives over the reveal channel.
+    if (mySide) { revealFleets.host = null; revealFleets.guest = null; }
+    rebuildRevealFleets();
     refreshButtons();
     refreshPanels();
     refreshGhost();
@@ -2179,7 +2194,7 @@ export function createGame(ctx) {
     try { missiles.dispose(); } catch { /* ignore */ }
     try { fx.dispose(); } catch { /* ignore */ }
     if (enemyLivePlate) { group.remove(enemyLivePlate); enemyLivePlate.geometry.dispose?.(); enemyLivePlate = null; }
-    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh = null; }
+    if (laneMesh) { group.remove(laneMesh); laneMesh.geometry.dispose?.(); laneMesh.material.dispose?.(); laneMesh = null; }
     for (const t of targetRings) group.remove(t); // M.targetShared disposed via M loop below
     targetRings.length = 0;
     // Last-shot halos: shared G.ring geometry, but each owns a cloned M.lastShot

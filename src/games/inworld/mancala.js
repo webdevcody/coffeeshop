@@ -163,11 +163,16 @@ export function createGame(ctx) {
   const body = meshOf(THREE, bodyGeo, M.wood);
   body.position.y = plankH / 2;
   group.add(body);
-  // A thin proud rim so the tray reads as a carved board, not a flat plank.
-  const rimGeo = keep(new THREE.BoxGeometry(W + 0.06, plankH * 0.5, D + 0.06));
+  // A border frame so the tray reads as a carved board, not a flat plank. Authored
+  // exactly like gomoku/ludo/uttt: a slab slightly LARGER than the body and sat
+  // LOWER (its top below the plank surface), so only its perimeter border peeks out
+  // around the board and it NEVER occludes the pit wells in the centre. (A prior
+  // pass had left this as a SAME-SIZE slab raised ABOVE the surface — top 0.0375 vs
+  // the well tops at 0.0315 — which buried every pit, the per-side colour tints and
+  // the seeds under an opaque brown plank.)
+  const rimGeo = keep(new THREE.BoxGeometry(W + 0.09, plankH * 0.6, D + 0.09));
   const rim = meshOf(THREE, rimGeo, M.edge, false);
-  rim.position.y = plankH;
-  rim.scale.set(1.0, 1.0, 1.0);
+  rim.position.y = plankH * 0.3;
   group.add(rim);
   const TOP = plankH;
 
@@ -903,7 +908,31 @@ export function createGame(ctx) {
     try { ctx.net.sendState(s, s); } catch { /* */ }
   }
 
+  // True when `s` describes EXACTLY the board/turn/phase/winner we already hold —
+  // i.e. an authoritative snapshot that adds nothing over what applyMove already
+  // applied (the host's redundant post-move echo). applyState uses it to keep the
+  // freshly-armed cosmetic cues alive across that echo. Evaluated BEFORE applyState
+  // overwrites the live fields.
+  function matchesCurrent(s) {
+    if (!s || !Array.isArray(s.board)) return false;
+    for (let i = 0; i < 14; i++) if ((s.board[i] | 0) !== board[i]) return false;
+    const t = s.turn === "guest" ? "guest" : "host";
+    const p = s.phase === "over" ? "over" : "play";
+    const w = s.winner === "host" || s.winner === "guest" ? s.winner : null;
+    return t === turn && p === phase && w === winner;
+  }
+
   function applyState(state) {
+    // Is this the redundant post-move echo? The host pushes an authoritative
+    // snapshot immediately after relaying each move, and mancala opts OUT of the
+    // framework's echo-suppression window (spectatorAnimates:false) so that echo
+    // DOES reach applyState. A guest/spectator that already applied the move via
+    // applyMove therefore gets a snapshot matching its current state — in which
+    // case we must NOT wipe the cues that move just armed (last-move ring, capture/
+    // steal flash, win burst), or the watcher/opponent the cues exist FOR never
+    // sees where the instantly-rendered relayed move happened. Only a GENUINE
+    // re-base (reset / recovery / a differing board) cancels them below.
+    const echo = matchesCurrent(state);
     if (!state) {
       board = initBoard();
       turn = "host";
@@ -923,36 +952,39 @@ export function createGame(ctx) {
       winner = state.winner === "host" || state.winner === "guest" ? state.winner : null;
     }
     // NOTE: mySide / role are NOT touched here — identity stays ROLE-derived.
-    // Cancel any in-flight cosmetic FX: this is an authoritative re-base, so the
-    // capture/hover/last-move state from a now-superseded local view must not
-    // linger. (The end-state celebration is re-armed below if phase==="over".)
-    anim.capture = 0;
-    anim.captureSide = null;
-    anim.steal = 0;
-    anim.lastMove = 0;
-    anim.freeTurn = 0;
-    // Also clear any in-flight win burst (F8) and hide its ring. Without this a
-    // re-base/reset that interrupts a win flourish left anim.win > 0; the next
-    // update() ran block 9 with winner now null, which zeroed the winning row's
-    // emissive — and since that row is the LOCAL player's home, it wiped their
-    // identity lift until the next updateIdentity(). Reset here and re-assert the
-    // home-row identity emissive below so the local side stays clearly "mine".
-    anim.win = 0;
-    burstRing.visible = false;
-    lastSowPit = -1;
-    lastLandPit = -1;
-    lastCapturePit = -1;
-    freeTurnSide = null;
-    lastMoveRing.visible = false;
-    landMoveRing.visible = false;
-    stealRing.visible = false;
     clearHover();
-    M.storeHost.emissiveIntensity = mySide === "host" ? 0.28 : 0.0;
-    M.storeGuest.emissiveIntensity = mySide === "guest" ? 0.28 : 0.0;
-    // Re-assert the home-row identity lift (the win-burst sweep in update() block 9
-    // drives these, so a snapshot landing mid-burst must restore the resting value).
-    M.pitHost.emissiveIntensity = mySide === "host" ? 0.34 : 0.0;
-    M.pitGuest.emissiveIntensity = mySide === "guest" ? 0.34 : 0.0;
+    // Cancel any in-flight cosmetic FX on a GENUINE re-base (a now-superseded local
+    // view must not linger). SKIPPED for the redundant post-move echo: those cues
+    // were just armed by the matching applyMove, and wiping them would rob the
+    // watcher/opponent of the only signal showing WHERE the relayed move landed.
+    if (!echo) {
+      anim.capture = 0;
+      anim.captureSide = null;
+      anim.steal = 0;
+      anim.lastMove = 0;
+      anim.freeTurn = 0;
+      // Clear any in-flight win burst (F8) and hide its ring. Without this a
+      // re-base/reset that interrupts a win flourish left anim.win > 0; the next
+      // update() ran block 9 with winner now null, which zeroed the winning row's
+      // emissive — and since that row is the LOCAL player's home, it wiped their
+      // identity lift until the next updateIdentity(). Reset here and re-assert the
+      // home-row identity emissive so the local side stays clearly "mine".
+      anim.win = 0;
+      burstRing.visible = false;
+      lastSowPit = -1;
+      lastLandPit = -1;
+      lastCapturePit = -1;
+      freeTurnSide = null;
+      lastMoveRing.visible = false;
+      landMoveRing.visible = false;
+      stealRing.visible = false;
+      M.storeHost.emissiveIntensity = mySide === "host" ? 0.28 : 0.0;
+      M.storeGuest.emissiveIntensity = mySide === "guest" ? 0.28 : 0.0;
+      // Re-assert the home-row identity lift (the win-burst sweep in update() block 9
+      // drives these, so a snapshot landing mid-burst must restore the resting value).
+      M.pitHost.emissiveIntensity = mySide === "host" ? 0.34 : 0.0;
+      M.pitGuest.emissiveIntensity = mySide === "guest" ? 0.34 : 0.0;
+    }
     renderSeeds(); // diff-rebuild, no spawn pop on an authoritative snapshot
     refreshLamps();
     refreshGlows();

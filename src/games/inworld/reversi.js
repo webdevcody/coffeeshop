@@ -359,10 +359,16 @@ export function createGame(ctx) {
     if (rafId || disposed || typeof requestAnimationFrame === "undefined") return;
     lastT = nowMs();
     const tick = (t) => {
+      // Clear FIRST: if step() throws, or the browser drops/throttles this frame, we
+      // leave rafId === 0 so the next enqueue's startLoop() — or the framework-pumped
+      // update() self-heal below — can re-arm the loop instead of stalling forever
+      // with `busy` stuck true (which would lock the seated player out of input).
+      rafId = 0;
+      if (disposed) return;
       const dt = Math.min(0.05, (t - lastT) / 1000) || 0.016;
       lastT = t;
       step(dt);
-      rafId = loopActive() && !disposed ? requestAnimationFrame(tick) : 0;
+      if (loopActive() && !disposed) rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
   }
@@ -655,6 +661,13 @@ export function createGame(ctx) {
       clearFlipHints();
       return;
     }
+    // Reset the pulse on a FRESH show so the first visible frame starts at the base
+    // opacity rather than wherever the sine left it last time (update() stops mutating
+    // opacity while hidden, so it would otherwise flash in mid-pulse).
+    if (!hoverDisc.visible) {
+      hoverPulse = 0;
+      hoverDisc.material.opacity = myColor === "white" ? 0.6 : 0.55;
+    }
     hoverDisc.position.set(cellX(c, N), REST_Y + DISC_T / 2 + 0.012, cellZ(r, N));
     hoverDisc.visible = true;
     // #11: preview which discs this move would flip (recomputed locally each hover).
@@ -937,7 +950,14 @@ export function createGame(ctx) {
   // (they must animate even where the framework's update pump is absent), so this
   // stays cheap and allocation-free. Never writes game state.
   function update(dt) {
-    if (disposed || !hoverDisc.visible) return;
+    if (disposed) return;
+    // rAF self-heal: the capture-flip / place-settle / win-flourish / pass-pulse
+    // visuals run on the module's PRIVATE rAF, which a backgrounded or throttled tab
+    // can pause or drop — freezing a half-finished spin and leaving `busy` stuck true
+    // (input-locked). The framework pumps update(dt) from the main render loop, so if
+    // there is pending animation work but no frame is scheduled, re-arm the loop.
+    if (loopActive() && !rafId) startLoop();
+    if (!hoverDisc.visible) return;
     hoverPulse += dt || 0.016;
     const base = myColor === "white" ? 0.6 : 0.55;
     hoverDisc.material.opacity = base + 0.12 * (0.5 + 0.5 * Math.sin(hoverPulse * 4));
@@ -1011,6 +1031,13 @@ export function createGame(ctx) {
     // We own per-seat facing (applyFacing). board.js must NOT also rotate us, or
     // the two transforms fight.
     orientPolicy: "self",
+    // Full-info, turn-based: our spectator/guest applyMove ACTUALLY applies + animates
+    // the relayed move (place-settle + capture flips). board.js arms its one-shot
+    // post-move snapshot-swallow window only when spectatorAnimates !== false, so the
+    // host's redundant echo snapshot doesn't snap the in-flight animation away. State
+    // it explicitly so the contract can't silently flip in a refactor (the module
+    // previously leaned on `undefined !== false` being truthy).
+    spectatorAnimates: true,
     applyState,
     applyMove,
     onPointer,

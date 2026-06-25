@@ -47,6 +47,11 @@ import { BOARD_SIZE, PALETTE, meshOf, standard } from "./pieces.js";
 // ---- field constants (canonical) ----
 const W = 100, H = 60;            // x = lateral (paddle travel), y = court length
 const PADDLE_HALF = 9, PADDLE_T = 2; // paddle half-width along x, thickness along y
+const PADDLE_DEPTH_MUL = 1.6;        // paddle box depth (world) = PADDLE_T * SZ * PADDLE_DEPTH_MUL
+// Canonical-y half-depth of the paddle box: the ball reflects off the paddle's
+// court-FACING surface (this far from its centre line toward mid-court), not the
+// centre line, so a visibly-thick paddle never swallows the ball on contact.
+const PADDLE_FACE = PADDLE_T * PADDLE_DEPTH_MUL / 2;
 const HOST_Y = 4, GUEST_Y = H - 4; // paddle centre-lines along court length
 const BALL_R = 1.4, TARGET = 7;
 const PADDLE_SPEED = 95, BALL_START = 46, BALL_MAX = 120, SPEEDUP = 1.05;
@@ -288,7 +293,7 @@ export function createGame(ctx) {
   // paddles: A (host/colorA) and B (guest/colorB). They travel along world X.
   // No shadow cast: thin fast slivers shimmer the shadow map; the grounding rings
   // (myHalo / oppRing) provide the contact cue instead — cheaper and cleaner.
-  const padGeo = keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX, 0.025, PADDLE_T * SZ * 1.6));
+  const padGeo = keep(new THREE.BoxGeometry(PADDLE_HALF * 2 * SX, 0.025, PADDLE_T * SZ * PADDLE_DEPTH_MUL));
   const padA = meshOf(THREE, padGeo, M.colorA, false);
   const padB = meshOf(THREE, padGeo, M.colorB, false);
   const PAD_Y = TOP + 0.013;
@@ -609,17 +614,24 @@ export function createGame(ctx) {
     // A at y=HOST_Y (ball moving -y crosses it), B at y=GUEST_Y (ball moving +y).
     const tryPaddle = (py, px, dirToward) => {
       // dirToward: +1 if this paddle is the FAR (guest) end the ball heads to with
-      // +vy; -1 for host end. crossing when ball passes py from outside-in.
+      // +vy; -1 for host end. The paddle is a visibly THICK box (depth
+      // PADDLE_T*SZ*PADDLE_DEPTH_MUL) centred on py, so reflect off its COURT-FACING
+      // surface — half a depth toward mid-court — NOT the centre line. Bouncing on the
+      // centre and parking at py+BALL_R lands the ball INSIDE the box, so it visibly
+      // sinks ~halfway through the paddle on every reflect. `face` is that surface;
+      // crossing detection, lateral overlap, and placement all use it so contact reads
+      // true. (Effective court bounce lines shrink by PADDLE_FACE per end — negligible.)
+      const face = py - dirToward * PADDLE_FACE;
       const crossed = dirToward < 0
-        ? (prevY >= py && ball.y <= py)   // host end (low y)
-        : (prevY <= py && ball.y >= py);  // guest end (high y)
+        ? (prevY >= face && ball.y <= face)   // host end (low y)
+        : (prevY <= face && ball.y >= face);  // guest end (high y)
       if (!crossed) return false;
       // Test lateral overlap at the EXACT crossing point (interpolate ball.x to
-      // y=py) rather than at the post-step position. At high speed the ball can move
+      // y=face) rather than at the post-step position. At high speed the ball can move
       // several units laterally per frame; sampling the swept crossing x prevents a
       // one-frame mis-hit / tunnel near a paddle edge.
       const denom = ball.y - prevY;
-      const tCross = Math.abs(denom) > 1e-6 ? (py - prevY) / denom : 1;
+      const tCross = Math.abs(denom) > 1e-6 ? (face - prevY) / denom : 1;
       const xAt = prevX + (ball.x - prevX) * Math.max(0, Math.min(1, tCross));
       if (Math.abs(xAt - px) <= PADDLE_HALF + BALL_R) {
         const rel = Math.max(-1, Math.min(1, (xAt - px) / PADDLE_HALF)); // -1..1
@@ -631,7 +643,9 @@ export function createGame(ctx) {
         ball.vy = outYSign * speed * Math.cos(ang);
         ball.vx = speed * Math.sin(ang);
         ball.x = xAt; // resolve to the crossing point so the bounce reads true
-        ball.y = py + outYSign * (BALL_R + 0.01);
+        // Park the ball just clear of the court-facing surface (not the centre line)
+        // so it rests tangent to the paddle face instead of embedded in the box.
+        ball.y = face + outYSign * (BALL_R + 0.01);
         // Re-clamp lateral bounds after the paddle reflect rewrites ball.x/ball.vx
         // so a near-wall hit can never leave the ball penetrating the side rail.
         if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); }

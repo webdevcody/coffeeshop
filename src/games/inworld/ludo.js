@@ -224,6 +224,11 @@ export function createGame(ctx) {
     const len = Math.hypot(dx, dz) || 1;
     return { x: dx / len, z: dz / len };
   }
+  // Precomputed once (QUAD is constant) so the per-frame die-pointer ease in
+  // update() and the per-render seed never allocate a fresh {x,z} on the hot path.
+  const DIE_DIR = {};
+  for (const c of COLORS) DIE_DIR[c] = dieDirOf(c);
+  const dirOf = (c) => DIE_DIR[c] || DIE_DIR[COLORS[0]];
 
   // ---- track tiles (visual path) ------------------------------------------
   const tileGeo = keep(new THREE.BoxGeometry(cell * 0.9, 0.004, cell * 0.9));
@@ -440,7 +445,7 @@ export function createGame(ctx) {
   // finish fan (radius cell*0.78 + cone base) but inside the home columns.
   const DIE_PUSH = cell * 2.1;
   function dieTarget() {
-    const dir = dieDirOf(curColor(s));
+    const dir = dirOf(curColor(s));
     return { x: gx(7) + dir.x * DIE_PUSH, z: gz(7) + dir.z * DIE_PUSH };
   }
   dieGroup.position.set(gx(7), dieRestY, gz(7));
@@ -815,15 +820,18 @@ export function createGame(ctx) {
         const k = Math.min(1, d * 11);
         a.cx += (tx - a.cx) * k;
         a.cz += (tz - a.cz) * k;
-        // hover lift for the locally-hovered own movable token (I2).
-        const hovered = c === myColor && hoverTok === i;
+        // hover lift for the locally-hovered own movable token (I2). Gate on the
+        // token still being a live legal move so the lift auto-drops the instant the
+        // turn passes (myMovable empties on the next render) even if the cursor never
+        // moves to re-fire setHover — otherwise a piece could stay floating off-turn.
+        const movable = c === myColor && myMovable.includes(i);
+        const hovered = movable && hoverTok === i;
         const liftTarget = hovered ? cell * 0.35 : 0;
         a.lift += (liftTarget - a.lift) * Math.min(1, d * 12);
         tg.position.set(a.cx, y + a.lift, a.cz);
 
         // capture/finish scale pop (decays).
         if (a.pop > 0) a.pop = Math.max(0, a.pop - d * 2.2);
-        const movable = myMovable.includes(i) && c === myColor;
         const popScale = a.pop > 0 ? 1 + 0.35 * Math.sin(a.pop * Math.PI) : 1;
         const hoverScale = hovered ? 1.12 : (movable ? 1.1 + 0.04 * ringWave : 1);
         tg.scale.setScalar(popScale * hoverScale);
@@ -846,10 +854,13 @@ export function createGame(ctx) {
     // reads cleanly (I1). Its XZ eases toward the active player's quadrant so the
     // floating die also reads as a turn pointer (#1/#12).
     if (s.die != null) {
-      const tgt = dieTarget();
+      // Inline the die-pointer target (no per-frame {x,z} alloc on the hot path).
+      const dir = dirOf(active);
+      const tgtX = gx(7) + dir.x * DIE_PUSH;
+      const tgtZ = gz(7) + dir.z * DIE_PUSH;
       const ek = Math.min(1, d * 7);
-      dieGroup.position.x += (tgt.x - dieGroup.position.x) * ek;
-      dieGroup.position.z += (tgt.z - dieGroup.position.z) * ek;
+      dieGroup.position.x += (tgtX - dieGroup.position.x) * ek;
+      dieGroup.position.z += (tgtZ - dieGroup.position.z) * ek;
       if (dieAnimT > 0) {
         dieAnimT = Math.max(0, dieAnimT - d);
         const f = dieAnimT / 0.42;            // 1 -> 0

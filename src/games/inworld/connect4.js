@@ -143,15 +143,18 @@ function cellY(r) {
 // Y of the slot mouth above a column where a freshly dropped disc enters.
 // Kept close above row 0 so the hover ghost (radius DISC_R + idle bob) clears the
 // down-arrow cone parked higher up. The ghost top (on the local-turn idle bob)
-// reaches ~cellY(0)+1.5*CELL; the arrow now rests at cellY(0)+1.9*CELL (raised from
-// 1.55 so even at the full local-turn down-bob of CELL*0.14 its tip stays clear of
-// the ghost on the centre column). The two no longer interpenetrate at rest or while
-// bobbing. The drop still visibly falls from above the rack into the lowest hole (I4).
+// reaches ~cellY(0)+1.5*CELL. The drop still visibly falls from above the rack into
+// the lowest hole (I4).
 const MOUTH_Y = cellY(0) + CELL * 1.05;
 
-// Resting Y of the down-arrow cone, raised above the hover ghost so the two never
-// overlap on the centre column even at the arrow's full local-turn down-bob (I1).
-const ARROW_Y = cellY(0) + CELL * 1.9;
+// Resting Y of the down-arrow cone CENTRE. The cone (height CELL*0.55, apex pointing
+// −Y) puts its TIP 0.275*CELL BELOW this centre, and the local-turn down-bob lowers it
+// a further CELL*0.14 — so at the worst phase the tip reaches ARROW_Y − 0.415*CELL.
+// The previous 1.9 ignored the cone half-height: its tip dipped to cellY(0)+1.485*CELL,
+// BELOW the ghost top (cellY(0)+1.5*CELL), so they interpenetrated by ~0.015*CELL on the
+// centre column despite the comment claiming clearance. Raised to 2.05 → tip-lowest
+// cellY(0)+1.635*CELL, a clean ~0.135*CELL above the ghost at every phase (I1).
+const ARROW_Y = cellY(0) + CELL * 2.05;
 
 // Drop physics tuning (local metres, seconds).
 const GRAVITY = -3.4; // m/s² (snappy but readable across a table)
@@ -1140,9 +1143,10 @@ export function createGame(ctx) {
     // Extend the top bound up to the column mouth (where the ghost cocks and a
     // player naturally aims) so clicks at the top of a column resolve. The brass
     // rail centre is at cellY(0)+0.85*CELL, the lamps share that y but sit OUTSIDE
-    // the grid's X span (so u<0/u>=1 rejects them), and the arrow now rests at
-    // cellY(0)+1.9*CELL — so a mouth-inclusive top of cellY(0)+1.35*CELL keeps the
-    // grid clickable while still excluding the arrow tip above it.
+    // the grid's X span (so u<0/u>=1 rejects them), and the arrow tip dips no lower
+    // than cellY(0)+1.635*CELL (centre 2.05 − bob 0.14 − cone-half 0.275) — so a
+    // mouth-inclusive top of cellY(0)+1.35*CELL keeps the grid clickable while still
+    // excluding the arrow tip above it.
     const yBot = cellY(ROWS - 1) - CELL * 0.7;
     const yTop = cellY(0) + CELL * 1.35;
     if (local.y < yBot || local.y > yTop) return null;

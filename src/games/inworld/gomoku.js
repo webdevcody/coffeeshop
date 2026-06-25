@@ -389,7 +389,12 @@ export function createGame(ctx) {
       const d = drops[i];
       d.t += dt;
       const k = Math.min(1, d.t / d.dur);
-      d.mesh.position.y = d.baseY + (1 - easeOutBack(k)) * 0.03;
+      // Clamp the easeOutBack overshoot at baseY: a stone rests with its underside
+      // flush to the plank top (TOP), so letting the overshoot carry position.y
+      // BELOW baseY would sink the stone's lower rim through the board for a few
+      // frames near the bounce peak. Decelerate ONTO the surface instead (monotonic
+      // drop, like the other games' placement pops) — the snappy ease still reads.
+      d.mesh.position.y = d.baseY + Math.max(0, 1 - easeOutBack(k)) * 0.03;
       if (k >= 1) {
         d.mesh.position.y = d.baseY;
         drops.splice(i, 1);
@@ -405,12 +410,28 @@ export function createGame(ctx) {
         winSweepT += dt;
         highlightWin(Math.min(1, winSweepT / WIN_SWEEP_DUR));
       }
-      const lift = Math.max(0, 0.004 * (1 - winT / 0.5)); // one-shot settle
-      for (const [r, c] of winLine) {
-        const s = stones[r] && stones[r][c];
-        // Skip a stone still playing its placement settle (the just-played winning
-        // stone) so the two tweens don't fight on position.y; it joins next frame.
-        if (s && !drops.some((d) => d.mesh === s)) s.position.y = STONE_REST_Y + lift;
+      // One-shot vertical settle that fades over its first 0.5 s. Bounded to that
+      // window: the win-emissive breathe above keeps this rAF clock running for the
+      // WHOLE over-state, so an unbounded loop here would re-touch position.y (and
+      // allocate an iterator + a `.some` closure per stone) every frame forever.
+      // Index loops keep this animation hot path allocation-free.
+      if (winT < 0.5) {
+        const lift = 0.004 * (1 - winT / 0.5);
+        for (let i = 0; i < winLine.length; i++) {
+          const r = winLine[i][0];
+          const c = winLine[i][1];
+          const s = stones[r] && stones[r][c];
+          if (!s) continue;
+          // Skip a stone still playing its placement settle (the just-played
+          // winning stone) so the two tweens don't fight on position.y.
+          let dropping = false;
+          for (let j = 0; j < drops.length; j++)
+            if (drops[j].mesh === s) {
+              dropping = true;
+              break;
+            }
+          if (!dropping) s.position.y = STONE_REST_Y + lift;
+        }
       }
     }
     // I11 — last-move "drop shadow" breathe: gently pulse the accent ring's emissive
@@ -883,7 +904,16 @@ export function createGame(ctx) {
 
   // ---- Per-frame: gentle ghost pulse so the affordance reads as "live" -------
   function update(dt) {
-    if (disposed || !ghost.visible) return;
+    if (disposed) return;
+    // rAF self-heal: the settle pop (I1), win flourish (I2) and turn-lamp breathe
+    // (I6) all run on our PRIVATE rAF clock, which a browser may throttle or fully
+    // cancel while this tab is backgrounded — leaving those effects frozen until
+    // the next move happens to call startClock(). The framework pumps update(dt)
+    // from its own render loop, so re-arm the clock here whenever something still
+    // needs animating. startClock() no-ops when already running, so this is cheap.
+    // Mirrors connect4 / ultimatettt.
+    if (animActive()) startClock();
+    if (!ghost.visible) return;
     ghostPulse += dt || 0.016;
     const base = myColor === "white" ? 0.5 : 0.45;
     ghost.material.opacity = base + 0.12 * (0.5 + 0.5 * Math.sin(ghostPulse * 4));

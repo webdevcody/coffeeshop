@@ -479,13 +479,18 @@ export function createGame(ctx) {
   // a LOWER renderOrder than the placard, so the two transparent flat planes have
   // a deterministic composite order (placard always on top) instead of z-fighting
   // from the seated grazing camera. (audit #5)
-  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.006, -homeEdge);
+  // Lifted TOP+0.006 → TOP+0.01 so the chip plane clears the OPAQUE home bar's TOP
+  // face (bar centre TOP+0.004 + half its 0.006 height = TOP+0.007): the chip sits
+  // on the bar's z-line, so at the old height the bar sliced through the middle of
+  // the score text. The chip stays under the placard via renderOrder (both
+  // depthWrite:false), so this doesn't disturb the placard-on-top layering. (audit P-chip)
+  mineSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.01, -homeEdge);
   mineSide.chip.mesh.renderOrder = 2;
   group.add(mineSide.bar, mineSide.lamp, mineSide.chip.mesh);
 
   oppSide.bar.position.set(0, TOP + 0.004, homeEdge);
   oppSide.lamp.position.set(BOARD_SIZE * 0.4, TOP + 0.012, homeEdge);
-  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.006, homeEdge);
+  oppSide.chip.mesh.position.set(-BOARD_SIZE * 0.32, TOP + 0.01, homeEdge);
   oppSide.chip.mesh.renderOrder = 2;
   oppSide.chip.mesh.rotation.z = Math.PI; // reads upright from the far seat
   group.add(oppSide.bar, oppSide.lamp, oppSide.chip.mesh);
@@ -1080,7 +1085,22 @@ export function createGame(ctx) {
         scaleY = 1 + POP_SCALE * Math.sin(p * Math.PI); // smooth up-and-back
       }
 
-      const lift = easeInOut(a.hoverT) * HOVER_LIFT;
+      // Mid-flip arc lift. A card hinges about its CENTRE, so at the on-edge pose
+      // its lower rim reaches ~cardH/2 below centre — without a lift that dips well
+      // under the felt (the box stabs ~3cm through the plank). Raise the centre by
+      // exactly the card's CURRENT vertical half-extent so the lowest rim rides just
+      // above TOP through the entire hinge — like reversi's disc-flip lift, but
+      // derived from the real angle so a thick card never dips at the ~50–80° pose a
+      // fixed sin() arc (tuned only for the edge-on disc case) would under-lift.
+      // Naturally 0 at both rest poses (rotation 0 / PI), so it's continuous and
+      // costs no trig once a flip settles (flipT === 1).
+      let flipLift = 0;
+      if (a.flipT < 1) {
+        const ang = m.rotation.x;
+        const half = (CARD_T / 2) * Math.abs(Math.cos(ang)) + (cardH / 2) * Math.abs(Math.sin(ang));
+        flipLift = Math.max(0, TOP + 0.001 + half - CARD_Y);
+      }
+      const lift = easeInOut(a.hoverT) * HOVER_LIFT + flipLift;
       if (m.position.y !== baseY[i] + lift) m.position.y = baseY[i] + lift;
       if (m.scale.y !== scaleY) m.scale.set(1, scaleY, 1);
 

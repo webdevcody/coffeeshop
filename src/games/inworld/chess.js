@@ -588,6 +588,14 @@ export function createGame(ctx) {
   updateIdentityCue();
   paint();
   loadModels();
+  // Mid-join spectator first-move-drop fix (mirrors connect4 / uttt): the host only
+  // ever broadcasts AFTER a move resolves (commitMove/applyMove → pushSnapshot), so
+  // until White's first move lands the server's cached pub/full are null. A spectator
+  // that mounts in that window gets pub:null, board.js _onState bails, _hydrated stays
+  // false, and the FIRST relayed move is dropped by the spectator gate (never
+  // animated). Publish the authoritative opening position now so a joining spectator's
+  // requestState() returns a real snapshot, hydrates, and animates the first move.
+  if (role === "host") pushSnapshot();
 
   // ===========================================================================
   // Procedural geometry builders.
@@ -1545,9 +1553,14 @@ export function createGame(ctx) {
       pieceMeshes[move.to.r][move.to.c] = mover;
       mover.userData.cell = { r: move.to.r, c: move.to.c };
     }
-    // Detach the captured mesh from the ledger so paint() won't dispose it now —
-    // we sink+fade it at the glide peak instead (I4).
-    if (captured) pieceMeshes[capR][capC] = null;
+    // Detach the captured mesh from the ledger ONLY when it sits on a DIFFERENT
+    // square than the mover's destination (en-passant, whose victim stands beside the
+    // landing square). For a NORMAL capture the victim shares the `to` cell, and the
+    // mover-seed above already replaced that ledger slot — nulling it again here would
+    // wipe the mover we just placed, orphaning it at the origin and making paint()
+    // spawn a duplicate piece at the destination. Either way we still hold `captured`
+    // in scope to sweep it onto the tray at the glide peak (I4).
+    if (captured && (capR !== move.to.r || capC !== move.to.c)) pieceMeshes[capR][capC] = null;
 
     // For a promotion the gliding mesh is still the pawn; tell paint() to leave
     // the destination cell alone so it doesn't dispose the pawn under us. We swap
@@ -2122,6 +2135,21 @@ export function createGame(ctx) {
   }
   function setSeatRy(ry) { seatRy = ry; applyFacing(); updateIdentityCue(); refreshHighlights(); }
 
+  // Optional per-frame pump. Not required (we self-drive a private rAF) but the
+  // framework calls update(dt) on modules that expose it (board.js), driven by the
+  // shared scene render loop. We use it purely as a rAF SELF-HEAL: a backgrounded /
+  // throttled tab can cancel our pending requestAnimationFrame callback without ever
+  // firing it, leaving rafId stuck non-null (so startLoop bails) and the glide /
+  // trace / check-pulse frozen. When the tab returns to the foreground board.js
+  // resumes calling update(); if work remains but our clock is dead (rafId null) or
+  // has not ticked recently (pending callback was dropped), re-arm it. Mirrors the
+  // self-heal connect4/uttt expose. No-op while the loop ticks normally.
+  function update() {
+    if (disposed || !loopActive()) return;
+    if (rafId == null) { startLoop(); return; }
+    if (nowMs() - lastT > 250) { caf(rafId); rafId = null; startLoop(); }
+  }
+
   // ===========================================================================
   // dispose — stop the loop, free GPU resources, drop the group.
   // ===========================================================================
@@ -2163,6 +2191,12 @@ export function createGame(ctx) {
     // We rotate the group ourselves (per-colour near-edge facing) so the
     // framework must NOT also rotate it — declare self-orientation.
     orientPolicy: "self",
+    // Full-info turn-based module whose spectator/guest applyMove APPLIES + animates
+    // the relayed move, so board.js must arm its one-shot post-move snapshot-swallow
+    // window (else the host's redundant echo snapshot snaps the glide away). Stated
+    // explicitly so the contract can't silently flip to false in a refactor (the old
+    // instance relied on the implicit `undefined !== false` default).
+    spectatorAnimates: true,
     applyState,
     applyMove,
     onPointer,
@@ -2171,6 +2205,7 @@ export function createGame(ctx) {
     publicState,
     setRole,
     setSeatRy,
+    update,
     dispose,
     attribution: ATTRIBUTION,
     isOurTurn: () => phase === "play" && state.turn === myColor && role !== "spectator",
