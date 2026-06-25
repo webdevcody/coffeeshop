@@ -73,6 +73,9 @@ export function mountAmbientBoard(opts) {
     sendState() {},
     sendPublic() {},
     sendInput() {},
+    // A passerby never owns private layout to publish; the reveal flows the OTHER
+    // way (server → applyReveal below). No-op so unmodified modules build their ctx.
+    sendReveal() {},
   };
 
   const ctx = {
@@ -109,6 +112,16 @@ export function mountAmbientBoard(opts) {
         instance.applyState?.(state);
       } catch {
         /* a bad snapshot must not crash the render loop */
+      }
+    },
+    // SPECTATOR-ONLY REVEAL forwarded to the ambient passerby instance so a passerby
+    // renders the FULL board (both battleship fleets / the real memory faces). The
+    // ambient mount is always a "spectator" role instance, so applyReveal is safe.
+    applyReveal(reveals) {
+      try {
+        instance.applyReveal?.(reveals);
+      } catch {
+        /* a bad reveal must not crash the render loop */
       }
     },
     update(dt) {
@@ -178,6 +191,11 @@ export class InWorldBoard {
     // when this.active is still null. We stash it here and replay it at the end
     // of mount() so the late joiner converges instead of painting an empty board.
     this._pending = null;
+
+    // SPECTATOR-ONLY REVEAL buffered while no mount is active yet (same async-mount
+    // race as _pending): a hidden-info reveal can land before the module import
+    // resolves. We stash the newest one and replay it at the end of mount().
+    this._pendingReveal = null;
 
     this._wireNetwork();
   }
@@ -307,6 +325,7 @@ export class InWorldBoard {
     n.on("game-move", (m) => this._onMove(m));
     n.on("game-state", (m) => this._onState(m));
     n.on("game-reset", (m) => this._onReset(m));
+    n.on("reveal", (m) => this._onReveal(m));
   }
 
   _sameTable(m) {
@@ -450,10 +469,34 @@ export class InWorldBoard {
     if (!this._sameTable(m) || !a) return;
     a.over = false;
     a.lastFull = a.lastPub = null;
+    this._pendingReveal = null; // a stale reveal must not survive a reset
     try {
       a.instance.applyState?.(null);
     } catch {
       /* ignore */
+    }
+  }
+
+  // SPECTATOR-ONLY REVEAL inbound. The server forwards a hidden-info reveal (both
+  // battleship fleets / the real memory deck) to SPECTATORS + ambient passersby
+  // ONLY — never to a seated player's opponent. Route the merged reveals to the
+  // module so a spectator instance renders the FULL board. Buffer if the async
+  // mount hasn't resolved yet (same race the snapshot path handles via _pending).
+  _onReveal(m) {
+    const a = this.active;
+    if (!a) {
+      if (m && m.reveals != null) this._pendingReveal = m;
+      return;
+    }
+    if (!this._sameTable(m)) return;
+    // Only a spectator instance ever renders a reveal. A seated host/guest is never
+    // sent one by the server, but guard here too so a stray payload can't reveal an
+    // opponent's layout in a player's own view.
+    if (a.role !== "spectator") return;
+    try {
+      a.instance.applyReveal?.(m.reveals);
+    } catch {
+      /* a bad reveal must not crash the loop */
     }
   }
 
@@ -586,6 +629,16 @@ export class InWorldBoard {
       } else {
         this._pending = null;
       }
+      // SPECTATOR-ONLY REVEAL: replay any reveal that landed during the async load
+      // so a late spectator paints the full board immediately. requestState() also
+      // re-asks the server, which re-sends the cached reveal to a spectator.
+      if (role === "spectator" && this._pendingReveal && this._pendingReveal.table === opts.tableId) {
+        const bufferedReveal = this._pendingReveal;
+        this._pendingReveal = null;
+        this._onReveal(bufferedReveal);
+      } else {
+        this._pendingReveal = null;
+      }
       try {
         this.network?.requestState?.();
       } catch {
@@ -593,6 +646,7 @@ export class InWorldBoard {
       }
     } else {
       this._pending = null;
+      this._pendingReveal = null;
     }
     return true;
   }
@@ -656,6 +710,19 @@ export class InWorldBoard {
       sendInput(input) {
         try {
           self.network?.sendGameInput?.(input);
+        } catch {
+          /* ignore */
+        }
+      },
+      // SPECTATOR-ONLY REVEAL: a seated player publishes its OWN private layout so
+      // WATCHERS render the full board. The server forwards it to spectators +
+      // ambient passersby ONLY, never to the opposing seat — so a hidden-info game
+      // stays fair while every onlooker sees everything. Any seated role may call
+      // it (host reveals the deck for memory; each player reveals their own fleet
+      // for battleship); a spectator never has private layout to send.
+      sendReveal(reveal) {
+        try {
+          self.network?.sendReveal?.(reveal);
         } catch {
           /* ignore */
         }

@@ -225,6 +225,16 @@ export function createGame(ctx) {
   // ── PRIVATE: my own fleet (never serialized except in the post-game reveal) ──
   let myPlacements = [];
   let myOcean = freshOceanState();
+
+  // ── SPECTATOR-ONLY: both fleets, revealed by the seated players over the
+  // spectator-only reveal channel (server forwards each seat's own fleet to
+  // WATCHERS, never to the opponent). A seated player NEVER fills these — they stay
+  // empty in a player's own view, so the game stays fair. A spectator renders the
+  // host fleet on its OCEAN grid (−Z, where the guest fires) and the guest fleet on
+  // its ENEMY grid (+Z, where the host fires) — the same grids the shot streams use
+  // in applyState's spectator branch, so ships and shots line up.
+  const revealFleets = { host: null, guest: null }; // [{id,x,y,orientation}...] | null
+  const revealHullMeshes = [];
   function freshOceanState() {
     return { occ: new Array(GRID * GRID).fill(null), firedAt: new Array(GRID * GRID).fill(false), hitCount: {} };
   }
@@ -887,7 +897,11 @@ export function createGame(ctx) {
   // to the in-world cell size. PURELY VISUAL: every mesh is made non-raycastable
   // so the ships can never intercept a board click — the grid cells stay the
   // only hit-test.
-  function buildHull(ship) {
+  // Build one ship's detailed warship mesh, centred on its cells of the given grid
+  // ("ocean" = your near −Z grid; "enemy" = the far +Z grid). Seated play always
+  // renders MY fleet on the ocean grid; a spectator renders each revealed fleet on
+  // the grid where that side is FIRED UPON (see revealFleets above).
+  function buildHull(ship, which = "ocean") {
     const spec = SHIP_BY_ID.get(ship.id);
     const g = new THREE.Group();
     g.add(buildWarship({ id: ship.id, length: spec.length, orientation: ship.orientation, cell: CELL }));
@@ -896,7 +910,7 @@ export function createGame(ctx) {
     const a = cells[0];
     const b = cells[cells.length - 1];
     const cx = (cellX(a.x) + cellX(b.x)) / 2;
-    const cz = (cellZ(a.y, "ocean") + cellZ(b.y, "ocean")) / 2;
+    const cz = (cellZView(a.y, which) + cellZView(b.y, which)) / 2;
     g.position.set(cx, HULL_Y, cz);
     if (ship.orientation === "vertical") g.rotation.y = Math.PI / 2;
     g.userData.shipId = ship.id;
@@ -917,6 +931,61 @@ export function createGame(ctx) {
       group.add(h);
       hullMeshes.push(h);
     }
+  }
+
+  // SPECTATOR-ONLY: render BOTH revealed fleets — host on the OCEAN grid (−Z),
+  // guest on the ENEMY grid (+Z) — so a watcher sees every ship alongside every
+  // shot. A seated player NEVER calls this (revealFleets stay null), so an opponent
+  // can never see your ships. Idempotent: clears and rebuilds from revealFleets.
+  function rebuildRevealFleets() {
+    for (const h of revealHullMeshes) {
+      h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
+      group.remove(h);
+    }
+    revealHullMeshes.length = 0;
+    if (mySide) return; // seated players never render revealed opponent fleets
+    const layoutFor = { host: revealFleets.host, guest: revealFleets.guest };
+    // host fleet sits where the GUEST fires (ocean, −Z); guest fleet where the HOST
+    // fires (enemy, +Z) — matching applyState's spectator shot-stream placement.
+    const gridFor = { host: "ocean", guest: "enemy" };
+    for (const side of ["host", "guest"]) {
+      const layout = layoutFor[side];
+      if (!Array.isArray(layout)) continue;
+      for (const ship of layout) {
+        if (!ship || !SHIP_BY_ID.has(ship.id)) continue;
+        const norm = { id: ship.id, x: ship.x, y: ship.y, orientation: ship.orientation };
+        const h = buildHull(norm, gridFor[side]);
+        group.add(h);
+        revealHullMeshes.push(h);
+      }
+    }
+  }
+
+  // SPECTATOR-ONLY REVEAL apply. The framework hands a spectator instance the merged
+  // per-seat reveals { host:{side,fleet}|null, guest:{...}|null } that the two seated
+  // players published. We store each side's fleet and re-render. NO-OP for a seated
+  // player (mySide set) so an opponent's layout never reaches a player's own view.
+  function applyReveal(reveals) {
+    if (mySide) return; // only a spectator renders opponent fleets
+    if (!reveals || typeof reveals !== "object") return;
+    for (const side of ["host", "guest"]) {
+      const r = reveals[side];
+      const norm = r && Array.isArray(r.fleet) ? normalizeLayout(r.fleet) : null;
+      if (norm && validLayout(norm)) revealFleets[side] = norm;
+    }
+    rebuildRevealFleets();
+  }
+
+  // Coerce a wire fleet into the canonical {id,x,y,length,name,orientation} shape
+  // validLayout expects (it fills length/name from the spec). Tolerant of extras.
+  function normalizeLayout(fleet) {
+    if (!Array.isArray(fleet)) return null;
+    return fleet.map((s) => {
+      const spec = s && SHIP_BY_ID.get(s.id);
+      return spec
+        ? { id: s.id, name: spec.name, length: spec.length, x: s.x, y: s.y, orientation: s.orientation }
+        : s;
+    });
   }
 
   // ===========================================================================
@@ -1018,8 +1087,21 @@ export function createGame(ctx) {
     refreshButtons();
     refreshHud();
     try { ctx.net.sendMove({ type: "place", ready: true }); } catch { /* transport optional */ }
+    // SPECTATOR-ONLY REVEAL: publish MY finalized fleet so watchers (seated
+    // spectators + ambient passersby) can render it. The server routes this ONLY to
+    // spectators + ambient — NEVER to my opponent's seat — so the game stays fair.
+    sendFleetReveal();
     maybeStart();
     pushSnapshot();
+  }
+
+  // Publish my own fleet on the spectator-only reveal channel. Side-tagged so the
+  // spectator renders it on the correct grid. Guarded to a seated player with a
+  // complete fleet; a spectator has no fleet to send.
+  function sendFleetReveal() {
+    if (!mySide || myPlacements.length !== FLEET.length) return;
+    const fleet = myPlacements.map((s) => ({ id: s.id, x: s.x, y: s.y, orientation: s.orientation }));
+    try { ctx.net.sendReveal({ side: mySide, fleet }); } catch { /* transport optional */ }
   }
 
   function maybeStart() {
@@ -1397,7 +1479,12 @@ export function createGame(ctx) {
       hoverCell = null;
       aimCol = aimRow = -1;
       myOcean = freshOceanState();
+      // SPECTATOR-ONLY: a reset reshuffles the deployment, so drop revealed fleets;
+      // the seated players re-send them when they re-deploy.
+      revealFleets.host = null;
+      revealFleets.guest = null;
       rebuildHulls();
+      rebuildRevealFleets();
       refreshPanels();
       refreshButtons();
       refreshGhost();
@@ -1457,6 +1544,9 @@ export function createGame(ctx) {
     }
 
     rebuildHulls();
+    // SPECTATOR-ONLY: re-assert the revealed fleets after a snapshot repaint (a
+    // seated player's revealFleets are empty, so this is a no-op for them).
+    rebuildRevealFleets();
     refreshPanels();
     refreshButtons();
     refreshGhost();
@@ -1583,6 +1673,11 @@ export function createGame(ctx) {
       h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
     }
     hullMeshes.length = 0;
+    for (const h of revealHullMeshes) {
+      h.traverse((c) => { if (c.geometry) c.geometry.dispose?.(); });
+      group.remove(h);
+    }
+    revealHullMeshes.length = 0;
     for (const b of placeButtons) {
       b.mesh.traverse((c) => {
         if (c.geometry) c.geometry.dispose?.();
@@ -1624,6 +1719,7 @@ export function createGame(ctx) {
     orientPolicy: "self", // we rotate the group ourselves so each seat sees its OWN ocean near
     applyState,
     applyMove,
+    applyReveal, // SPECTATOR-ONLY: render both revealed fleets (no-op for a seated player)
     onPointer,
     setHover, // hover crosshair reticle over enemy waters + ghost preview during placement
     publicState,

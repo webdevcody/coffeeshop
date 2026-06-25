@@ -92,19 +92,27 @@ export class AmbientBoards {
     }
 
     if (!entry) {
-      entry = { gameId, board: null, loading: true, pendingState: m.pub ?? null };
+      entry = { gameId, board: null, loading: true, pendingState: m.pub ?? null, pendingReveal: m.reveals ?? null };
       this._mounts.set(tableId, entry);
       this._load(tableId, gameId, meta);
       return;
     }
 
-    // Mount exists (or is loading). Feed the latest public snapshot.
+    // Mount exists (or is loading). Feed the latest public snapshot + reveal.
     if (entry.loading) {
-      // Buffer the freshest snapshot; _load replays it once the module resolves.
+      // Buffer the freshest snapshot/reveal; _load replays them once it resolves.
       entry.pendingState = m.pub ?? null;
+      if (m.reveals != null) entry.pendingReveal = m.reveals;
       return;
     }
-    if (entry.board) entry.board.applyState(m.pub ?? null);
+    if (entry.board) {
+      entry.board.applyState(m.pub ?? null);
+      // SPECTATOR-ONLY REVEAL: feed the merged fleet/deck reveal so the passerby
+      // mirror renders the FULL board (both battleship fleets / real memory faces).
+      // The ambient broadcast carries `reveals` only for hidden-info games; it stays
+      // null otherwise. Apply only when present so a public game is untouched.
+      if (m.reveals != null) entry.board.applyReveal(m.reveals);
+    }
   }
 
   async _load(tableId, gameId, meta) {
@@ -147,6 +155,13 @@ export class AmbientBoards {
     if (entry.pendingState !== undefined) {
       board.applyState(entry.pendingState ?? null);
       entry.pendingState = undefined;
+    }
+    // SPECTATOR-ONLY REVEAL: replay any reveal buffered during load so the passerby
+    // paints the full hidden-info board immediately (both battleship fleets / the
+    // real memory faces). Null for public games — nothing applied.
+    if (entry.pendingReveal != null) {
+      board.applyReveal(entry.pendingReveal);
+      entry.pendingReveal = null;
     }
   }
 

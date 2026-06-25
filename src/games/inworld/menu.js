@@ -390,12 +390,15 @@ export function createGame(ctx) {
 
     // Navigation arrows: clickable plates at the bottom-left (prev) and
     // bottom-right (next) corners. Tagged for the pointer resolver.
-    buildArrow("prev", -halfW + 0.04, pageY + 0.005, PAGE_D / 2 - 0.045, false);
-    buildArrow("next", halfW - 0.04, pageY + 0.005, PAGE_D / 2 - 0.045, true);
+    // Float the nav arrows + Play just OFF the front edge of the book (z past the
+    // page) so the turning sheet (which sweeps the page area through the spine)
+    // never clips them, and they don't sit on top of the page art.
+    buildArrow("prev", -halfW + 0.04, pageY + 0.012, PAGE_D / 2 + 0.012, false);
+    buildArrow("next", halfW - 0.04, pageY + 0.012, PAGE_D / 2 + 0.012, true);
 
-    // "Play" plate centred under the spread.
+    // "Play" plate floating off the front edge, centred.
     playPlate = makeLabelPlate("Play", COL.plate, "#ffffff", 0.16, 0.058);
-    playPlate.position.set(0, pageY + 0.01, PAGE_D / 2 - 0.04);
+    playPlate.position.set(0, pageY + 0.016, PAGE_D / 2 + 0.028);
     playPlate.userData.menuAction = "play";
     bookRoot.add(playPlate);
     hostOnly.push(playPlate);

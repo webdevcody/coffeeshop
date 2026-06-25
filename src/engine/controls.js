@@ -151,7 +151,10 @@ export function createControls(domElement) {
   function consumeSit() {
     const pressed = sitPressed;
     sitPressed = false;
-    return locked ? false : pressed;
+    // NOTE: not gated by `locked`. Movement stays locked during a game, but Space
+    // must ALWAYS toggle sit/stand so you can STAND UP to quit mid-game (standing
+    // fires onStand → the app unlocks). Gating this left you trapped in the game.
+    return pressed;
   }
 
   // Returns true once per G press (drop the held item), then resets.

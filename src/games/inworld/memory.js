@@ -71,10 +71,17 @@ export function createGame(ctx) {
 
   let role = ctx.role;
   const amHost = () => role === "host";
+  const amSpectator = () => role === "spectator";
 
   // --- canonical shared game state (lives identically on every client) -------
   // Host-private deck (null for guest/spectator). cards[i].state: down|up|matched.
   let deck = role === "host" ? shuffledDeck() : null;
+
+  // SPECTATOR-ONLY REVEAL: the true card faces, published by the HOST over the
+  // spectator-only reveal channel (server forwards it to WATCHERS, never to the
+  // seated guest). null until received; only a spectator instance ever stores it,
+  // so the seated guest can NEVER learn a face-down value (the game stays fair).
+  let revealDeck = null;
   let cards = freshCards();
   let turn = "host"; // host (seat 0) always moves first
   let scores = { host: 0, guest: 0 };
@@ -372,12 +379,23 @@ export function createGame(ctx) {
       const a = anim[i];
       let faceUp;
       let mat;
+      // SPECTATOR-ONLY REVEAL: with the true deck in hand, a spectator shows EVERY
+      // card's real face (even face-down ones) so a watcher sees the full board.
+      // A face-down card's value comes from revealDeck (the masked snapshot nulls
+      // it). Matched/up cards keep their snapshot value. The seated guest never has
+      // revealDeck, so this branch never fires for a player — only a watcher.
+      const revealValue = amSpectator() && Array.isArray(revealDeck) ? revealDeck[i] : null;
       if (c.state === "matched") {
         faceUp = true;
-        mat = c.value != null ? getFaceMat(c.value) : M.matched;
+        const v = c.value != null ? c.value : revealValue;
+        mat = v != null ? getFaceMat(v) : M.matched;
       } else if (c.state === "up" && c.value != null) {
         faceUp = true;
         mat = getFaceMat(c.value);
+      } else if (revealValue != null) {
+        // Spectator viewing a face-down card whose true face we know.
+        faceUp = true;
+        mat = getFaceMat(revealValue);
       } else {
         faceUp = false;
         mat = M.back;
@@ -492,6 +510,35 @@ export function createGame(ctx) {
     }
   }
 
+  // SPECTATOR-ONLY REVEAL: the host publishes the TRUE deck so watchers render the
+  // real faces of every card. The server forwards it to spectators + ambient
+  // passersby ONLY — NEVER to the seated guest — so the game stays fair. Only the
+  // host knows the deck, so only the host ever calls this.
+  function pushReveal() {
+    if (!amHost() || !Array.isArray(deck)) return;
+    try {
+      ctx.net.sendReveal({ deck: deck.slice() });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // SPECTATOR-ONLY REVEAL apply. A spectator instance stores the true deck and
+  // re-renders so every card shows its real face. NO-OP for host (authoritative,
+  // already knows the deck) and for the seated guest (must never learn faces).
+  function applyReveal(reveals) {
+    if (!amSpectator()) return; // only a watcher renders the true deck
+    if (!reveals || typeof reveals !== "object") return;
+    const d = reveals.deck;
+    if (!Array.isArray(d)) return;
+    revealDeck = d.map((v) => (Number.isInteger(v) ? v : null));
+    renderCards();
+    // Snap straight to the revealed pose so a late watcher doesn't replay flips it
+    // never saw; subsequent moves still animate via renderCards on snapshots.
+    snapCards();
+    updateIdentityCues();
+  }
+
   // ---------------------------------------------------------------------------
   // Contract surface
   // ---------------------------------------------------------------------------
@@ -533,6 +580,9 @@ export function createGame(ctx) {
     if (!state) {
       // Authoritative reset.
       if (amHost()) deck = shuffledDeck();
+      // SPECTATOR-ONLY: the deck reshuffled, so the previously revealed faces are
+      // stale — drop them until the host re-sends the new deck below.
+      revealDeck = null;
       cards = freshCards();
       turn = "host";
       scores = { host: 0, guest: 0 };
@@ -545,7 +595,7 @@ export function createGame(ctx) {
       renderCards();
       snapCards();
       updateIdentityCues();
-      if (amHost()) pushState();
+      if (amHost()) { pushState(); pushReveal(); }
       return;
     }
     if (amHost()) return; // host is authoritative; ignore its own echo
@@ -581,10 +631,16 @@ export function createGame(ctx) {
   }
 
   function setRole(r) {
+    const wasHost = role === "host";
     role = r || "spectator";
     mySeat = role === "host" ? "host" : role === "guest" ? "guest" : null;
     // If we just became host without a deck (promotion), mint one so flips work.
     if (role === "host" && !deck) deck = shuffledDeck();
+    // A fresh host must publish its deck on the spectator-only reveal channel so
+    // watchers can render true faces.
+    if (role === "host" && !wasHost) pushReveal();
+    // No longer a spectator → discard any revealed deck (a player must not retain it).
+    if (role !== "spectator") revealDeck = null;
     layoutColours();
     updateIdentityCues();
   }
@@ -610,12 +666,13 @@ export function createGame(ctx) {
   renderCards();
   snapCards();
   updateIdentityCues();
-  if (amHost()) pushState();
+  if (amHost()) { pushState(); pushReveal(); }
 
   return {
     group,
     applyState,
     applyMove,
+    applyReveal, // SPECTATOR-ONLY: render the true card faces (no-op for host/guest)
     onPointer,
     publicState,
     update,

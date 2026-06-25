@@ -143,6 +143,15 @@ export class Network {
     this._send({ type: "game-input", input });
   }
 
+  // SPECTATOR-ONLY REVEAL. A seated player publishes their OWN private layout
+  // (battleship: their fleet; memory: the host's deck) so watchers can render the
+  // FULL board. The server routes it to this table's spectators + ambient passersby
+  // ONLY — never to the opposing seated player. Any role may call it; the server
+  // decides routing (a spectator/ambient instance's net.sendReveal is a no-op).
+  sendReveal(reveal) {
+    this._send({ type: "reveal", reveal });
+  }
+
   // Either player hit "new game".
   sendGameReset() {
     this._send({ type: "game-reset" });
