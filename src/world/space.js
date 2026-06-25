@@ -141,11 +141,16 @@ export function buildSpace(opts = {}) {
   const solarPivots = []; // station solar-wing roots (gentle sun-tracking tilt)
 
   // ── LAUNCHPAD placement ───────────────────────────────────────────────────
-  // Park it inset from the NE corner of the city: solid ground, well clear of the
-  // cafe (origin), the spawn (~z=18), and the ocean's west dock + offshore islands.
-  const INSET = 30;
-  const pad = { x: lb.maxX - INSET, z: lb.maxZ - INSET };
-  const R_PAD = 15;          // launchpad disc radius
+  // The 16 districts fill a 4x4 grid (cols x=-90/-30/30/90, rows z=65/125/185/245,
+  // each ~±23) — so EVERY corner cell is a district. The old NE-corner pad landed
+  // dead-centre on the nightlife/club tile. Instead park it on the OPEN connector
+  // apron south of the district grid, between the x=0 and x=60 avenues (a road-free
+  // band), right on the cafe→city spawn path so you walk past the rocket on the way
+  // in. Clear of the cafe (origin), the avenues (x=0/±6, x=60/±6), the cross streets
+  // (first at z=35), and all districts (first row at z≈42). Radius trimmed so the
+  // 22 m disc fits the band cleanly.
+  const pad = { x: 33, z: 19 };
+  const R_PAD = 9;           // launchpad disc radius (trimmed to fit the apron band, clear of the z=35 cross street)
   const padTopY = 0.06;      // top face height (just above road decals @0.025)
   const padThick = 0.6;
 
