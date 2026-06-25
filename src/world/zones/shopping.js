@@ -99,6 +99,29 @@ const foldGeo    = new THREE.BoxGeometry(0.7, 0.16, 0.45);   // a folded stack o
 const stoolSeatGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12);
 const stoolLegGeo  = new THREE.CylinderGeometry(0.04, 0.04, 0.55, 8);
 
+// --- Extra enterable-shop palette (BAKERY warm + GROCER fresh) ----------------
+const bakeWall   = new THREE.MeshStandardMaterial({ color: "#efe0c6", roughness: 0.92 });   // warm cream plaster
+const bakeFloor  = new THREE.MeshStandardMaterial({ color: "#b8825a", roughness: 0.85 });   // terracotta-ish tile
+const bakeRoof   = new THREE.MeshStandardMaterial({ color: "#d8c4a4", roughness: 0.9 });
+const breadMat   = new THREE.MeshStandardMaterial({ color: "#c98b46", roughness: 0.85 });   // golden loaf
+const ovenMat    = new THREE.MeshStandardMaterial({ color: "#7d4a2c", roughness: 0.7, metalness: 0.2 });
+const ovenGlow   = new THREE.MeshStandardMaterial({ color: "#ff8a3a", roughness: 0.4, emissive: "#ff5a18", emissiveIntensity: 0.8 });
+
+const grocWall   = new THREE.MeshStandardMaterial({ color: "#d6e6d2", roughness: 0.92 });   // cool mint plaster
+const grocFloor  = new THREE.MeshStandardMaterial({ color: "#8f9488", roughness: 0.88 });   // grey-green lino
+const grocRoof   = new THREE.MeshStandardMaterial({ color: "#bfcabb", roughness: 0.9 });
+const produceMat = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.8 });    // white base, tinted per-instance
+const crateMat   = new THREE.MeshStandardMaterial({ color: "#9c6b3f", roughness: 0.9 });    // wooden crate / stall riser
+const fridgeMat  = new THREE.MeshStandardMaterial({ color: "#cfe3ea", roughness: 0.3, metalness: 0.4, emissive: "#7fb3c9", emissiveIntensity: 0.25 });
+
+// --- Extra shared geometry for the new shops + street flavor ------------------
+const loafGeo    = new THREE.BoxGeometry(0.5, 0.22, 0.3);    // a bread loaf on a bakery tray
+const produceGeo = new THREE.IcosahedronGeometry(0.16, 0);   // a piece of fruit/veg in a grocer bin
+const crateGeo   = new THREE.BoxGeometry(0.9, 0.7, 0.9);     // a stacked wooden crate
+const awnPostGeo = new THREE.CylinderGeometry(0.05, 0.05, 2.2, 8);  // market-stall corner post
+const lampPoleGeo = new THREE.CylinderGeometry(0.08, 0.1, 4.4, 8);  // street-lamp pole
+const lampHeadGeo = new THREE.SphereGeometry(0.28, 12, 10);        // lamp globe
+
 // --- Shared geometry (reused) ------------------------------------------------
 const blobGeo   = new THREE.IcosahedronGeometry(0.8, 0);
 const planterGeo = new THREE.BoxGeometry(1.3, 0.5, 1.3);
@@ -815,6 +838,279 @@ export function buildShopping() {
   shopSign.castShadow = false;
   group.add(shopSign);
   signPanels.push(shopSign);
+
+  // --- Generic ENTERABLE shop SHELL builder ----------------------------------
+  // Builds a four-wall room with a doorway GAP in the NORTH (street-facing, -Z)
+  // wall, plus floor + ceiling. Mirrors the boutique's wall layout exactly so the
+  // two new shops stay consistent. Returns { group, wallH, halfW, halfD } and, via
+  // `addShellColliders`, registers one AABB per SOLID wall (none across the gap)
+  // converted to tile-local coords by the caller's (ox, oz) origin offset.
+  function makeShellColliders(ox, oz, W, D, wt, doorW) {
+    const hw = W / 2, hd = D / 2;
+    const sW = (W - doorW) / 2;          // each flanking front-segment width
+    const sOff = doorW / 2 + sW / 2;     // centre offset of each flanking segment
+    addCollider(colliders, ox + 0, oz + hd, W, wt);                 // back (south)
+    addCollider(colliders, ox + (-hw + wt / 2), oz + 0, wt, D);     // west side
+    addCollider(colliders, ox + ( hw - wt / 2), oz + 0, wt, D);     // east side
+    addCollider(colliders, ox + (-sOff), oz - hd, sW, wt);          // front-left seg
+    addCollider(colliders, ox + ( sOff), oz - hd, sW, wt);          // front-right seg
+  }
+  function makeShell(W, D, wallH, wallMat, ceilMat, floorMat, wt, doorW) {
+    const g = new THREE.Group();
+    const hw = W / 2, hd = D / 2;
+    const flr = box(W, 0.08, D, floorMat, false);
+    flr.position.set(0, 0.05, 0); flr.receiveShadow = true; g.add(flr);
+    const cap = box(W + 0.3, 0.2, D + 0.3, ceilMat, false);
+    cap.position.set(0, wallH + 0.1, 0); cap.receiveShadow = true; g.add(cap);
+    const back = box(W, wallH, wt, wallMat);
+    back.position.set(0, wallH / 2, hd); g.add(back);                // back (south)
+    for (const sx of [-hw + wt / 2, hw - wt / 2]) {
+      const side = box(wt, wallH, D, wallMat);
+      side.position.set(sx, wallH / 2, 0); g.add(side);
+    }
+    const sW = (W - doorW) / 2;
+    const sOff = doorW / 2 + sW / 2;
+    for (const sx of [-sOff, sOff]) {
+      const seg = box(sW, wallH, wt, wallMat);
+      seg.position.set(sx, wallH / 2, -hd); g.add(seg);              // front (north)
+    }
+    const lin = box(doorW + 0.1, 0.4, wt, wallMat, false);
+    lin.position.set(0, wallH - 0.2, -hd); g.add(lin);              // door lintel
+    return { group: g, hw, hd };
+  }
+
+  // Outward shop SIGN above a doorway, facing the avenue (-Z), pushed to signPanels.
+  function addStreetSign(ox, oz, frontZ, wallH, w, h, opts) {
+    const s = artPanel(w, h, "sign", opts);
+    s.position.set(ox, wallH + 0.55, oz + frontZ - 0.06);
+    s.rotation.y = Math.PI;
+    s.castShadow = false;
+    group.add(s);
+    signPanels.push(s);
+  }
+
+  // ===== ENTERABLE BAKERY (south-west verge) =================================
+  // Footprint 7m × 6.5m, centre (-15.5, 18.5) → X∈[-19,-12], Z∈[15.25,21.75].
+  // Clear of the boutique (right edge -12 vs boutique left -8), the corner planter
+  // (x=-22), the drive lane (z>14) and the ±23 setback. Doorway faces the avenue.
+  {
+    const BW = 7.0, BD = 6.5, BH = 3.2, WT2 = 0.25, DOOR2 = 2.2;
+    const BX = -15.5, BZ = 18.5;
+    const sh = makeShell(BW, BD, BH, bakeWall, bakeRoof, bakeFloor, WT2, DOOR2);
+    sh.group.position.set(BX, 0, BZ);
+    const hw = sh.hw, hd = sh.hd;
+
+    // Display COUNTER with a glass pastry case along the back-left.
+    const cb = box(2.6, 1.0, 0.7, ovenMat);
+    cb.position.set(-hw + 1.7, 0.5, hd - 0.7); sh.group.add(cb);
+    const ct = box(2.8, 0.08, 0.85, counterTopMat, false);
+    ct.position.set(-hw + 1.7, 1.02, hd - 0.7); sh.group.add(ct);
+    const cg = box(2.7, 0.55, 0.8, caseGlass, false);
+    cg.position.set(-hw + 1.7, 1.35, hd - 0.7); sh.group.add(cg);
+
+    // Brick OVEN with a glowing mouth along the back-right (the bakery's heart).
+    const oven = box(2.0, 2.2, 1.1, ovenMat);
+    oven.position.set(hw - 1.4, 1.1, hd - 0.7); sh.group.add(oven);
+    const mouth = box(1.1, 0.7, 0.2, ovenGlow, false);
+    mouth.position.set(hw - 1.4, 1.0, hd - 1.28); sh.group.add(mouth);
+
+    // Two SHELF racks of bread along the west wall (instanced loaves).
+    const loaves = new THREE.InstancedMesh(loafGeo, breadMat, 2 * 4);
+    loaves.castShadow = true; loaves.receiveShadow = true;
+    let li = 0;
+    for (let s = 0; s < 2; s++) {
+      const sy = 1.0 + s * 0.75;
+      const shelf = box(0.55, 0.08, 3.0, shelfMat, false);
+      shelf.position.set(-hw + 0.45, sy - 0.06, 0); sh.group.add(shelf);
+      for (let c = 0; c < 4; c++) {
+        dummy.position.set(-hw + 0.45, sy + 0.05, -1.1 + c * 0.75);
+        dummy.rotation.set(0, Math.PI / 2, 0);
+        dummy.updateMatrix();
+        loaves.setMatrixAt(li++, dummy.matrix);
+      }
+    }
+    loaves.instanceMatrix.needsUpdate = true;
+    sh.group.add(loaves);
+
+    // A small cafe TABLE with two stools near the door (somewhere to sit).
+    const tableTop = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.08, 16), counterTopMat);
+    tableTop.position.set(0.6, 0.78, -hd + 1.6); tableTop.castShadow = true; sh.group.add(tableTop);
+    const tableLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.78, 8), rackBarMat);
+    tableLeg.position.set(0.6, 0.39, -hd + 1.6); sh.group.add(tableLeg);
+    for (const [sx, sz] of [[-0.1, -hd + 1.6], [1.3, -hd + 1.6]]) {
+      const seat = new THREE.Mesh(stoolSeatGeo, stoolSeatMat);
+      seat.position.set(sx, 0.55, sz); seat.castShadow = true; sh.group.add(seat);
+      const leg = new THREE.Mesh(stoolLegGeo, rackBarMat);
+      leg.position.set(sx, 0.28, sz); sh.group.add(leg);
+    }
+
+    // Warm pendant LIGHTS.
+    for (const [lx, lz] of [[-1.0, 0.2], [1.4, -0.6]]) {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.6, 6), poleMat);
+      cord.position.set(lx, BH - 0.3, lz); sh.group.add(cord);
+      const shade = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.3, 12, 1, true), lampShadeMat);
+      shade.position.set(lx, BH - 0.65, lz); sh.group.add(shade);
+    }
+
+    // Inner wall sign.
+    const inner = artPanel(2.0, 0.7, "sign", {
+      text: "FRESH BREAD", bg: "#7d4a2c", fg: "#ffe6b0", emissiveIntensity: 0.4, file: "bakery-inner.png",
+    });
+    inner.position.set(-1.0, 2.4, hd - 0.06); inner.rotation.y = Math.PI; inner.castShadow = false;
+    sh.group.add(inner);
+
+    group.add(sh.group);
+    makeShellColliders(BX, BZ, BW, BD, WT2, DOOR2);
+    addStreetSign(BX, BZ, -hd, BH, 3.0, 1.0, {
+      text: "BAKERY", bg: "#7d4a2c", fg: "#ffe6b0", emissiveIntensity: 0.55, file: "bakery-sign.png",
+    });
+    // a striped awning over the bakery door, jutting toward the street (-Z). Kept
+    // shallow so its front tip stays on the verge (z>14), clear of the drive lane.
+    const bakeAwn = makeAwning(3.0, awnAmber);
+    bakeAwn.position.set(BX, BH + 0.05, BZ - hd - 0.5);
+    bakeAwn.rotation.y = Math.PI;
+    group.add(bakeAwn);
+  }
+
+  // ===== ENTERABLE GROCER (south-east verge) =================================
+  // Footprint 8m × 6.5m, centre (9, 18.5) → X∈[5,13], Z∈[15.25,21.75]. Clear of
+  // the boutique (left edge 5 vs boutique right 0), the corner planter (x=22), the
+  // drive lane (z>14) and the ±23 setback. Doorway faces the avenue.
+  {
+    const GW = 8.0, GD = 6.5, GH = 3.2, WT2 = 0.25, DOOR2 = 2.2;
+    const GX = 9.0, GZ = 18.5;
+    const sh = makeShell(GW, GD, GH, grocWall, grocRoof, grocFloor, WT2, DOOR2);
+    sh.group.position.set(GX, 0, GZ);
+    const hw = sh.hw, hd = sh.hd;
+
+    // CHECKOUT counter near the door-right.
+    const cb = box(2.2, 1.0, 0.7, counterMat);
+    cb.position.set(hw - 1.5, 0.5, -hd + 1.2); sh.group.add(cb);
+    const ct = box(2.4, 0.08, 0.85, counterTopMat, false);
+    ct.position.set(hw - 1.5, 1.02, -hd + 1.2); sh.group.add(ct);
+
+    // A glowing chilled DISPLAY FRIDGE against the back wall (metal frame + glass
+    // front a touch proud of the inner wall face so neither z-fights the wall).
+    const fframe = box(3.6, 2.2, 0.7, metalMat);
+    fframe.position.set(0.4, 1.1, hd - 0.55); fframe.castShadow = true; sh.group.add(fframe);
+    const fglass = box(3.4, 2.0, 0.1, fridgeMat, false);
+    fglass.position.set(0.4, 1.0, hd - 0.92); sh.group.add(fglass);
+
+    // TWO produce-display GONDOLAS (crate risers + tinted produce mounds) down the
+    // middle aisle. Instanced produce (3 rows × 2 cols per riser) stays cheap.
+    const produce = new THREE.InstancedMesh(produceGeo, produceMat, 2 * 6);
+    produce.castShadow = true; produce.receiveShadow = true;
+    const tints = ["#d2402f", "#e88a2a", "#e3c020", "#5a9e3f", "#9c4fa0", "#cf5a4a"];
+    let pidx = 0;
+    for (let g2 = 0; g2 < 2; g2++) {
+      const gx = -hw + 2.2 + g2 * 2.6;
+      const riser = box(1.4, 0.7, 2.4, crateMat);
+      riser.position.set(gx, 0.35, 0.3); sh.group.add(riser);
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 2; c++) {
+          dummy.position.set(gx - 0.32 + c * 0.64, 0.8, -0.5 + r * 0.55);
+          dummy.rotation.set(0, 0, 0);
+          dummy.updateMatrix();
+          produce.setMatrixAt(pidx, dummy.matrix);
+          produce.setColorAt(pidx, new THREE.Color(tints[(g2 * 6 + r * 2 + c) % tints.length]));
+          pidx++;
+        }
+      }
+    }
+    produce.instanceMatrix.needsUpdate = true;
+    if (produce.instanceColor) produce.instanceColor.needsUpdate = true;
+    sh.group.add(produce);
+
+    // A stack of spare CRATES in the back-left corner.
+    for (const [cx, cy, cz] of [[-hw + 0.9, 0.4, hd - 0.9], [-hw + 0.9, 1.1, hd - 0.9], [-hw + 1.7, 0.4, hd - 0.9]]) {
+      const cr = new THREE.Mesh(crateGeo, crateMat);
+      cr.position.set(cx, cy, cz); cr.castShadow = true; cr.receiveShadow = true; sh.group.add(cr);
+    }
+
+    // Cool ceiling LIGHTS (flat panels glow).
+    for (const [lx, lz] of [[-1.4, 0.0], [1.6, 0.4]]) {
+      const panel = box(1.0, 0.06, 0.5, lampShadeMat, false);
+      panel.position.set(lx, GH - 0.2, lz); sh.group.add(panel);
+    }
+
+    // Inner wall sign.
+    const inner = artPanel(2.0, 0.7, "sign", {
+      text: "FRESH PRODUCE", bg: "#1f6e3a", fg: "#e9ffe0", emissiveIntensity: 0.4, file: "grocer-inner.png",
+    });
+    inner.position.set(-2.4, 2.4, hd - 0.06); inner.rotation.y = Math.PI; inner.castShadow = false;
+    sh.group.add(inner);
+
+    group.add(sh.group);
+    makeShellColliders(GX, GZ, GW, GD, WT2, DOOR2);
+    addStreetSign(GX, GZ, -hd, GH, 3.2, 1.0, {
+      text: "GROCER", bg: "#1f6e3a", fg: "#e9ffe0", emissiveIntensity: 0.55, file: "grocer-sign.png",
+    });
+    const grocAwn = makeAwning(3.2, awnTeal);
+    grocAwn.position.set(GX, GH + 0.05, GZ - hd - 0.5);
+    grocAwn.rotation.y = Math.PI;
+    group.add(grocAwn);
+  }
+
+  // ===== STREET-LEVEL FLAVOR: market stall, crates, lamps, planters ==========
+  // An open-air MARKET STALL between the boutique and grocer (south verge), so the
+  // pedestrian zone feels lived-in. Centre (2.5, 16.2): a striped canopy on four
+  // posts over a crate-topped produce table. Footprint ~3×2, inside the setback and
+  // clear of the lane (z>14) and the three shopfronts.
+  {
+    const SX = 2.5, SZ = 16.2;
+    const stall = new THREE.Group();
+    // crate-riser table
+    const tbl = box(3.0, 0.9, 1.4, crateMat);
+    tbl.position.set(0, 0.45, 0); tbl.castShadow = true; tbl.receiveShadow = true; stall.add(tbl);
+    // a few tinted produce mounds on top (small instanced cluster)
+    const goods = new THREE.InstancedMesh(produceGeo, produceMat, 10);
+    goods.castShadow = true;
+    const gtint = ["#d2402f", "#e88a2a", "#e3c020", "#5a9e3f", "#cf5a4a"];
+    for (let i = 0; i < 10; i++) {
+      dummy.position.set(-1.1 + (i % 5) * 0.55, 1.0, (i < 5 ? -0.3 : 0.3));
+      dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+      goods.setMatrixAt(i, dummy.matrix);
+      goods.setColorAt(i, new THREE.Color(gtint[i % gtint.length]));
+    }
+    goods.instanceMatrix.needsUpdate = true;
+    if (goods.instanceColor) goods.instanceColor.needsUpdate = true;
+    stall.add(goods);
+    // four corner posts + a striped canopy
+    for (const px of [-1.4, 1.4]) for (const pz of [-0.6, 0.6]) {
+      const post = new THREE.Mesh(awnPostGeo, poleMat);
+      post.position.set(px, 1.1, pz); post.castShadow = true; stall.add(post);
+    }
+    const canopy = box(3.4, 0.1, 1.8, awnRed, false);
+    canopy.position.set(0, 2.25, 0); canopy.castShadow = true; stall.add(canopy);
+    stall.position.set(SX, 0, SZ);
+    group.add(stall);
+    addCollider(colliders, SX, SZ, 3.0, 1.4);
+
+    // A couple of spare CRATE stacks dressing the verge corners.
+    for (const [cx, cz] of [[-10.5, 16.4], [14.5, 16.4]]) {
+      const cr1 = new THREE.Mesh(crateGeo, crateMat);
+      cr1.position.set(cx, 0.4, cz); cr1.castShadow = true; cr1.receiveShadow = true; group.add(cr1);
+      const cr2 = new THREE.Mesh(crateGeo, crateMat);
+      cr2.position.set(cx + 0.25, 1.1, cz - 0.1); cr2.castShadow = true; group.add(cr2);
+      addCollider(colliders, cx, cz, 1.1, 1.0);
+    }
+  }
+
+  // STREET LAMPS lining the open verge so it reads as a real avenue at dusk. Posts
+  // sit on the south verge (z≈15) and on the north sidewalk (z≈-9), all inside the
+  // setback and clear of the driving lane (z∈[-7,14]).
+  for (const [lx, lz] of [[-18, 15.0], [18, 15.0], [-18, -9.0], [18, -9.0]]) {
+    const lamp = new THREE.Group();
+    const pole = new THREE.Mesh(lampPoleGeo, poleMat);
+    pole.position.set(0, 2.2, 0); pole.castShadow = true; lamp.add(pole);
+    const arm = box(0.9, 0.1, 0.1, poleMat);
+    arm.position.set(0.35, 4.3, 0); lamp.add(arm);
+    const head = new THREE.Mesh(lampHeadGeo, lampShadeMat);
+    head.position.set(0.7, 4.25, 0); lamp.add(head);
+    lamp.position.set(lx, 0, lz);
+    group.add(lamp);
+    addCollider(colliders, lx, lz, 0.3, 0.3);
+  }
 
   // ------------------------------------------------------------------------
   // update: cheap ambient animation, NO per-frame allocation.

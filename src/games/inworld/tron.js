@@ -746,10 +746,18 @@ export function createGame(ctx) {
   }
 
   function update(dt) {
+    // SELF-HEAL on a throttled/backgrounded tab. rAF can hand us a NaN/0 dt or a
+    // multi-hundred-ms catch-up frame. Sanitise+clamp BEFORE hostTick: a NaN dt
+    // would otherwise poison countdownAcc/tickAcc (NaN >= TICK_MS is false, so the
+    // host sim would freeze PERMANENTLY), and an unbounded dt would burst dozens of
+    // grid steps in one frame (the cycle teleports across the arena). Clamping to
+    // 50ms (like pong) caps catch-up to at most one extra tick/frame and keeps the
+    // lockstep grid advancing smoothly when the tab refocuses. Mirrors pong.js.
+    if (!Number.isFinite(dt) || dt <= 0) dt = 1 / 60;
+    dt = Math.min(dt, 0.05);
     if (isHost()) hostTick(dt);
 
     // ---- render-side cosmetic interpolation (authority untouched) ----
-    if (!Number.isFinite(dt) || dt <= 0) dt = 1 / 60;
     const now = nowMs();
     // Smooth cell-to-cell head glide (I1). Tuned to CONVERGE within one TICK_MS:
     // at 60fps a 90ms tick is ~5.4 frames, and 1-(1-dt*22)^5.4 ≈ 0.92, so the eased

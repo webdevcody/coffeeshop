@@ -491,6 +491,163 @@ function makeNewsstandShop(cx, cz) {
   return { group: g, colliders: shopColliders };
 }
 
+// --- GENERIC ENTERABLE STATION SHOP ----------------------------------------
+// A second reusable enterable-room builder for the south plaza, themed via cfg.
+// Same contract as makeNewsstandShop: a real room (4 walls + floor + ceiling)
+// with a ~2.2 m DOORWAY gap in the STREET-FACING (-Z) wall, individual wall
+// colliders (back + two sides + the two front segments flanking the door — and
+// NO collider across the doorway gap), an exterior sign over the door (facing
+// -Z, the plaza approach), and a cosy themed interior. Geometry is local to the
+// returned group; colliders are returned in WORLD/tile-local coords from cx,cz.
+// Returns { group, colliders }.
+//
+// cfg = { signText, signBg, signFg, signFile, wallMat, outMat, floorMat,
+//         counterMat, accentMats[], menuText, menuBg, menuFg }
+function makeStationShop(cx, cz, cfg) {
+  const g = new THREE.Group();
+  g.position.set(cx, 0, cz);
+
+  const RW = 8.0, RD = 6.5, RH = 3.0, T = 0.25, DOOR = 2.2;
+  const halfW = RW / 2, halfD = RD / 2;
+  const shopColliders = [];
+
+  const wallMat = cfg.wallMat || MAT.shopWall;
+  const outMat = cfg.outMat || MAT.shopWallOut;
+  const floorMat = cfg.floorMat || MAT.shopFloor;
+  const counterMat = cfg.counterMat || MAT.shopCounter;
+  const accents = cfg.accentMats || SHOP_PRODUCT_MATS;
+
+  // FLOOR + ceiling
+  const floor = box(RW + T, 0.1, RD + T, floorMat, false, true);
+  floor.position.set(0, 0.05, 0);
+  g.add(floor);
+  const rug = box(3.2, 0.04, 2.4, MAT.shopRug, false, false);
+  rug.position.set(0, 0.12, 0.6);
+  g.add(rug);
+  const roof = box(RW + T, 0.18, RD + T, MAT.shopRoof, true, false);
+  roof.position.set(0, RH + 0.09, 0);
+  g.add(roof);
+
+  // BACK wall (z = -halfD)
+  const backWall = box(RW + T, RH, T, wallMat, true, true);
+  backWall.position.set(0, RH / 2, -halfD);
+  g.add(backWall);
+  shopColliders.push({ cx: cx + 0, cz: cz - halfD, w: RW + T, d: T });
+
+  // SIDE walls (x = ±halfW)
+  for (const sx of [-halfW, halfW]) {
+    const sideWall = box(T, RH, RD + T, wallMat, true, true);
+    sideWall.position.set(sx, RH / 2, 0);
+    g.add(sideWall);
+    shopColliders.push({ cx: cx + sx, cz: cz + 0, w: T, d: RD + T });
+  }
+
+  // FRONT (-Z, street-facing) wall: TWO segments flanking the DOORWAY GAP.
+  const frontSpan = RW + T;
+  const segW = (frontSpan - DOOR) / 2;
+  const segCenterX = DOOR / 2 + segW / 2;
+  for (const sgn of [-1, 1]) {
+    const sx = sgn * segCenterX;
+    const seg = box(segW, RH, T, wallMat, true, true);
+    seg.position.set(sx, RH / 2, halfD);
+    g.add(seg);
+    shopColliders.push({ cx: cx + sx, cz: cz + halfD, w: segW, d: T });
+    // warm outer overlay on each front segment
+    const outFront = box(segW, RH, 0.04, outMat, false, false);
+    outFront.position.set(sx, RH / 2, halfD + T / 2 + 0.02);
+    g.add(outFront);
+  }
+  // lintel above the doorway (visual only, above head height → no collider)
+  const lintel = box(DOOR + 0.2, 0.45, T, wallMat, true, false);
+  lintel.position.set(0, RH - 0.225, halfD);
+  g.add(lintel);
+  // warm outer overlay on the back wall
+  const outBack = box(RW + T + 0.04, RH, 0.04, outMat, false, false);
+  outBack.position.set(0, RH / 2, -halfD - T / 2 - 0.02);
+  g.add(outBack);
+
+  // --- INTERIOR ----
+  // SERVICE COUNTER along the back wall, with a dark top + glowing register.
+  const counterW = 3.6, counterD = 0.8, counterH = 1.05;
+  const counterX = -halfW + counterW / 2 + 0.6;
+  const counterZ = -halfD + counterD / 2 + 0.5;
+  const counterBody = box(counterW, counterH, counterD, counterMat, true, false);
+  counterBody.position.set(counterX, counterH / 2, counterZ);
+  g.add(counterBody);
+  const counterTop = box(counterW + 0.2, 0.08, counterD + 0.2, MAT.shopCounterTop, true, false);
+  counterTop.position.set(counterX, counterH + 0.04, counterZ);
+  g.add(counterTop);
+  const register = box(0.5, 0.3, 0.4, MAT.shopGlow, false, false);
+  register.position.set(counterX + counterW / 2 - 0.5, counterH + 0.25, counterZ);
+  g.add(register);
+
+  // SHELVES on the back wall (right of the counter) with little goods.
+  const shelfX = halfW - 1.4;
+  const shelfZ = -halfD + 0.18 + T / 2;
+  for (let s = 0; s < 3; s++) {
+    const shelfY = 0.9 + s * 0.7;
+    const shelf = new THREE.Mesh(GEO.shopShelf, MAT.shopShelfMat);
+    shelf.scale.set(1.2, 1, 1);
+    shelf.position.set(shelfX, shelfY, shelfZ);
+    shelf.castShadow = true;
+    g.add(shelf);
+    for (let p = 0; p < 4; p++) {
+      const prod = new THREE.Mesh(GEO.shopProduct, accents[(s * 4 + p) % accents.length]);
+      prod.position.set(shelfX - 0.85 + p * 0.55, shelfY + 0.19, shelfZ);
+      prod.castShadow = true;
+      g.add(prod);
+    }
+  }
+
+  // STOOLS near the front window side (+ a small standing ledge).
+  for (const stx of [-1.9, -0.6]) {
+    const stool = new THREE.Group();
+    const seat = new THREE.Mesh(GEO.shopStoolSeat, MAT.shopStoolMat);
+    seat.position.y = 0.7;
+    seat.castShadow = true;
+    const leg = new THREE.Mesh(GEO.shopStoolLeg, MAT.shopStoolMat);
+    leg.position.y = 0.35;
+    stool.add(seat, leg);
+    stool.position.set(stx, 0.1, halfD - 1.6);
+    g.add(stool);
+  }
+
+  // MENU board on the BACK wall facing INTO the room (+Z) — plain artPanel.
+  const menu = artPanel(2.2, 1.0, "sign", {
+    text: cfg.menuText || "OPEN", bg: cfg.menuBg || "#1d2b1f",
+    fg: cfg.menuFg || "#ffe6a8", emissiveIntensity: 0.4,
+  });
+  menu.position.set(counterX, RH - 0.7, -halfD + T / 2 + 0.06);
+  g.add(menu);
+
+  // HANGING PENDANT LIGHTS (two).
+  for (const lx of [-1.8, 1.8]) {
+    const stem = box(0.04, 0.5, 0.04, MAT.shopStoolMat, false, false);
+    stem.position.set(lx, RH - 0.25, 0.2);
+    g.add(stem);
+    const bulb = new THREE.Mesh(GEO.shopPendant, MAT.shopGlow);
+    bulb.position.set(lx, RH - 0.55, 0.2);
+    g.add(bulb);
+  }
+
+  // EXTERIOR SIGN over the door, facing the STREET (+Z, the plaza/lane side the
+  // player approaches from). The doorway is the +Z wall, so the sign's readable
+  // front must face +Z → plain artPanel (NO mirror flip), like the newsstand.
+  const sign = artPanel(3.2, 0.8, "sign", {
+    text: cfg.signText, bg: cfg.signBg || "#10324a", fg: cfg.signFg || "#ffd34d",
+    emissiveIntensity: 0.5, file: cfg.signFile,
+  });
+  sign.position.set(0, RH + 0.2, halfD + T / 2 + 0.08);
+  g.add(sign);
+  // small striped awning over the doorway
+  const awn = box(DOOR + 1.0, 0.12, 1.0, MAT.awning, true, false);
+  awn.position.set(0, RH - 0.5, halfD + 0.6);
+  awn.rotation.x = -0.2;
+  g.add(awn);
+
+  return { group: g, colliders: shopColliders };
+}
+
 export function buildTransit() {
   const group = new THREE.Group();
   const colliders = [];
@@ -1086,6 +1243,118 @@ export function buildTransit() {
   const shop = makeNewsstandShop(SHOP_X, SHOP_Z);
   group.add(shop.group);
   for (const c of shop.colliders) addCollider(colliders, c.cx, c.cz, c.w, c.d);
+
+  // --- TWO MORE ENTERABLE STATION SHOPS along the south plaza verge -----------
+  // Both use makeStationShop: a real room with a +Z (plaza-facing) doorway gap,
+  // themed interior and individual wall colliders (none across the door). They
+  // sit on the south verge (Z centre ≈ -19.5, footprint Z∈[-22.9,-16.1]) so the
+  // door opens NORTH into the open plaza and the footprint stays inside [-23,23].
+  // Door X-centres are kept off the bollard line (X = …,-15,-9,-3,3,…) so the
+  // 2.2 m doorway opening is clear.
+  //   • TICKET OFFICE  — south-west,  centre (-17, -19.5) → X∈[-21.25,-12.75]
+  //   • STATION CAFE   — south-centre, centre (  0, -19.5) → X∈[ -4.25,  4.25]
+  const extraShops = [
+    {
+      x: -17, z: -19.5,
+      cfg: {
+        signText: "TICKETS", signBg: "#0d2b14", signFg: "#7dffa0",
+        signFile: "sign-tickets.png",
+        wallMat: MAT.shopWall, outMat: MAT.concourseTrim, floorMat: MAT.shopFloor,
+        counterMat: MAT.shopCounter, accentMats: SHOP_PRODUCT_MATS,
+        menuText: "FARES", menuBg: "#0d2b14", menuFg: "#7dffa0",
+      },
+    },
+    {
+      x: 0, z: -19.5,
+      cfg: {
+        signText: "CAFE", signBg: "#7a3b1f", signFg: "#ffd34d",
+        signFile: "sign-stationcafe.png",
+        wallMat: MAT.shopWall, outMat: MAT.shopWallOut, floorMat: MAT.shopFloor,
+        counterMat: MAT.shopCounter, accentMats: SHOP_PRODUCT_MATS,
+        menuText: "COFFEE", menuBg: "#2b1410", menuFg: "#ffb37d",
+      },
+    },
+  ];
+  for (const s of extraShops) {
+    const sh = makeStationShop(s.x, s.z, s.cfg);
+    group.add(sh.group);
+    for (const c of sh.colliders) addCollider(colliders, c.cx, c.cz, c.w, c.d);
+  }
+
+  // --- EXTRA STREET FLAVOUR on the plaza verge (all clear of the drivable lane
+  // Z≈[-8,+5] and clear of the three shop footprints around Z≈-19.5). ----------
+  // A small luggage-trolley + stacked crates near the tickets shop door.
+  const trolleyBase = box(1.4, 0.18, 0.7, MAT.steel, true, false);
+  trolleyBase.position.set(-11.5, 0.3, -15.0);
+  group.add(trolleyBase);
+  const trolleyHandle = box(0.08, 1.0, 0.08, MAT.steel, true, false);
+  trolleyHandle.position.set(-12.1, 0.85, -15.0);
+  group.add(trolleyHandle);
+  for (let i = 0; i < 3; i++) {
+    const lug = box(0.6, 0.4, 0.55, SHOP_PRODUCT_MATS[i % SHOP_PRODUCT_MATS.length], true, false);
+    lug.position.set(-11.5, 0.6 + i * 0.42, -15.0);
+    group.add(lug);
+  }
+  addCollider(colliders, -11.6, -15.0, 1.4, 0.8);
+
+  // A pair of plaza planters flanking the central cafe doorway approach. The
+  // right planter is set a touch further south so it clears the existing plaza
+  // bench at (6,-15).
+  for (const p of [{ x: -5.5, z: -15.4 }, { x: 5.5, z: -16.4 }]) {
+    const planter = makePlanter();
+    planter.position.set(p.x, 0, p.z);
+    group.add(planter);
+    addCollider(colliders, p.x, p.z, 1.4, 1.4);
+  }
+
+  // Two extra plaza benches (back-to-back island) on the open verge mid-plaza,
+  // facing outward so waiting passengers can sit. Clear of all shop doors.
+  const islandBench1 = makeBench();
+  islandBench1.position.set(-7.5, 0, -9.5);
+  group.add(islandBench1);
+  addCollider(colliders, -7.5, -9.5, 1.7, 0.6);
+  const islandBench2 = makeBench();
+  islandBench2.position.set(-7.5, 0, -10.1);
+  islandBench2.rotation.y = Math.PI;
+  group.add(islandBench2);
+  addCollider(colliders, -7.5, -10.1, 1.7, 0.6);
+
+  // A second litter bin + a lamp near the cafe to light the verge at night.
+  const bin2 = makeBin();
+  bin2.position.set(4.5, 0, -14.0);
+  group.add(bin2);
+  addCollider(colliders, 4.5, -14.0, 0.6, 0.6);
+  const vergeLamp = makeLamp();
+  vergeLamp.position.set(-10.5, 0, -10.0);
+  group.add(vergeLamp);
+  addCollider(colliders, -10.5, -10.0, 0.3, 0.3);
+
+  // A small newspaper/snack STALL (open kiosk cart) between the cafe and the
+  // newsstand: a counter with a flat striped canopy on two posts. Visual prop.
+  const stall = new THREE.Group();
+  const stallCounter = box(2.2, 1.0, 0.9, MAT.shopCounter, true, false);
+  stallCounter.position.set(0, 0.5, 0);
+  stall.add(stallCounter);
+  const stallTop = box(2.3, 0.08, 1.0, MAT.shopCounterTop, true, false);
+  stallTop.position.set(0, 1.04, 0);
+  stall.add(stallTop);
+  for (const sx of [-1.0, 1.0]) {
+    const post = box(0.08, 2.2, 0.08, MAT.steel, true, false);
+    post.position.set(sx, 1.1, -0.35);
+    stall.add(post);
+  }
+  const stallCanopy = box(2.6, 0.1, 1.3, MAT.awning, true, false);
+  stallCanopy.position.set(0, 2.2, -0.1);
+  stall.add(stallCanopy);
+  // a few colourful papers/snacks on the stall top
+  for (let i = 0; i < 4; i++) {
+    const item = box(0.4, 0.12, 0.3, SHOP_PRODUCT_MATS[i % SHOP_PRODUCT_MATS.length], true, false);
+    item.position.set(-0.75 + i * 0.5, 1.14, 0.1);
+    stall.add(item);
+  }
+  stall.position.set(8.5, 0, -14.5);
+  group.add(stall);
+  addCollider(colliders, 8.5, -14.5, 2.2, 0.9);
 
   // --- Animation state ------------------------------------------------------
   // The train slowly slides in and out along X (parked → eases away → returns),

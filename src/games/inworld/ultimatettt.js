@@ -705,10 +705,19 @@ export function createGame(ctx) {
       setBigMark(B, bigWinner[B] === "X" || bigWinner[B] === "O" ? bigWinner[B] : null);
     }
     // Drop any stale win-halo when the new state isn't a finished game (e.g. a reset
-    // or resync back to mid-play); highlightMetaWin re-arms it when over.
-    if (phase !== "over") { haloFx.active = false; halo.visible = false; }
+    // or resync back to mid-play); highlightMetaWin re-arms it when over. Also clear
+    // the stale deciding-line so a mid-play repaint never carries a previous game's
+    // winLine (it's defensively gated everywhere on phase==="over", but clearing it
+    // keeps the invariant "winLine != null ⇒ game is over" honest).
+    if (phase !== "over") { haloFx.active = false; halo.visible = false; winLine = null; }
     refreshPlates();
     if (phase === "over") highlightMetaWin();
+    // Self-heal the clock after a full repaint (catch-up / resync / late join). The
+    // lamp pulse + forced-board glow only run while the clock ticks; paint() can land
+    // a fresh mid-play position whose pulses must start without waiting for the next
+    // framework update() pump (mirrors connect4's refreshLamps→ensureClock). When over,
+    // highlightMetaWin already armed it; ensureClock no-ops if the rAF is alive.
+    if (needsAnim()) ensureClock();
   }
 
   // applyState rebuilds shared state ONLY — never myMark/role (no side-flip).

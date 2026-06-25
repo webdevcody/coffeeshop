@@ -186,12 +186,14 @@ export function createGame(ctx) {
   };
   const kd = (e) => onKey(e, true);
   const ku = (e) => onKey(e, false);
-  // Only a guest ever sends steering, so only a guest needs the global key
-  // listeners. Spectators / ambient mirrors (mounted as role "spectator") would
-  // otherwise each install a useless pair of window listeners that accumulate.
+  // Both seated players steer their OWN paddle from the keyboard: the host moves
+  // paddle A directly in physics(), the guest moves paddle B via local prediction +
+  // streamed intent. So either seat needs the global key listeners; only spectators
+  // / ambient mirrors (role "spectator") skip them, which otherwise would each
+  // install a useless pair of window listeners that accumulate.
   let keysAttached = false;
   function attachKeys() {
-    if (keysAttached || !isGuest || typeof window === "undefined") return;
+    if (keysAttached || !(isHost || isGuest) || typeof window === "undefined") return;
     window.addEventListener("keydown", kd);
     window.addEventListener("keyup", ku);
     keysAttached = true;
@@ -1132,8 +1134,9 @@ export function createGame(ctx) {
     // presence gate fresh so it doesn't immediately think the guest is stale.
     if (isHost) lastGuestInputAt = nowMs();
 
-    // attach/detach key listeners to match the new role (only guests steer)
-    if (isGuest) attachKeys(); else detachKeys();
+    // attach/detach key listeners to match the new role (both seated players steer
+    // their own paddle; only spectators need no keys)
+    if (isHost || isGuest) attachKeys(); else detachKeys();
 
     // a freshly-seated client should drive its own paddle from a sane base
     if (isGuest && Number.isFinite(pB)) myPredX = pB;

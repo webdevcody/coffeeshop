@@ -82,6 +82,21 @@ const prodMatA = new THREE.MeshStandardMaterial({ color: "#c0392b", roughness: 0
 const prodMatB = new THREE.MeshStandardMaterial({ color: "#2f6fb8", roughness: 0.6 }); // blue toolboxes
 const prodMatC = new THREE.MeshStandardMaterial({ color: "#e0a82e", roughness: 0.7 }); // yellow boxes
 const prodMatD = new THREE.MeshStandardMaterial({ color: "#3a8d54", roughness: 0.65 }); // green tins
+// --- Fabrication-shop accents (welding bench, gas bottles, anvil, glow) -----
+const benchTopMat = new THREE.MeshStandardMaterial({ color: "#5d6166", roughness: 0.55, metalness: 0.6 });
+const anvilMat = new THREE.MeshStandardMaterial({ color: "#3a3d42", roughness: 0.5, metalness: 0.7 });
+const gasBottleA = new THREE.MeshStandardMaterial({ color: "#1d6f3f", roughness: 0.45, metalness: 0.55 }); // O2 green
+const gasBottleB = new THREE.MeshStandardMaterial({ color: "#9c2b22", roughness: 0.45, metalness: 0.55 }); // fuel red
+const sparkMat = new THREE.MeshStandardMaterial({
+  color: "#fff0c2", emissive: "#ff7b2e", emissiveIntensity: 1.4, roughness: 0.4,
+});
+const planterMat = new THREE.MeshStandardMaterial({ color: "#4f5358", roughness: 0.95 });
+const shrubMat = new THREE.MeshStandardMaterial({ color: "#46663a", roughness: 0.95, flatShading: true });
+const palletMat = new THREE.MeshStandardMaterial({ color: "#9c7a44", roughness: 0.9 });
+const lampPostMat = new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness: 0.6, metalness: 0.5 });
+const lampGlowMat = new THREE.MeshStandardMaterial({
+  color: "#ffe6a8", emissive: "#ffbe55", emissiveIntensity: 0.9, roughness: 0.5,
+});
 
 // --- Shared geometries (created ONCE, reused) ------------------------------
 const smokeGeo = new THREE.IcosahedronGeometry(0.55, 0);
@@ -104,6 +119,12 @@ const stoolSeatGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.07, 12);
 const stoolLegGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.62, 6);
 const lampCordGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 5);     // scaled per lamp
 const lampShadeGeo = new THREE.ConeGeometry(0.26, 0.26, 12, 1, true);
+// Fab-shop + street-prop detail geometries (created ONCE, reused)
+const gasBottleGeo = new THREE.CylinderGeometry(0.16, 0.16, 1.1, 10);
+const gasCapGeo = new THREE.SphereGeometry(0.16, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+const sparkGeo = new THREE.IcosahedronGeometry(0.05, 0);
+const palletPlankGeo = new THREE.BoxGeometry(1.2, 0.06, 0.16);
+const shrubGeo = new THREE.IcosahedronGeometry(0.42, 0);
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -670,6 +691,240 @@ function makeToolShop(W, D, H, wallT, doorGap) {
   return { group: g, colliders };
 }
 
+// ── Enterable FABRICATION / WELDING SHOP ───────────────────────────────────
+// A second walk-in storefront with its OWN look: a welding bench, paired gas
+// bottles, an anvil on a stump, a parts shelf and a glowing weld-arc that the
+// caller animates. Same shell convention as makeToolShop — four walls + floor +
+// flat roof with a doorway GAP in the −Z (street) wall (no collider on the gap).
+//
+// Returns { group, colliders, sparks } where sparks is an array of
+// { mesh, baseY, t, speed } the caller's update() advances (no per-frame alloc).
+function makeFabShop(W, D, H, wallT, doorGap) {
+  const g = new THREE.Group();
+  const colliders = [];
+  const sparks = [];
+
+  const hw = W / 2, hd = D / 2;
+  const wallCX = hw + wallT / 2;
+  const wallCZ = hd + wallT / 2;
+  const outerW = W + 2 * wallT;
+
+  // Floor + flat roof + parapet (same recipe as the tool shop).
+  const floor = box(W + wallT, 0.12, D + wallT, shopFloorMat, false);
+  floor.position.y = 0.06;
+  floor.receiveShadow = true;
+  g.add(floor);
+  const roof = box(outerW, 0.2, D + 2 * wallT, shopRoofMat, true);
+  roof.position.y = H + 0.1;
+  g.add(roof);
+  const parapet = box(outerW + 0.18, 0.28, D + 2 * wallT + 0.18, roofMat, false);
+  parapet.position.y = H + 0.04;
+  g.add(parapet);
+
+  // Walls: back (+Z), two sides (±X), and two front (−Z) flanks around the door.
+  const back = box(outerW, H, wallT, shopWallMat);
+  back.position.set(0, H / 2, wallCZ);
+  g.add(back);
+  for (const sx of [-1, 1]) {
+    const side = box(wallT, H, D, shopWallMat);
+    side.position.set(sx * wallCX, H / 2, 0);
+    g.add(side);
+  }
+  const frontSegLen = (outerW - doorGap) / 2;
+  const segOffset = doorGap / 2 + frontSegLen / 2;
+  for (const sx of [-1, 1]) {
+    const seg = box(frontSegLen, H, wallT, shopWallMat);
+    seg.position.set(sx * segOffset, H / 2, -wallCZ);
+    g.add(seg);
+  }
+  const doorClear = 2.4;
+  if (H > doorClear + 0.1) {
+    const lintel = box(doorGap + 0.2, H - doorClear, wallT, shopWallMat);
+    lintel.position.set(0, doorClear + (H - doorClear) / 2, -wallCZ);
+    g.add(lintel);
+  }
+  for (const sx of [-1, 1]) {
+    const jamb = box(0.1, doorClear, wallT + 0.04, frameMat, false);
+    jamb.position.set(sx * (doorGap / 2 + 0.05), doorClear / 2, -wallCZ);
+    g.add(jamb);
+  }
+
+  // WALL COLLIDERS (local frame; doorway gap left open — no collider).
+  addCollider(colliders, 0, wallCZ, outerW, wallT);
+  addCollider(colliders, -wallCX, 0, wallT, D);
+  addCollider(colliders, wallCX, 0, wallT, D);
+  addCollider(colliders, -segOffset, -wallCZ, frontSegLen, wallT);
+  addCollider(colliders, segOffset, -wallCZ, frontSegLen, wallT);
+
+  // Floor rug to anchor the room.
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.5, D * 0.5), shopRugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(0, 0.13, 0.1);
+  rug.receiveShadow = true;
+  g.add(rug);
+
+  // WELDING BENCH along the back wall — a heavy steel-topped table.
+  const benchW = W * 0.6, benchD = 0.7, benchH = 0.95;
+  const benchX = -hw + benchW / 2 + 0.4;
+  const benchZ = hd - benchD / 2 - 0.45;
+  const benchLegMat = stoolLegMat;
+  for (const lx of [-benchW / 2 + 0.15, benchW / 2 - 0.15]) {
+    for (const lz of [-benchD / 2 + 0.12, benchD / 2 - 0.12]) {
+      const leg = box(0.1, benchH, 0.1, benchLegMat, false);
+      leg.position.set(benchX + lx, benchH / 2, benchZ + lz);
+      g.add(leg);
+    }
+  }
+  const benchTop = box(benchW, 0.1, benchD, benchTopMat);
+  benchTop.position.set(benchX, benchH, benchZ);
+  g.add(benchTop);
+  // A weld-arc glow on the bench, with a small pool of rising sparks.
+  const arc = new THREE.Mesh(sparkGeo, sparkMat);
+  arc.scale.setScalar(1.6);
+  arc.position.set(benchX + 0.4, benchH + 0.12, benchZ);
+  g.add(arc);
+  for (let i = 0; i < 5; i++) {
+    const s = new THREE.Mesh(sparkGeo, sparkMat);
+    const baseX = benchX + 0.4 + (Math.random() - 0.5) * 0.3;
+    const baseZ = benchZ + (Math.random() - 0.5) * 0.3;
+    s.position.set(baseX, benchH + 0.14, baseZ);
+    g.add(s);
+    sparks.push({ mesh: s, baseY: benchH + 0.14, x: baseX, z: baseZ, t: i / 5, speed: 1.2 + Math.random() });
+  }
+
+  // Paired GAS BOTTLES (oxy + fuel) chained by the +X wall.
+  for (let i = 0; i < 2; i++) {
+    const bottle = new THREE.Mesh(gasBottleGeo, i ? gasBottleB : gasBottleA);
+    bottle.position.set(hw - 0.4, 0.55, -hd + 0.6 + i * 0.45);
+    bottle.castShadow = true;
+    g.add(bottle);
+    const cap = new THREE.Mesh(gasCapGeo, frameMat);
+    cap.position.set(hw - 0.4, 1.1, -hd + 0.6 + i * 0.45);
+    g.add(cap);
+  }
+
+  // ANVIL on a chunky stump near the centre-front.
+  const stump = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.6, 10), counterMat);
+  stump.position.set(hw - 1.5, 0.3, -hd + 1.4);
+  stump.castShadow = true;
+  g.add(stump);
+  const anvilBody = box(0.7, 0.22, 0.28, anvilMat);
+  anvilBody.position.set(hw - 1.5, 0.7, -hd + 1.4);
+  anvilBody.castShadow = true;
+  g.add(anvilBody);
+  const anvilWaist = box(0.3, 0.16, 0.2, anvilMat, false);
+  anvilWaist.position.set(hw - 1.5, 0.53, -hd + 1.4);
+  g.add(anvilWaist);
+
+  // A small PARTS SHELF on the −X wall (planks + a couple of instanced boxes).
+  const shelfX = -hw + 0.3;
+  const shelfFrame = box(0.3, 1.7, D * 0.55, shelfMat, false);
+  shelfFrame.position.set(shelfX, 0.85, -hd + D * 0.32);
+  g.add(shelfFrame);
+  const shelfBoxes = [];
+  for (let p = 0; p < 3; p++) {
+    const py = 0.5 + p * 0.55;
+    const plank = box(0.34, 0.05, D * 0.55, shelfMat, false);
+    plank.position.set(shelfX, py, -hd + D * 0.32);
+    g.add(plank);
+    for (let k = 0; k < 2; k++) {
+      shelfBoxes.push({ x: shelfX, y: py + 0.16, z: -hd + 0.8 + k * 1.0 + p * 0.1 });
+    }
+  }
+  if (shelfBoxes.length) {
+    const inst = new THREE.InstancedMesh(shopProdBoxGeo, prodMatC, shelfBoxes.length);
+    inst.castShadow = true;
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < shelfBoxes.length; i++) {
+      m.makeTranslation(shelfBoxes[i].x, shelfBoxes[i].y, shelfBoxes[i].z);
+      inst.setMatrixAt(i, m.clone());
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    g.add(inst);
+  }
+
+  // One hanging interior light.
+  const cordLen = H - 0.9;
+  const cord = new THREE.Mesh(lampCordGeo, cordMat);
+  cord.scale.y = cordLen;
+  cord.position.set(0, H - cordLen / 2 - 0.1, 0);
+  g.add(cord);
+  const shade = new THREE.Mesh(lampShadeGeo, lampShadeMat);
+  shade.position.set(0, H - cordLen - 0.1, 0);
+  g.add(shade);
+
+  // Interior wall sign behind the bench.
+  const wallSign = artPanel(2.2, 0.8, "sign", {
+    text: "WELD · FAB", bg: "#1c1c1c", fg: "#ffb347", emissiveIntensity: 0.45,
+    file: "industrial-fab-wallsign.png",
+  });
+  wallSign.position.set(benchX, 2.1, hd - 0.06);
+  wallSign.rotation.y = Math.PI;
+  g.add(wallSign);
+
+  return { group: g, colliders, sparks };
+}
+
+// A street-side planter (concrete box + a couple of clumpy shrubs). Decorative,
+// no collider — small enough to walk past, adds greenery to the grey yard.
+function makePlanter() {
+  const g = new THREE.Group();
+  const tub = box(1.3, 0.5, 0.7, planterMat);
+  tub.position.y = 0.25;
+  g.add(tub);
+  for (const sx of [-0.32, 0.0, 0.34]) {
+    const shrub = new THREE.Mesh(shrubGeo, shrubMat);
+    shrub.position.set(sx, 0.62 + Math.abs(sx) * 0.1, (sx === 0 ? 0.05 : 0));
+    shrub.scale.set(1, 0.85, 1);
+    shrub.castShadow = true;
+    g.add(shrub);
+  }
+  return g;
+}
+
+// A wooden loading PALLET stacked with a crate. Footprint is small; the caller
+// adds a tight collider so it reads solid.
+function makePallet() {
+  const g = new THREE.Group();
+  const topGeo = new THREE.BoxGeometry(1.2, 0.05, 1.2);
+  const top = new THREE.Mesh(topGeo, palletMat);
+  top.position.y = 0.16;
+  top.receiveShadow = true;
+  g.add(top);
+  for (const pz of [-0.5, 0, 0.5]) {
+    const plank = new THREE.Mesh(palletPlankGeo, palletMat);
+    plank.position.set(0, 0.06, pz);
+    g.add(plank);
+  }
+  const crate = new THREE.Mesh(crateGeo, crateMat);
+  crate.scale.setScalar(0.7);
+  crate.position.set(0.05, 0.7, -0.05);
+  crate.rotation.y = 0.2;
+  crate.castShadow = true;
+  g.add(crate);
+  return g;
+}
+
+// A simple yard LAMP POST (pole + boxy head with an emissive lens). No collider
+// (slim pole), pure ambience for the evening-lit works yard.
+function makeLampPost() {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.6, 8), lampPostMat);
+  pole.position.y = 1.8;
+  pole.castShadow = true;
+  g.add(pole);
+  const arm = box(0.7, 0.1, 0.1, lampPostMat, false);
+  arm.position.set(0.3, 3.5, 0);
+  g.add(arm);
+  const head = box(0.5, 0.18, 0.3, lampPostMat, false);
+  head.position.set(0.6, 3.4, 0);
+  g.add(head);
+  const lens = box(0.4, 0.06, 0.22, lampGlowMat, false);
+  lens.position.set(0.6, 3.3, 0);
+  g.add(lens);
+  return g;
+}
+
 export function buildIndustrial() {
   const group = new THREE.Group();
   const colliders = [];
@@ -934,6 +1189,112 @@ export function buildIndustrial() {
   shopSign.position.set(SHOP.x, SHOP.H + 0.7, SHOP.z - (SHOP.D / 2 + SHOP.wallT) - 0.05);
   shopSign.rotation.y = Math.PI;
   group.add(shopSign);
+
+  // --- Helper: drop an enterable shop, offsetting its local wall colliders into
+  // world space. `faceCenter` rotates the shell 180° (door points +Z) for shops
+  // NORTH of the centre cross; under that turn a local AABB centred at (cx,cz)
+  // maps to world (x0−cx, z0−cz) (verified), so the doorway gap stays open and
+  // every solid wall keeps an exact AABB. Returns nothing; mutates `colliders`.
+  function placeShopColliders(shopColliders, x0, z0, faceCenter) {
+    for (const c of shopColliders) {
+      if (faceCenter) {
+        // local (cx,cz)->world (x0-cx, z0-cz): negate+swap the min/max bounds.
+        colliders.push({
+          minX: x0 - c.maxX, maxX: x0 - c.minX,
+          minZ: z0 - c.maxZ, maxZ: z0 - c.minZ,
+        });
+      } else {
+        colliders.push({
+          minX: c.minX + x0, maxX: c.maxX + x0,
+          minZ: c.minZ + z0, maxZ: c.maxZ + z0,
+        });
+      }
+    }
+  }
+
+  // --- Enterable FAB / WELDING SHOP "ARC & ANVIL" (west-centre band) --------
+  // The big open band west of the centre cross (between WH1 to the N and WH2 to
+  // the S) is mostly empty — drop a fab shop here facing the open lane. Interior
+  // 6.0 × 5.0 m; outer footprint x∈[−18.25,−11.75], z∈[4.25,9.75] — inside ±23,
+  // clear of WH1 (z≤−5), WH2 (z≥10), the silos/tanks and the open lanes (minZ
+  // 4.25 > the z≈3.4 kerb). Door faces −Z toward the player's approach (no flip).
+  const FAB = { x: -15.0, z: 7.0, W: 6.0, D: 5.0, H: 3.1, wallT: 0.25, door: 2.2 };
+  const fab = makeFabShop(FAB.W, FAB.D, FAB.H, FAB.wallT, FAB.door);
+  fab.group.position.set(FAB.x, 0, FAB.z);
+  group.add(fab.group);
+  placeShopColliders(fab.colliders, FAB.x, FAB.z, false);
+  // Hoist this shop's animated weld sparks into world space so update() can
+  // advance them (each spark keeps its LOCAL x/z; add the shop offset once).
+  const fabSparks = fab.sparks;
+  for (const s of fabSparks) { s.wx = s.x + FAB.x; s.wz = s.z + FAB.z; }
+  // Exterior sign over the door (−Z wall), rotated to read from the lane.
+  const fabSign = artPanel(3.2, 1.0, "sign", {
+    text: "ARC & ANVIL", bg: "#2b2118", fg: "#ff9e3d", emissiveIntensity: 0.5,
+    file: "industrial-fab-sign.png",
+  });
+  fabSign.position.set(FAB.x, FAB.H + 0.65, FAB.z - (FAB.D / 2 + FAB.wallT) - 0.05);
+  fabSign.rotation.y = Math.PI;
+  group.add(fabSign);
+
+  // --- Enterable PARTS DEPOT "GEAR DEPOT" (east band, S of the silos) -------
+  // The east strip between WH3 (z≤−10) and the silos (z≥−8.35) opens up south of
+  // the silos. Place a tool-supply depot here, FLIPPED 180° so its door faces +Z
+  // toward the centre the player approaches from. Interior 4.6 × 4.0 m; outer
+  // footprint x∈[17.45,22.55], z∈[−9.25,−4.75] — inside ±23, clear of WH3, the
+  // silos and the open lanes (after the flip the door opens onto maxZ −4.75 >
+  // the z≈−3.4 kerb). The flipped colliders are mapped by placeShopColliders.
+  const DEPOT = { x: 20.0, z: -7.0, W: 4.6, D: 4.0, H: 3.0, wallT: 0.25, door: 2.0 };
+  const depot = makeToolShop(DEPOT.W, DEPOT.D, DEPOT.H, DEPOT.wallT, DEPOT.door);
+  depot.group.position.set(DEPOT.x, 0, DEPOT.z);
+  depot.group.rotation.y = Math.PI; // door (built on −Z) now faces +Z, toward centre
+  group.add(depot.group);
+  placeShopColliders(depot.colliders, DEPOT.x, DEPOT.z, true);
+  // Exterior sign over the door. The shell is flipped, so the door is now on the
+  // +Z face at world z = DEPOT.z + (D/2+wallT). The player approaches from LOWER
+  // z (the centre) looking +Z; artPanel's textured front already points +Z, so
+  // NO extra rotation is needed for it to read un-mirrored toward that viewer.
+  const depotSign = artPanel(3.0, 0.95, "sign", {
+    text: "GEAR DEPOT", bg: "#143d2e", fg: "#ffd166", emissiveIntensity: 0.5,
+    file: "industrial-depot-sign.png",
+  });
+  depotSign.position.set(DEPOT.x, DEPOT.H + 0.6, DEPOT.z + (DEPOT.D / 2 + DEPOT.wallT) + 0.05);
+  group.add(depotSign);
+
+  // --- Extra street-level flavour: planters, pallets, lamp posts -----------
+  // Planters soften the grey yard near the shop fronts (decorative, no collider).
+  const planterSpots = [
+    [-11.0, 7.0], [-19.0, 7.0],   // flanking the ARC & ANVIL door
+    [5.6, 7.5], [16.4, 7.5],       // flanking the BOLT & BARREL door
+  ];
+  for (const [x, z] of planterSpots) {
+    const pl = makePlanter();
+    pl.position.set(x, 0, z);
+    group.add(pl);
+  }
+
+  // Loading pallets dotted around the yard near the lane edges (solid, tight
+  // colliders so they read as bump-into clutter).
+  const palletSpots = [[-2.0, -6.5], [3.0, -7.5], [-3.5, 11.0]];
+  for (const [x, z] of palletSpots) {
+    const pa = makePallet();
+    pa.position.set(x, 0, z);
+    pa.rotation.y = (x + z) * 0.3; // varied facing from a deterministic value
+    group.add(pa);
+    addCollider(colliders, x, z, 1.3, 1.3);
+  }
+
+  // Yard lamp posts along the open driving cross for evening ambience (slim
+  // poles, no colliders — they line the lanes without blocking the car).
+  const lampSpots = [
+    [-5.0, -5.0, 0], [5.0, 5.0, Math.PI],     // NW + SE inner corners of the cross
+    [5.0, -5.0, Math.PI / 2], [-5.0, 5.0, -Math.PI / 2],
+  ];
+  for (const [x, z, ry] of lampSpots) {
+    const lp = makeLampPost();
+    lp.position.set(x, 0, z);
+    lp.rotation.y = ry; // turn the arm/head to overhang the lane
+    group.add(lp);
+  }
 
   // --- Animation -------------------------------------------------------------
   let beaconT = 0;

@@ -44,11 +44,6 @@ function sow(board, pit, side) {
   const store = side === "host" ? HOST_STORE : GUEST_STORE;
   const oppStore = side === "host" ? GUEST_STORE : HOST_STORE;
   if (!pits.includes(pit) || board[pit] === 0) return null;
-  // Snapshot the PRE-sow pit counts so capture can test "was this landing pit
-  // empty before this move?" reliably. Using b[i]===1 as a proxy is wrong in the
-  // lap-around case (13+ seeds wrap past the origin and drop a seed back into a
-  // pit that was empty), so we track emptiness from the original board instead.
-  const wasEmpty = board.map((c) => c === 0);
   const b = board.slice();
   let seeds = b[pit];
   b[pit] = 0;
@@ -61,10 +56,13 @@ function sow(board, pit, side) {
   }
   let captured = 0;
   let capturedPit = -1; // opposite pit emptied by a capture (for cosmetic cue only)
-  // Capture: last seed landed in one of MY own pits that was EMPTY before this
-  // move (never the origin pit, which a full lap re-fills), and the opposite pit
-  // has seeds.
-  if (i !== pit && pits.includes(i) && wasEmpty[i] && b[opposite(i)] > 0) {
+  // Capture: the LAST seed landed alone in one of MY own pits — i.e. that pit now
+  // holds exactly 1 seed (it was empty and only the final seed dropped in). Testing
+  // b[i]===1 (not pre-sow emptiness) is correct even in the multi-lap case: a 13+
+  // seed sow that passes through a pit on the way round and ALSO lands its last seed
+  // there leaves b[i]===2, so it is rightly NOT a capture (the pit wasn't empty when
+  // the last seed arrived). Exclude the origin pit (a full lap can refill it to 1).
+  if (i !== pit && pits.includes(i) && b[i] === 1 && b[opposite(i)] > 0) {
     captured = b[opposite(i)] + 1;
     capturedPit = opposite(i);
     b[store] += captured;
@@ -933,6 +931,14 @@ export function createGame(ctx) {
     anim.steal = 0;
     anim.lastMove = 0;
     anim.freeTurn = 0;
+    // Also clear any in-flight win burst (F8) and hide its ring. Without this a
+    // re-base/reset that interrupts a win flourish left anim.win > 0; the next
+    // update() ran block 9 with winner now null, which zeroed the winning row's
+    // emissive — and since that row is the LOCAL player's home, it wiped their
+    // identity lift until the next updateIdentity(). Reset here and re-assert the
+    // home-row identity emissive below so the local side stays clearly "mine".
+    anim.win = 0;
+    burstRing.visible = false;
     lastSowPit = -1;
     lastLandPit = -1;
     lastCapturePit = -1;
@@ -943,6 +949,10 @@ export function createGame(ctx) {
     clearHover();
     M.storeHost.emissiveIntensity = mySide === "host" ? 0.28 : 0.0;
     M.storeGuest.emissiveIntensity = mySide === "guest" ? 0.28 : 0.0;
+    // Re-assert the home-row identity lift (the win-burst sweep in update() block 9
+    // drives these, so a snapshot landing mid-burst must restore the resting value).
+    M.pitHost.emissiveIntensity = mySide === "host" ? 0.34 : 0.0;
+    M.pitGuest.emissiveIntensity = mySide === "guest" ? 0.34 : 0.0;
     renderSeeds(); // diff-rebuild, no spawn pop on an authoritative snapshot
     refreshLamps();
     refreshGlows();

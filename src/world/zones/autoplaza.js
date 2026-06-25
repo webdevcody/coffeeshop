@@ -87,6 +87,20 @@ const matRug = new THREE.MeshStandardMaterial({ color: "#264a63", roughness: 0.9
 const matProdBlue = new THREE.MeshStandardMaterial({ color: "#3f7fd0", roughness: 0.55 });
 const matProdRed = new THREE.MeshStandardMaterial({ color: "#d6453a", roughness: 0.55 });
 const matProdYel = new THREE.MeshStandardMaterial({ color: "#e7c24a", roughness: 0.55 });
+// --- Tyre shop + car-wash interiors / props palette (reused across props) -----
+const matTyreWall = new THREE.MeshStandardMaterial({ color: "#3d3a44", roughness: 0.9 });
+const matTyreFloor = new THREE.MeshStandardMaterial({ color: "#43474d", roughness: 0.95 });
+const matRim = new THREE.MeshStandardMaterial({ color: "#c9ccd2", roughness: 0.4, metalness: 0.7 });
+const matWashWall = new THREE.MeshStandardMaterial({ color: "#2f5d7a", roughness: 0.7 });
+const matWashFloor = new THREE.MeshStandardMaterial({ color: "#5a6168", roughness: 0.9 });
+const matWashTrim = new THREE.MeshStandardMaterial({ color: "#1f8fb0", roughness: 0.5, metalness: 0.3 });
+const matBrush = new THREE.MeshStandardMaterial({ color: "#2c6fb0", roughness: 0.95, flatShading: true });
+const matWood = new THREE.MeshStandardMaterial({ color: "#8a6b46", roughness: 0.92, flatShading: true });
+const matCone = new THREE.MeshStandardMaterial({ color: "#e8612a", roughness: 0.7 });
+const matConeBand = new THREE.MeshStandardMaterial({ color: "#f2f2ee", roughness: 0.7 });
+const matWater = new THREE.MeshStandardMaterial({
+  color: "#7fc8e8", roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.55,
+});
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(boxGeo, mat);
@@ -194,6 +208,31 @@ function makeFuelPump() {
   const screen = box(0.55, 0.4, 0.05, matLight, false);
   screen.position.set(0, 1.45, 0.31);
   g.add(base, body, screen);
+  return g;
+}
+
+// A traffic cone: an orange cone on a square base with a reflective band.
+function makeCone() {
+  const g = new THREE.Group();
+  const base = box(0.42, 0.06, 0.42, matCone, false);
+  base.position.y = 0.03;
+  const body = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.6, 12), matCone);
+  body.position.y = 0.36;
+  body.castShadow = true;
+  const band = cyl(0.13, 0.08, matConeBand, false);
+  band.position.y = 0.34;
+  g.add(base, body, band);
+  return g;
+}
+
+// A short stack of tyres (rings of dark cylinders) — auto-district street dressing.
+function makeTyreStack(n) {
+  const g = new THREE.Group();
+  for (let i = 0; i < n; i++) {
+    const t = cyl(0.45, 0.26, matTire);
+    t.position.y = 0.13 + i * 0.26;
+    g.add(t);
+  }
   return g;
 }
 
@@ -816,6 +855,273 @@ export function buildAutoPlaza() {
   // Two short front-wall segments flanking the doorway (gap between them is open).
   addCollider(colliders, SHOP.x - hw + ht, SHOP.z + frontZ0, SHOP.t, frontSeg);
   addCollider(colliders, SHOP.x - hw + ht, SHOP.z + frontZ1, SHOP.t, frontSeg);
+
+  // === ENTERABLE TYRE & WHEEL SHOP (NW open quadrant) =======================
+  // A second walkable interior, themed to wheels/tyres. Footprint X∈[-19,-11],
+  // Z∈[8.5,16.5] — north of the convenience store (Z≤6.5), south of the parked
+  // cars (Z≈19.4), west of the central drive lane (x≈0) and well inside ±23. Its
+  // 2.2 m DOORWAY GAP is in the FRONT (+X) wall facing the central lane, so the
+  // player walks in from the open middle. NO collider spans that gap.
+  const TYRE = { x: -15, z: 12.5, w: 8, d: 8, h: 3.4, t: 0.25 };
+  const tyreShop = new THREE.Group();
+  const thw = TYRE.w / 2, thd = TYRE.d / 2, tht = TYRE.t / 2;
+  const tDoor = 2.2;                       // doorway gap width in the +X wall
+  const tFrontSeg = (TYRE.d - tDoor) / 2;  // each flanking front segment length
+
+  // Floor + flat ceiling.
+  const tyreFloor = flat(TYRE.w, TYRE.d, matTyreFloor);
+  tyreFloor.position.y = 0.03;
+  tyreShop.add(tyreFloor);
+  const tyreRoof = box(TYRE.w + 0.3, TYRE.t, TYRE.d + 0.3, matRoof);
+  tyreRoof.position.y = TYRE.h + tht;
+  tyreShop.add(tyreRoof);
+
+  // Walls: back (-X), two sides (±Z), and front (+X) split by the doorway gap.
+  const tBack = box(TYRE.t, TYRE.h, TYRE.d, matTyreWall);
+  tBack.position.set(-thw + tht, TYRE.h / 2, 0);
+  const tSideN = box(TYRE.w, TYRE.h, TYRE.t, matTyreWall);
+  tSideN.position.set(0, TYRE.h / 2, thd - tht);
+  const tSideS = box(TYRE.w, TYRE.h, TYRE.t, matTyreWall);
+  tSideS.position.set(0, TYRE.h / 2, -thd + tht);
+  const tFrontZ0 = -thd + tFrontSeg / 2;
+  const tFrontZ1 = thd - tFrontSeg / 2;
+  const tFrontA = box(TYRE.t, TYRE.h, tFrontSeg, matTyreWall);
+  tFrontA.position.set(thw - tht, TYRE.h / 2, tFrontZ0);
+  const tFrontB = box(TYRE.t, TYRE.h, tFrontSeg, matTyreWall);
+  tFrontB.position.set(thw - tht, TYRE.h / 2, tFrontZ1);
+  const tLintel = box(TYRE.t, 0.5, tDoor, matTrim, false);
+  tLintel.position.set(thw - tht, TYRE.h - 0.25, 0);
+  tyreShop.add(tBack, tSideN, tSideS, tFrontA, tFrontB, tLintel);
+
+  // Interior: rug, a low workbench along the back, wheel-display pegs on the
+  // back wall, a couple of mounted alloy WHEELS, and stacks of tyres.
+  const tRug = flat(4.2, 3.0, matRug);
+  tRug.position.set(0.4, 0.05, 0);
+  tyreShop.add(tRug);
+  // Workbench against the back wall.
+  const bench = box(0.8, 0.95, 4.0, matShelf);
+  bench.position.set(-thw + 0.6, 0.48, 0);
+  const benchTop = box(1.0, 0.12, 4.2, matDark, false);
+  benchTop.position.set(-thw + 0.6, 1.0, 0);
+  tyreShop.add(bench, benchTop);
+  // Three mounted alloy wheels on the back wall (tyre + bright rim disc).
+  for (const wz of [-2.4, 0, 2.4]) {
+    const wheel = new THREE.Group();
+    const tyre = cyl(0.55, 0.22, matTire);
+    tyre.rotation.z = Math.PI / 2;
+    const rim = cyl(0.34, 0.06, matRim, false);
+    rim.rotation.z = Math.PI / 2;
+    rim.position.x = 0.09;
+    wheel.add(tyre, rim);
+    wheel.position.set(-thw + 0.45, 2.0, wz);
+    tyreShop.add(wheel);
+  }
+  // Two tyre stacks on the floor (interior dressing).
+  const tStackA = makeTyreStack(4);
+  tStackA.position.set(thw - 1.6, 0, -thd + 1.4);
+  const tStackB = makeTyreStack(3);
+  tStackB.position.set(thw - 1.6, 0, thd - 1.4);
+  tyreShop.add(tStackA, tStackB);
+  // A floor jack + tool chest near the bench so it reads like a workshop.
+  const chest = box(1.2, 1.0, 0.7, matRed);
+  chest.position.set(-thw + 1.8, 0.5, -thd + 1.0);
+  tyreShop.add(chest);
+  // Two hanging interior lights.
+  for (const lz of [-1.8, 1.8]) {
+    const drop = box(0.05, 0.5, 0.05, matDark, false);
+    drop.position.set(0.4, TYRE.h - 0.25, lz);
+    const lamp = cyl(0.3, 0.12, matLight, false);
+    lamp.position.set(0.4, TYRE.h - 0.55, lz);
+    tyreShop.add(drop, lamp);
+  }
+  // Interior wall sign above the bench (faces +X into the room).
+  const tWallSign = artPanel(2.6, 0.7, "sign", {
+    text: "WHEEL BAY", bg: "#1a2742", fg: "#ffd23f",
+    emissiveIntensity: 0.4, file: "autoplaza-wheelbay.png",
+  });
+  tWallSign.position.set(-thw + 0.14, 2.5, 0);
+  tWallSign.rotation.y = Math.PI / 2; // readable face toward +X (into the room)
+  tyreShop.add(tWallSign);
+  // Outside fascia sign above the door, facing the central lane (+X).
+  const tFascia = box(TYRE.t, 1.2, TYRE.d, matTrim, false);
+  tFascia.position.set(thw - tht, TYRE.h + 0.5, 0);
+  tyreShop.add(tFascia);
+  const tShopSign = artPanel(4.4, 1.0, "sign", {
+    text: "TYRES & WHEELS", bg: "#c8362e", fg: "#ffffff",
+    emissiveIntensity: 0.5, file: "autoplaza-tyres.png",
+  });
+  tShopSign.position.set(thw + 0.13, TYRE.h + 0.5, 0);
+  tShopSign.rotation.y = Math.PI / 2; // readable front faces +X (the lane)
+  tyreShop.add(tShopSign);
+
+  tyreShop.position.set(TYRE.x, 0, TYRE.z);
+  group.add(tyreShop);
+  // Wall colliders — NO collider across the +X doorway gap.
+  addCollider(colliders, TYRE.x - thw + tht, TYRE.z, TYRE.t, TYRE.d);          // back (-X)
+  addCollider(colliders, TYRE.x, TYRE.z + thd - tht, TYRE.w, TYRE.t);          // side +Z
+  addCollider(colliders, TYRE.x, TYRE.z - thd + tht, TYRE.w, TYRE.t);          // side -Z
+  addCollider(colliders, TYRE.x + thw - tht, TYRE.z + tFrontZ0, TYRE.t, tFrontSeg); // front seg -Z
+  addCollider(colliders, TYRE.x + thw - tht, TYRE.z + tFrontZ1, TYRE.t, tFrontSeg); // front seg +Z
+
+  // === ENTERABLE CAR-WASH BAY (east side, south of the showroom) ============
+  // A tall, open drive-through wash hall the player can WALK INTO. Footprint
+  // X∈[12.5,19.5], Z∈[0.5,7.5] — east of the central lane (x≈0), south of the
+  // showroom (Z≥12.5), north of the parts shop (Z≤-4.5), inside ±23. The 2.6 m
+  // DOORWAY GAP faces the central lane (-X) so cars/players drive straight in;
+  // NO collider spans that gap. A blue brush + a water sheen sit inside.
+  const WASH = { x: 16, z: 4, w: 7, d: 7, h: 4.2, t: 0.25 };
+  const wash = new THREE.Group();
+  const whw = WASH.w / 2, whd = WASH.d / 2, wht = WASH.t / 2;
+  const wDoor = 2.6;
+  const wFrontSeg = (WASH.d - wDoor) / 2;
+
+  const washFloor = flat(WASH.w, WASH.d, matWashFloor);
+  washFloor.position.y = 0.03;
+  wash.add(washFloor);
+  // A faint water sheen plate down the wash channel (raised a hair to avoid z-fight).
+  const sheen = flat(2.2, WASH.d - 0.8, matWater);
+  sheen.position.set(0.3, 0.06, 0);
+  wash.add(sheen);
+  const washRoof = box(WASH.w + 0.3, WASH.t, WASH.d + 0.3, matRoof);
+  washRoof.position.y = WASH.h + wht;
+  wash.add(washRoof);
+
+  // Walls: back (+X), two sides (±Z), front (-X) split by the doorway gap.
+  const wBack2 = box(WASH.t, WASH.h, WASH.d, matWashWall);
+  wBack2.position.set(whw - wht, WASH.h / 2, 0);
+  const wSideN2 = box(WASH.w, WASH.h, WASH.t, matWashWall);
+  wSideN2.position.set(0, WASH.h / 2, whd - wht);
+  const wSideS2 = box(WASH.w, WASH.h, WASH.t, matWashWall);
+  wSideS2.position.set(0, WASH.h / 2, -whd + wht);
+  const wFrontZ0 = -whd + wFrontSeg / 2;
+  const wFrontZ1 = whd - wFrontSeg / 2;
+  const wFrontA2 = box(WASH.t, WASH.h, wFrontSeg, matWashWall);
+  wFrontA2.position.set(-whw + wht, WASH.h / 2, wFrontZ0);
+  const wFrontB2 = box(WASH.t, WASH.h, wFrontSeg, matWashWall);
+  wFrontB2.position.set(-whw + wht, WASH.h / 2, wFrontZ1);
+  const wLintel2 = box(WASH.t, 0.6, wDoor, matWashTrim, false);
+  wLintel2.position.set(-whw + wht, WASH.h - 0.3, 0);
+  wash.add(wBack2, wSideN2, wSideS2, wFrontA2, wFrontB2, wLintel2);
+
+  // Interior: a big rotating wash BRUSH on a gantry, plus a control box + hoses.
+  const gantry = box(0.3, 0.3, WASH.d - 0.6, matSteel, false);
+  gantry.position.set(0.2, WASH.h - 0.5, 0);
+  wash.add(gantry);
+  const washBrush = new THREE.Group();
+  const brushCore = cyl(0.18, WASH.d - 1.2, matSteel, false);
+  const brushBristles = cyl(0.6, WASH.d - 1.4, matBrush, false);
+  washBrush.add(brushCore, brushBristles);
+  washBrush.rotation.x = Math.PI / 2; // axis along Z (vertical roller across the lane)
+  washBrush.position.set(0.2, WASH.h / 2, 0);
+  wash.add(washBrush);
+  movers.push({ kind: "spin", obj: washBrush, rate: 1.6 });
+  // Control pedestal by the back wall.
+  const ctrl = box(0.7, 1.3, 0.6, matWashTrim);
+  ctrl.position.set(whw - 0.6, 0.65, -whd + 1.0);
+  const ctrlScreen = box(0.5, 0.4, 0.05, matLight, false);
+  ctrlScreen.position.set(whw - 0.95, 1.1, -whd + 1.0);
+  wash.add(ctrl, ctrlScreen);
+  // A coiled hose reel on the side wall.
+  const reel = cyl(0.35, 0.3, matRed, false);
+  reel.rotation.x = Math.PI / 2;
+  reel.position.set(whw - 0.9, 1.6, whd - 0.9);
+  wash.add(reel);
+  // Outside fascia sign over the door, facing the central lane (-X).
+  const wFasciaBand = box(WASH.t, 1.2, WASH.d, matWashTrim, false);
+  wFasciaBand.position.set(-whw + wht, WASH.h + 0.5, 0);
+  wash.add(wFasciaBand);
+  const washSign = artPanel(4.2, 1.0, "sign", {
+    text: "CAR WASH", bg: "#1f5c8a", fg: "#ffffff",
+    emissiveIntensity: 0.5, file: "autoplaza-carwash.png",
+  });
+  washSign.position.set(-whw - 0.13, WASH.h + 0.5, 0);
+  washSign.rotation.y = -Math.PI / 2; // readable front faces -X (the lane)
+  wash.add(washSign);
+
+  wash.position.set(WASH.x, 0, WASH.z);
+  group.add(wash);
+  // Wall colliders — NO collider across the -X doorway gap.
+  addCollider(colliders, WASH.x + whw - wht, WASH.z, WASH.t, WASH.d);            // back (+X)
+  addCollider(colliders, WASH.x, WASH.z + whd - wht, WASH.w, WASH.t);            // side +Z
+  addCollider(colliders, WASH.x, WASH.z - whd + wht, WASH.w, WASH.t);            // side -Z
+  addCollider(colliders, WASH.x - whw + wht, WASH.z + wFrontZ0, WASH.t, wFrontSeg); // front seg -Z
+  addCollider(colliders, WASH.x - whw + wht, WASH.z + wFrontZ1, WASH.t, wFrontSeg); // front seg +Z
+
+  // === EXTRA STREET-LEVEL FLAVOR (lived-in dressing, clear of lanes) =========
+  // Traffic cones lining the entrance approach + the wash door (visual only).
+  for (const [cx, cz] of [[-2.4, -19], [2.4, -19], [10.5, 5.5], [10.5, 2.5]]) {
+    const cone = makeCone();
+    cone.position.set(cx, 0, cz);
+    group.add(cone);
+  }
+  // Tyre stacks as street dressing by the service bay + gas forecourt (collidable).
+  for (const [sx, sz, n] of [[21.5, 9, 4], [-5.5, -9, 3], [-22, -6, 3]]) {
+    const stack = makeTyreStack(n);
+    stack.position.set(sx, 0, sz);
+    group.add(stack);
+    addCollider(colliders, sx, sz, 1.0, 1.0);
+  }
+  // A couple of wooden benches facing the central lane (collidable seating).
+  for (const [bx, bz, ry] of [[-4.5, 6, 0], [4.5, -2, Math.PI]]) {
+    const benchG = new THREE.Group();
+    const seat = box(2.0, 0.12, 0.5, matWood);
+    seat.position.y = 0.45;
+    const back = box(2.0, 0.5, 0.12, matWood);
+    back.position.set(0, 0.75, -0.2);
+    for (const lx of [-0.85, 0.85]) {
+      const leg = box(0.12, 0.45, 0.45, matWood, false);
+      leg.position.set(lx, 0.22, 0);
+      benchG.add(leg);
+    }
+    benchG.add(seat, back);
+    benchG.position.set(bx, 0, bz);
+    benchG.rotation.y = ry;
+    group.add(benchG);
+    addCollider(colliders, bx, bz, 2.0, 0.6);
+  }
+  // A small open-air parts CRATE cluster near the parts shop (wooden boxes).
+  for (const [cx, cy, cz, s] of [[8.0, 0, -11, 1.1], [8.0, 0, -9.7, 0.9], [9.1, 0, -10.4, 0.8]]) {
+    const crate = box(s, s, s, matWood);
+    crate.position.set(cx, cy + s / 2, cz);
+    group.add(crate);
+    addCollider(colliders, cx, cz, s, s);
+  }
+  // A self-serve AIR & WATER station (small kiosk) by the gas forecourt edge.
+  {
+    const air = new THREE.Group();
+    const post = box(0.4, 1.4, 0.4, matRed);
+    post.position.y = 0.7;
+    const head = box(0.7, 0.6, 0.55, matDark, false);
+    head.position.y = 1.6;
+    const gauge = cyl(0.16, 0.06, matLight, false);
+    gauge.rotation.x = Math.PI / 2;
+    gauge.position.set(0, 1.6, 0.3);
+    air.add(post, head, gauge);
+    air.position.set(-5.5, 0, -19);
+    air.rotation.y = -Math.PI / 2;
+    group.add(air);
+    addCollider(colliders, -5.5, -19, 0.8, 0.8);
+  }
+  // A vending machine pair against the convenience store's north side.
+  for (const vx of [-17.5, -16.2]) {
+    const vend = box(1.0, 2.0, 0.7, vx < -17 ? matProdRed : matProdBlue);
+    vend.position.set(vx, 1.0, 7.0);
+    vend.castShadow = true;
+    group.add(vend);
+    addCollider(colliders, vx, 7.0, 1.0, 0.7);
+  }
+  // A few extra planters to soften the central lane edges (collidable).
+  for (const [px, pz] of [[6, 9], [-9, -16]]) {
+    const planter = new THREE.Group();
+    const tub = box(1.0, 0.6, 1.0, matPlanter);
+    tub.position.y = 0.3;
+    const shrub = box(0.85, 0.7, 0.85, matGreen, false);
+    shrub.position.y = 0.95;
+    planter.add(tub, shrub);
+    planter.position.set(px, 0, pz);
+    group.add(planter);
+    addCollider(colliders, px, pz, 1.0, 1.0);
+  }
 
   // --- Update: rotate the pylon sign + hero turntable; flicker the lights ----
   let t = 0;

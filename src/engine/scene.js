@@ -306,7 +306,19 @@ function addLights(scene, sunDir) {
   scene.add(fill);
   scene.add(fill.target); // target defaults to origin; fine for a broad fill
 
-  return { ambient, sun, fill, cityCenter: CITY_CENTER, fillBaseIntensity: 0.55 };
+  // Soft "moon" fill — a single cool directional that only contributes at night.
+  // It comes down from high overhead so it washes rooftops + open streets with a
+  // gentle moonlit sheen rather than raking like the sun. The day/night driver
+  // ramps its intensity in via nightK (0 by day → moonFillMax deep at night), so
+  // it costs nothing during the day. No shadows (pure cheap fill), created ONCE
+  // here so the per-frame driver only mutates colour/intensity (zero allocation).
+  const moonFill = new THREE.DirectionalLight("#9fb4e8", 0.0);
+  moonFill.position.set(CITY_CENTER.x + 40, 180, CITY_CENTER.z - 30); // high, cool overhead
+  moonFill.target.position.copy(CITY_CENTER);
+  scene.add(moonFill);
+  scene.add(moonFill.target);
+
+  return { ambient, sun, fill, moonFill, cityCenter: CITY_CENTER, fillBaseIntensity: 0.55 };
 }
 
 // =============================================================================
@@ -326,20 +338,31 @@ function makeDayNight({ sky, sunDisc, lights, fog, renderer, sunDir }) {
   // raw t so the transitions land where the sun actually is. Colours are 0xRRGGBB.
   // NIGHT (sun well below horizon) — deep blue, moody, lamps/neon carry the scene.
   const NIGHT = {
-    zenith: 0x05080f,
-    mid: 0x0a1024,
-    horizon: 0x141d33,
-    fog: 0x141d33,
-    skyAmb: 0x2a3a6a, // cool moon-sky
-    groundAmb: 0x10131c, // near-black ground bounce
-    ambInt: 0.32,
-    sun: 0xaebfe0, // pale cool moonlight
-    sunMax: 0.28,
-    fill: 0x35507f,
-    fillInt: 0.12,
-    exposure: 1.0,
+    zenith: 0x0b1228,
+    mid: 0x142048,
+    horizon: 0x243a60, // lifted off near-black so there's a visible night horizon
+    fog: 0x243a60, // fog matches the horizon (distances fixed at 220/480)
+    // Lift the hemisphere sky/ground toward a moonlit blue-grey so shaded faces
+    // read as cool moonlight instead of dead black. Sky is a brighter slate-blue
+    // and the ground bounce is lifted off near-black to a dim cool grey.
+    skyAmb: 0x7d92d0, // bright moonlit slate-blue sky bounce (lifted hard for visibility)
+    groundAmb: 0x47527a, // lifted cool blue-grey ground bounce (no more near-black)
+    // Night must be clearly SEEABLE — a bright moonlit city, not pitch black. This
+    // floor was 0.62 and still read as "can't see anything", so it's lifted hard.
+    ambInt: 1.55,
+    sun: 0xbecbe8, // pale cool moonlight
+    sunMax: 0.62, // stronger moonlight key so surfaces get shape, not just flat ambient
+    fill: 0x5f7fc0, // cooler, brighter moonlit fill
+    fillInt: 0.55, // raised night fill floor for overall visibility
+    exposure: 1.15, // lift the whole night frame a touch (was 1.0)
     stars: 1.0,
     discColor: 0xcdd8f5, // silvery moon
+    // Soft directional "moon" fill — a cool key that ramps IN as the sun sets
+    // (driven by nightK) and OUT at dawn. Separate from the main sun/key so it can
+    // wash the whole city with bright moonlight without touching the warm sun
+    // colour. Max intensity reached deep at night — pushed high for visibility.
+    moonFill: 0xacc0ef, // cool silvery-blue moonlight
+    moonFillMax: 1.15,
   };
   // DAWN/DUSK (sun near the horizon) — warm orange/pink twilight band.
   const TWILIGHT = {
@@ -385,7 +408,11 @@ function makeDayNight({ sky, sunDisc, lights, fog, renderer, sunDir }) {
   const cGndAmb = new THREE.Color();
   const cSun = new THREE.Color();
   const cFill = new THREE.Color();
+  const cMoon = new THREE.Color(); // moon-fill colour (set once below; constant)
   const cDisc = new THREE.Color();
+  // The moon-fill colour never changes, so set it ONCE here and only animate the
+  // intensity each frame (keeps the hot path allocation- and setHex-free).
+  cMoon.setHex(NIGHT.moonFill);
   // Scratch for the lerp endpoints so we never `new` a Color while blending.
   const tmpA = new THREE.Color();
   const tmpB = new THREE.Color();
@@ -519,6 +546,14 @@ function makeDayNight({ sky, sunDisc, lights, fog, renderer, sunDir }) {
     // Cool fill.
     lights.fill.color.copy(cFill);
     lights.fill.intensity = fillInt;
+    // Soft "moon" fill: ramps in via nightK (the same below-horizon phase value
+    // that the moonlight floor uses), so it grows as the sun sets and fades out
+    // at dawn. Colour is the constant cool moonlight set once at init; only the
+    // intensity is touched here (no allocation, no setHex on the hot path).
+    if (lights.moonFill) {
+      lights.moonFill.color.copy(cMoon);
+      lights.moonFill.intensity = NIGHT.moonFillMax * nightK;
+    }
     // Tone-mapping exposure dips at night so the dark scene reads dark and the
     // emissive lamps/neon/windows pop instead of being lifted to grey.
     renderer.toneMappingExposure = exposure;

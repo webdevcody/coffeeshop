@@ -49,6 +49,15 @@ const G = {
   stem: new THREE.CylinderGeometry(0.02, 0.02, 0.5, 5),
   potRim: new THREE.CylinderGeometry(0.16, 0.12, 0.22, 10),
   giftBox: new THREE.BoxGeometry(0.34, 0.3, 0.34),
+  // Street-flavour repeats
+  crate: new THREE.BoxGeometry(0.7, 0.7, 0.7),
+  bollard: new THREE.CylinderGeometry(0.13, 0.16, 0.8, 10),
+  bollardCap: new THREE.SphereGeometry(0.15, 10, 8),
+  // Bakery interior repeats
+  loaf: new THREE.CapsuleGeometry(0.12, 0.26, 3, 6),   // a bread loaf
+  bun: new THREE.SphereGeometry(0.1, 8, 6),            // a round bun/roll
+  // Bookshop interior repeats
+  book: new THREE.BoxGeometry(0.06, 0.26, 0.2),        // a single upright book spine
 };
 
 // --- Shared materials (created ONCE) ---------------------------------------
@@ -130,6 +139,29 @@ const M = {
   shopLight: new THREE.MeshStandardMaterial({
     color: "#fff3cf", emissive: "#ffdf9a", emissiveIntensity: 1.0, roughness: 0.4,
   }),
+  // --- BAKERY interior materials -------------------------------------------
+  bakeWall: new THREE.MeshStandardMaterial({ color: "#f5e3c4", roughness: 0.95, side: THREE.DoubleSide }), // warm cream plaster
+  bakeFloor: new THREE.MeshStandardMaterial({ color: "#c79a63", roughness: 0.9 }),                         // honey-tile floor
+  bakeTrim: new THREE.MeshStandardMaterial({ color: "#8a4a2a", roughness: 0.7 }),                          // toasted-brown trim
+  bread: new THREE.MeshStandardMaterial({ color: "#c98a45", roughness: 0.85, flatShading: true }),         // crusty loaf
+  breadDark: new THREE.MeshStandardMaterial({ color: "#a5662e", roughness: 0.85, flatShading: true }),     // darker rye
+  bun: new THREE.MeshStandardMaterial({ color: "#e0a85c", roughness: 0.8, flatShading: true }),            // golden bun
+  // --- BOOKSHOP interior materials -----------------------------------------
+  bookWall: new THREE.MeshStandardMaterial({ color: "#e6ddcb", roughness: 0.95, side: THREE.DoubleSide }), // soft parchment plaster
+  bookFloor: new THREE.MeshStandardMaterial({ color: "#7a5a3a", roughness: 0.85 }),                        // dark parquet
+  bookTrim: new THREE.MeshStandardMaterial({ color: "#3a4a6b", roughness: 0.7 }),                          // deep-blue trim
+  bookA: new THREE.MeshStandardMaterial({ color: "#b34a52", roughness: 0.8 }),                             // red spine
+  bookB: new THREE.MeshStandardMaterial({ color: "#3f7d8c", roughness: 0.8 }),                             // teal spine
+  bookC: new THREE.MeshStandardMaterial({ color: "#caa24a", roughness: 0.8 }),                             // ochre spine
+  bookD: new THREE.MeshStandardMaterial({ color: "#5a6f4a", roughness: 0.8 }),                             // green spine
+  // --- Street-flavour materials --------------------------------------------
+  crateWood: new THREE.MeshStandardMaterial({ color: "#9c6a3c", roughness: 0.85, flatShading: true }),
+  bollardMat: new THREE.MeshStandardMaterial({ color: "#2c2f33", roughness: 0.5, metalness: 0.6 }),
+  bollardCapMat: new THREE.MeshStandardMaterial({ color: "#c9a23a", roughness: 0.5, metalness: 0.6 }),
+  stallCloth: new THREE.MeshStandardMaterial({ color: "#c4423b", roughness: 0.85, side: THREE.DoubleSide }),
+  stallClothB: new THREE.MeshStandardMaterial({ color: "#efe7d6", roughness: 0.85, side: THREE.DoubleSide }),
+  stallWood: new THREE.MeshStandardMaterial({ color: "#8a5a34", roughness: 0.8 }),
+  noticePillar: new THREE.MeshStandardMaterial({ color: "#3f5a4a", roughness: 0.7, metalness: 0.3 }),
 };
 
 function mesh(geo, mat, cast = true, receive = true) {
@@ -605,6 +637,419 @@ function makeFlowerKiosk(cx, cz, colliders) {
   return { group: g, lights };
 }
 
+// ===========================================================================
+// GENERIC ENTERABLE SHOP SHELL  (walkable one-room box with a doorway gap)
+// ===========================================================================
+// Builds the floor / ceiling / fascia and the four walls of a small shop the
+// player can walk INTO, leaving a doorway GAP (no wall, no collider) on ONE
+// chosen face. Built in WORLD-aligned local coords (the returned group is added
+// at the tile origin, so local == world), so every wall AABB is axis-aligned.
+//
+//   opts: { cx, cz, depth, width, wallH, doorW, dir, wallMat, floorMat,
+//           trimMat, sign:{ text, bg, fg, file } }
+//     dir — which face carries the doorway, one of "-X" | "+X" | "-Z" | "+Z";
+//           that face is split into two flanking wall segments. depth runs
+//           along X, width along Z.
+//
+// Pushes one AABB per solid wall (and per door-flank segment) onto `colliders`;
+// the doorway gap gets NONE. Returns { group, lights:[], interior:{...} } where
+// `interior` carries handy bounds/anchors for the themed filler to dress the
+// room without re-deriving geometry.
+function makeShopShell(opts, colliders) {
+  const {
+    cx, cz, depth, width, wallH = 3.2, doorW = 2.2, dir = "+X",
+    wallMat, floorMat, trimMat, sign,
+  } = opts;
+  const g = new THREE.Group();
+  const lights = [];
+  const t = 0.25;                         // wall thickness
+  const xMin = cx - depth / 2, xMax = cx + depth / 2;   // -X / +X faces
+  const zMin = cz - width / 2, zMax = cz + width / 2;   // -Z / +Z faces
+  const wy = wallH / 2;
+
+  // --- FLOOR + CEILING + roofline fascia ------------------------------------
+  const floor = mesh(new THREE.BoxGeometry(depth - t, 0.08, width - t), floorMat, false, true);
+  floor.position.set(cx, 0.04, cz);
+  g.add(floor);
+  const roof = mesh(new THREE.BoxGeometry(depth + 0.3, 0.2, width + 0.3), M.shopRoof, true, false);
+  roof.position.set(cx, wallH + 0.1, cz);
+  g.add(roof);
+  const fascia = mesh(new THREE.BoxGeometry(depth + 0.36, 0.3, width + 0.36), trimMat, false, false);
+  fascia.position.set(cx, wallH - 0.05, cz);
+  g.add(fascia);
+
+  // --- WALLS: three solid faces + one doorway face --------------------------
+  // A wall on an X-face spans Z (geometry depth t × width); on a Z-face spans X.
+  const addSolidX = (x) => {                       // full wall on a ±X face
+    const w = mesh(new THREE.BoxGeometry(t, wallH, width), wallMat);
+    w.position.set(x, wy, cz); g.add(w);
+    addCollider(colliders, x, cz, t, width);
+  };
+  const addSolidZ = (z) => {                       // full wall on a ±Z face
+    const w = mesh(new THREE.BoxGeometry(depth, wallH, t), wallMat);
+    w.position.set(cx, wy, z); g.add(w);
+    addCollider(colliders, cx, z, depth, t);
+  };
+  const addDoorX = (x) => {                        // doorway face on a ±X face (gap along Z)
+    const segLen = (width - doorW) / 2;
+    for (const segz of [zMin + segLen / 2, zMax - segLen / 2]) {
+      const w = mesh(new THREE.BoxGeometry(t, wallH, segLen), wallMat);
+      w.position.set(x, wy, segz); g.add(w);
+      addCollider(colliders, x, segz, t, segLen);
+    }
+    const lintel = mesh(new THREE.BoxGeometry(t + 0.05, wallH - 2.4, doorW + 0.2), trimMat, true, false);
+    lintel.position.set(x, wallH - (wallH - 2.4) / 2, cz);
+    g.add(lintel);
+  };
+  const addDoorZ = (z) => {                        // doorway face on a ±Z face (gap along X)
+    const segLen = (depth - doorW) / 2;
+    for (const segx of [xMin + segLen / 2, xMax - segLen / 2]) {
+      const w = mesh(new THREE.BoxGeometry(segLen, wallH, t), wallMat);
+      w.position.set(segx, wy, z); g.add(w);
+      addCollider(colliders, segx, z, segLen, t);
+    }
+    const lintel = mesh(new THREE.BoxGeometry(doorW + 0.2, wallH - 2.4, t + 0.05), trimMat, true, false);
+    lintel.position.set(cx, wallH - (wallH - 2.4) / 2, z);
+    g.add(lintel);
+  };
+
+  // place each face, swapping the doorway onto `dir`
+  if (dir === "-X") { addDoorX(xMin); addSolidX(xMax); addSolidZ(zMin); addSolidZ(zMax); }
+  else if (dir === "+X") { addSolidX(xMin); addDoorX(xMax); addSolidZ(zMin); addSolidZ(zMax); }
+  else if (dir === "-Z") { addSolidX(xMin); addSolidX(xMax); addDoorZ(zMin); addSolidZ(zMax); }
+  else { addSolidX(xMin); addSolidX(xMax); addSolidZ(zMin); addDoorZ(zMax); } // "+Z"
+
+  // --- OUTDOOR SIGN above the doorway, facing OUT (un-mirrored) --------------
+  // artPanel planes face +Z by default; rotate so the readable +Z face points
+  // out through the doorway.
+  if (sign) {
+    const sp = artPanel(Math.min(width, depth) - 1.0, 0.9, "sign", {
+      text: sign.text, bg: sign.bg, fg: sign.fg || "#fff3cf",
+      emissiveIntensity: 0.6, file: sign.file,
+    });
+    if (dir === "+X") { sp.position.set(xMax + 0.16, wallH - 0.55, cz); sp.rotation.y = Math.PI / 2; }
+    else if (dir === "-X") { sp.position.set(xMin - 0.16, wallH - 0.55, cz); sp.rotation.y = -Math.PI / 2; }
+    else if (dir === "+Z") { sp.position.set(cx, wallH - 0.55, zMax + 0.16); sp.rotation.y = 0; }
+    else { sp.position.set(cx, wallH - 0.55, zMin - 0.16); sp.rotation.y = Math.PI; }
+    sp.castShadow = false;
+    g.add(sp);
+  }
+
+  // --- two HANGING pendant lights -------------------------------------------
+  for (const lx of [cx - depth * 0.2, cx + depth * 0.2]) {
+    const cord = mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.7, 6), M.poleMat, false, false);
+    cord.position.set(lx, wallH - 0.45, cz);
+    g.add(cord);
+    const bulb = mesh(new THREE.SphereGeometry(0.16, 12, 10), M.shopLight, false, false);
+    bulb.position.set(lx, wallH - 0.85, cz);
+    g.add(bulb);
+    lights.push(bulb);
+  }
+
+  return { group: g, lights, interior: { cx, cz, xMin, xMax, zMin, zMax, wallH, dir } };
+}
+
+// ===========================================================================
+// ENTERABLE BAKERY  (warm bread shop the player can walk into)
+// ===========================================================================
+// Doorway faces +X (into the open plaza). A glass display counter full of
+// instanced loaves/buns, wall shelves of bread, a couple of bistro stools, a
+// chalk menu board and a rug.
+function makeBakery(cx, cz, colliders) {
+  const shell = makeShopShell({
+    cx, cz, depth: 7, width: 7, wallH: 3.2, doorW: 2.2, dir: "+X",
+    wallMat: M.bakeWall, floorMat: M.bakeFloor, trimMat: M.bakeTrim,
+    sign: { text: "PLAZA BAKERY", bg: "#8a4a2a", fg: "#f5e3c4", file: "plaza-sign-bakery.png" },
+  }, colliders);
+  const g = shell.group;
+  const { xMin, xMax, zMin, zMax } = shell.interior;
+
+  // rug
+  const rug = mesh(new THREE.BoxGeometry(4.0, 0.03, 4.0), M.rug, false, true);
+  rug.position.set(cx - 0.4, 0.07, cz);
+  g.add(rug);
+
+  // glass display counter across the back (near -X wall)
+  const cBase = mesh(new THREE.BoxGeometry(0.9, 1.0, width0(zMin, zMax) - 1.6), M.counter);
+  cBase.position.set(xMin + 1.2, 0.5, cz);
+  g.add(cBase);
+  const cTop = mesh(new THREE.BoxGeometry(1.0, 0.1, width0(zMin, zMax) - 1.4), M.counterTop, false);
+  cTop.position.set(xMin + 1.2, 1.05, cz);
+  g.add(cTop);
+  const cGlass = mesh(new THREE.BoxGeometry(1.0, 0.7, width0(zMin, zMax) - 1.6), M.caseGlass, false, false);
+  cGlass.position.set(xMin + 1.2, 0.7, cz);
+  g.add(cGlass);
+  const reg = mesh(new THREE.BoxGeometry(0.34, 0.3, 0.4), M.bakeTrim);
+  reg.position.set(xMin + 1.2, 1.25, zMax - 1.4);
+  g.add(reg);
+
+  // wall shelves of bread on the -Z side wall
+  const shelfZ = zMin + 0.35;
+  for (const sy of [1.3, 2.0, 2.7]) {
+    const shelf = mesh(new THREE.BoxGeometry(4.6, 0.06, 0.4), M.shelfWood, false);
+    shelf.position.set(cx + 0.4, sy, shelfZ);
+    g.add(shelf);
+  }
+
+  // chalk menu board on the +Z wall (inner face faces -Z)
+  const menu = artPanel(1.8, 1.1, "sign", {
+    text: "FRESH BREAD", bg: "#2b2622", fg: "#f5e3c4",
+    emissiveIntensity: 0.35, file: "plaza-bakery-menu.png",
+  });
+  menu.position.set(cx + 0.6, 2.0, zMax - 0.18);
+  menu.rotation.y = Math.PI;
+  menu.castShadow = false;
+  g.add(menu);
+
+  // two bistro stools
+  for (const sz of [zMax - 1.2, zMax - 2.4]) {
+    const seat = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.1, 12), M.stool);
+    seat.position.set(xMin + 2.6, 0.6, sz);
+    g.add(seat);
+    const leg = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.6, 8), M.poleMat);
+    leg.position.set(xMin + 2.6, 0.3, sz);
+    g.add(leg);
+  }
+
+  // --- INSTANCED breads: loaves in the counter case + buns on the shelves ----
+  const dummyL = new THREE.Object3D();
+  const places = [];       // { x, y, z, kind }  kind 0=loaf 1=rye 2=bun
+  // loaves along the counter top
+  for (let i = 0; i < 6; i++) places.push({ x: xMin + 1.2, y: 1.18, z: cz - 2.2 + i * 0.8, kind: i % 2 });
+  // buns + loaves on the three wall shelves
+  for (const sy of [1.3, 2.0, 2.7]) {
+    for (let i = 0; i < 6; i++) places.push({ x: cx - 1.7 + i * 0.7, y: sy + 0.16, z: shelfZ + 0.1, kind: 2 });
+  }
+  const loafN = places.filter((p) => p.kind === 0).length;
+  const ryeN = places.filter((p) => p.kind === 1).length;
+  const bunN = places.filter((p) => p.kind === 2).length;
+  const loafMesh = new THREE.InstancedMesh(G.loaf, M.bread, loafN);
+  const ryeMesh = new THREE.InstancedMesh(G.loaf, M.breadDark, ryeN);
+  const bunMesh = new THREE.InstancedMesh(G.bun, M.bun, bunN);
+  for (const im of [loafMesh, ryeMesh, bunMesh]) { im.castShadow = false; im.receiveShadow = false; }
+  let li = 0, ri = 0, bi = 0;
+  for (const p of places) {
+    dummyL.position.set(p.x, p.y, p.z);
+    dummyL.rotation.set(p.kind === 2 ? 0 : Math.PI / 2, 0, 0); // lay loaves on their side
+    dummyL.scale.set(1, 1, 1);
+    dummyL.updateMatrix();
+    if (p.kind === 0) loafMesh.setMatrixAt(li++, dummyL.matrix);
+    else if (p.kind === 1) ryeMesh.setMatrixAt(ri++, dummyL.matrix);
+    else bunMesh.setMatrixAt(bi++, dummyL.matrix);
+  }
+  loafMesh.instanceMatrix.needsUpdate = true;
+  ryeMesh.instanceMatrix.needsUpdate = true;
+  bunMesh.instanceMatrix.needsUpdate = true;
+  g.add(loafMesh, ryeMesh, bunMesh);
+
+  return shell;
+}
+
+// ===========================================================================
+// ENTERABLE BOOKSHOP  (a cosy reading nook the player can walk into)
+// ===========================================================================
+// Doorway faces +X (into the open plaza). Tall bookcases line the back + side
+// walls (instanced book spines), a reading table with a lamp, an armchair, a
+// rug and a window sign.
+function makeBookshop(cx, cz, colliders) {
+  const shell = makeShopShell({
+    cx, cz, depth: 7, width: 6, wallH: 3.2, doorW: 2.2, dir: "+X",
+    wallMat: M.bookWall, floorMat: M.bookFloor, trimMat: M.bookTrim,
+    sign: { text: "THE BOOK NOOK", bg: "#3a4a6b", fg: "#e6ddcb", file: "plaza-sign-bookshop.png" },
+  }, colliders);
+  const g = shell.group;
+  const { xMin, xMax, zMin, zMax } = shell.interior;
+
+  // rug
+  const rug = mesh(new THREE.BoxGeometry(3.4, 0.03, 3.0), M.rug, false, true);
+  rug.position.set(cx + 0.2, 0.07, cz);
+  g.add(rug);
+
+  // bookcases: a carcass box against the back (-X) wall and each side (±Z) wall
+  const caseDefs = [
+    { x: xMin + 0.3, z: cz, w: 0.5, d: width0(zMin, zMax) - 0.8, axis: "z" }, // back wall, books face +X
+    { x: cx + 0.2, z: zMin + 0.3, w: depth0(xMin, xMax) - 1.6, d: 0.5, axis: "x" }, // -Z wall, books face +Z
+    { x: cx + 0.2, z: zMax - 0.3, w: depth0(xMin, xMax) - 1.6, d: 0.5, axis: "x" }, // +Z wall, books face -Z
+  ];
+  const shelfYs = [0.7, 1.4, 2.1, 2.8];
+  const bookMats = [M.bookA, M.bookB, M.bookC, M.bookD];
+  const bookPlaces = [];   // { x, y, z, ry, mat }
+  for (const c of caseDefs) {
+    const carcass = mesh(new THREE.BoxGeometry(c.w, 3.0, c.d), M.shelfWood);
+    carcass.position.set(c.x, 1.5, c.z);
+    g.add(carcass);
+    // line each shelf row with upright spines facing into the room
+    for (const sy of shelfYs) {
+      if (c.axis === "z") {
+        // books arranged along Z, facing +X (toward open room)
+        for (let i = 0; i < 8; i++) {
+          const z = c.z - (c.d / 2 - 0.4) + i * ((c.d - 0.8) / 7);
+          bookPlaces.push({ x: c.x + 0.32, y: sy + 0.16, z, ry: Math.PI / 2, mat: (i + Math.round(sy)) % 4 });
+        }
+      } else {
+        // books arranged along X, facing into room (±Z toward centre)
+        const faceRy = c.z < cz ? 0 : Math.PI;
+        const zEdge = c.z < cz ? c.z + 0.32 : c.z - 0.32;
+        for (let i = 0; i < 8; i++) {
+          const x = c.x - (c.w / 2 - 0.4) + i * ((c.w - 0.8) / 7);
+          bookPlaces.push({ x, y: sy + 0.16, z: zEdge, ry: faceRy, mat: (i + Math.round(sy)) % 4 });
+        }
+      }
+    }
+  }
+  // instanced book spines, grouped per colour
+  const dummyL = new THREE.Object3D();
+  const counts = [0, 0, 0, 0];
+  for (const p of bookPlaces) counts[p.mat]++;
+  const bookMeshes = bookMats.map((m, i) => {
+    const im = new THREE.InstancedMesh(G.book, m, counts[i]);
+    im.castShadow = false; im.receiveShadow = false;
+    return im;
+  });
+  const idx = [0, 0, 0, 0];
+  for (const p of bookPlaces) {
+    dummyL.position.set(p.x, p.y, p.z);
+    dummyL.rotation.set(0, p.ry, 0);
+    dummyL.scale.set(1, 1, 1);
+    dummyL.updateMatrix();
+    bookMeshes[p.mat].setMatrixAt(idx[p.mat]++, dummyL.matrix);
+  }
+  for (const im of bookMeshes) im.instanceMatrix.needsUpdate = true;
+  g.add(...bookMeshes);
+
+  // reading table + a small lamp + an armchair near the doorway side
+  const table = mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.12, 16), M.shelfWood);
+  table.position.set(cx + 1.2, 0.9, cz);
+  g.add(table);
+  const tleg = mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.84, 10), M.bookTrim);
+  tleg.position.set(cx + 1.2, 0.42, cz);
+  g.add(tleg);
+  const lampStem = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.45, 8), M.poleMat, false, false);
+  lampStem.position.set(cx + 1.2, 1.18, cz);
+  g.add(lampStem);
+  const lampShade = mesh(new THREE.ConeGeometry(0.22, 0.28, 12), M.shopLight, false, false);
+  lampShade.position.set(cx + 1.2, 1.46, cz);
+  g.add(lampShade);
+  shell.lights.push(lampShade);
+  // armchair (simple boxy form)
+  const chairSeat = mesh(new THREE.BoxGeometry(0.7, 0.2, 0.7), M.stool);
+  chairSeat.position.set(cx + 1.4, 0.45, cz - 1.4);
+  g.add(chairSeat);
+  const chairBack = mesh(new THREE.BoxGeometry(0.7, 0.7, 0.18), M.stool);
+  chairBack.position.set(cx + 1.4, 0.8, cz - 1.74);
+  g.add(chairBack);
+
+  // inner framed sign on the back wall
+  const innerSign = artPanel(1.6, 0.7, "sign", {
+    text: "READ MORE", bg: "#3a4a6b", fg: "#e6ddcb",
+    emissiveIntensity: 0.35, file: "plaza-bookshop-inner.png",
+  });
+  innerSign.position.set(xMin + 0.18, 2.6, cz);
+  innerSign.rotation.y = Math.PI / 2;
+  innerSign.castShadow = false;
+  g.add(innerSign);
+
+  return shell;
+}
+
+// tiny helpers so the shop fillers read in terms of their own bounds
+function width0(zMin, zMax) { return zMax - zMin; }
+function depth0(xMin, xMax) { return xMax - xMin; }
+
+// --- Street-flavour prop builders ------------------------------------------
+function makeCrateStack() {
+  const g = new THREE.Group();
+  const layout = [
+    [0, 0.35, 0], [0.74, 0.35, 0.1], [0.36, 1.05, 0.04],
+  ];
+  for (const [x, y, z] of layout) {
+    const c = mesh(G.crate, M.crateWood);
+    c.position.set(x, y, z);
+    c.rotation.y = (Math.random() - 0.5) * 0.3;
+    g.add(c);
+  }
+  return g;
+}
+
+function makeBollard() {
+  const g = new THREE.Group();
+  const post = mesh(G.bollard, M.bollardMat);
+  post.position.y = 0.4;
+  const cap = mesh(G.bollardCap, M.bollardCapMat, true, false);
+  cap.position.y = 0.82;
+  g.add(post, cap);
+  return g;
+}
+
+// A small open-air market stall: a wooden table under a striped peaked canopy,
+// a few crates of produce on top. Purely decorative (caller gives it a collider).
+function makeMarketStall() {
+  const g = new THREE.Group();
+  const table = mesh(new THREE.BoxGeometry(2.4, 0.12, 1.2), M.stallWood);
+  table.position.y = 0.95;
+  g.add(table);
+  for (const lx of [-1.0, 1.0]) for (const lz of [-0.45, 0.45]) {
+    const leg = mesh(new THREE.BoxGeometry(0.1, 0.95, 0.1), M.stallWood);
+    leg.position.set(lx, 0.48, lz);
+    g.add(leg);
+  }
+  // back posts holding the canopy
+  for (const lx of [-1.1, 1.1]) {
+    const post = mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8), M.stallWood);
+    post.position.set(lx, 1.2, -0.5);
+    g.add(post);
+    const postF = mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.0, 8), M.stallWood);
+    postF.position.set(lx, 1.0, 0.5);
+    g.add(postF);
+  }
+  // peaked striped canopy (two sloped panels alternating cloth colours)
+  const panelL = mesh(new THREE.BoxGeometry(2.6, 0.06, 0.95), M.stallCloth, false);
+  panelL.position.set(0, 2.05, -0.42);
+  panelL.rotation.x = 0.34;
+  g.add(panelL);
+  const panelR = mesh(new THREE.BoxGeometry(2.6, 0.06, 0.95), M.stallClothB, false);
+  panelR.position.set(0, 2.05, 0.42);
+  panelR.rotation.x = -0.34;
+  g.add(panelR);
+  // produce crates on the table
+  for (const cx of [-0.7, 0, 0.7]) {
+    const crate = mesh(new THREE.BoxGeometry(0.5, 0.3, 0.5), M.crateWood);
+    crate.position.set(cx, 1.16, 0.1);
+    g.add(crate);
+    // a mound of round produce (instanced-light: just a couple of spheres)
+    for (let i = 0; i < 3; i++) {
+      const p = mesh(G.bloom, [M.bloomA, M.bloomB, M.foliage][i % 3]);
+      p.position.set(cx + (i - 1) * 0.13, 1.36, 0.1 + (i % 2) * 0.1);
+      g.add(p);
+    }
+  }
+  return g;
+}
+
+// A civic notice pillar (Litfaß-style column) topped with a small finial; its
+// drum carries a wrap-around poster panel facing the square.
+function makeNoticePillar() {
+  const g = new THREE.Group();
+  const drum = mesh(new THREE.CylinderGeometry(0.55, 0.6, 2.6, 16), M.noticePillar);
+  drum.position.y = 1.3;
+  g.add(drum);
+  const cap = mesh(new THREE.ConeGeometry(0.7, 0.6, 16), M.roof, true, false);
+  cap.position.y = 2.9;
+  g.add(cap);
+  const knob = mesh(new THREE.SphereGeometry(0.12, 10, 8), M.bollardCapMat, true, false);
+  knob.position.y = 3.3;
+  g.add(knob);
+  // poster facing +X (un-mirrored toward the avenue side; caller can rotate)
+  const poster = artPanel(1.4, 1.4, "sign", {
+    text: "EVENTS", bg: "#b34a52", fg: "#fff3cf",
+    emissiveIntensity: 0.4, file: "plaza-notice-events.png",
+  });
+  poster.position.set(0, 1.6, 0.62);
+  poster.castShadow = false;
+  g.add(poster);
+  return g;
+}
+
 // --- Main build -------------------------------------------------------------
 export function buildPlaza() {
   const group = new THREE.Group();
@@ -904,7 +1349,7 @@ export function buildPlaza() {
 
   // === Lamp posts — spread around the plaza edges ==========================
   const lampPlaces = [
-    [-11, -11], [12, -12], [-12, 12], [9, 9],     // NW lamp nudged off the set-back tower; SE lamp pulled in to clear the kiosk
+    [-13, -6], [12, -12], [-12, 12], [9, 9],     // W lamp moved into the café-to-bakery gap; SE lamp pulled in to clear the kiosk
   ];
   for (const [x, z] of lampPlaces) {
     const l = makeLamp();
@@ -955,10 +1400,78 @@ export function buildPlaza() {
   const kiosk = makeFlowerKiosk(15, 16.5, colliders);
   group.add(kiosk.group);
 
+  // === ENTERABLE BAKERY (SW-centre open pocket) ============================
+  // A walkable bread shop tucked into the open pocket between the café block
+  // (X[-23,-15]) and the central lane. Centre (-8,-8) ⇒ footprint X[-11.5,-4.5]
+  // Z[-11.5,-4.5] — clear of the fountain ring (r~4.3), the SW benches (±7.2 on
+  // axis), the NW lamp (-11,-11, just outside the footprint) and every building;
+  // all within X,Z∈[-23,23]. DOORWAY faces +X (toward the open square centre).
+  const bakery = makeBakery(-8, -8, colliders);
+  group.add(bakery.group);
+
+  // === ENTERABLE BOOKSHOP (SW corner pocket along the west edge) ===========
+  // A cosy reading nook in the clear SW pocket south of the café. Centre
+  // (-17,19) ⇒ footprint X[-20.5,-13.5] Z[16,22] — clear of the café (Z up to
+  // 13), the SW planter (-13,16, just outside), billboard A (-9,22) and the
+  // tower (Z up to -12); within X,Z∈[-23,23]. DOORWAY faces +X (into the plaza).
+  const bookshop = makeBookshop(-17, 19, colliders);
+  group.add(bookshop.group);
+
+  // === EXTRA STREET-LEVEL FLAVOUR ==========================================
+  // An open-air produce stall on the open SE flank near the café-to-plaza lane,
+  // plus crate stacks, civic bollards lining the south kerb, a couple more
+  // benches and a notice pillar — so the square feels lived-in. Each solid prop
+  // gets a tight collider; small decorative crates share one.
+  const stall = makeMarketStall();
+  stall.position.set(-3, 0, 8);            // open SW-of-fountain flank, clear of benches/lamps
+  stall.rotation.y = Math.PI / 2;          // table broadside to the open lane
+  group.add(stall);
+  addCollider(colliders, -3, 8, 1.4, 2.6); // table footprint, rotated
+
+  // crate stacks dressing shop entrances + open corners
+  const cratePlaces = [
+    [-3.6, -8, 0],          // beside the bakery doorway (+X face at x=-4.5)
+    [20, 4, 0.6],           // open east flank
+    [-12.6, 19, Math.PI / 2],// beside the bookshop doorway (+X face at x=-13.5)
+  ];
+  for (const [x, z, ry] of cratePlaces) {
+    const cs = makeCrateStack();
+    cs.position.set(x, 0, z);
+    cs.rotation.y = ry;
+    group.add(cs);
+    addCollider(colliders, x, z, 1.6, 1.0);
+  }
+
+  // civic bollards lining the south approach (broadside to the cross street),
+  // spaced so the car still threads between them onto the square
+  const bollardPlaces = [[-16, 21], [-4, 21], [4, 21], [16, 21]];
+  for (const [x, z] of bollardPlaces) {
+    const bo = makeBollard();
+    bo.position.set(x, 0, z);
+    group.add(bo);
+    addCollider(colliders, x, z, 0.34, 0.34);
+  }
+
+  // two more benches on the open south flank, facing the fountain
+  for (const p of [{ x: -5, z: 12, ry: Math.PI }, { x: 5, z: 12, ry: Math.PI }]) {
+    const b = makeBench();
+    b.position.set(p.x, 0, p.z);
+    b.rotation.y = p.ry;
+    group.add(b);
+    addCollider(colliders, p.x, p.z, 2.0, 0.6);
+  }
+
+  // a civic notice pillar by the east avenue side, poster facing +X (the avenue)
+  const pillar = makeNoticePillar();
+  pillar.position.set(20, 0, -6);
+  group.add(pillar);
+  addCollider(colliders, 20, -6, 1.2, 1.2);
+
   // --- Animation state (no per-frame allocation) ---------------------------
   let t = 0;
   const baseSign = signPanels.map((p) => p.material.emissiveIntensity ?? 0.55);
-  const kioskLights = kiosk.lights;
+  // All enterable-shop pendant/lamp emissives, pulsed together as a warm glow.
+  const shopLights = kiosk.lights.concat(bakery.lights, bookshop.lights);
   const update = (dt) => {
     t += dt;
     // Rising/falling water jet from the upper bowl.
@@ -986,9 +1499,9 @@ export function buildPlaza() {
       const flick = 0.85 + 0.18 * Math.sin(t * (2.0 + i * 0.6) + i);
       signPanels[i].material.emissiveIntensity = baseSign[i] * flick;
     }
-    // Warm pulse of the kiosk pendant lights.
-    for (let i = 0; i < kioskLights.length; i++) {
-      kioskLights[i].material.emissiveIntensity = 0.9 + 0.25 * Math.sin(t * 1.7 + i * 1.6);
+    // Warm pulse of every enterable-shop pendant/lamp light.
+    for (let i = 0; i < shopLights.length; i++) {
+      shopLights[i].material.emissiveIntensity = 0.9 + 0.25 * Math.sin(t * 1.7 + i * 1.6);
     }
   };
 

@@ -589,7 +589,8 @@ export function buildNightlife() {
     sp.receiveShadow = true;
     group.add(sp);
   }
-  for (const [cx, cz] of [[-8.5, -4.5], [8.5, 4.5], [-8.5, 4.5]]) {
+  // (cones kept clear of the dance floor + the two new enterable shops below)
+  for (const [cx, cz] of [[-8.5, -4.5], [9.6, -4.5], [-8.5, 4.5]]) {
     const c = new THREE.Mesh(coneGeo, coneMat);
     c.position.set(cx, 0.27, cz);
     c.castShadow = true;
@@ -813,6 +814,398 @@ export function buildNightlife() {
     group.add(shop);
     // register the two pendant bulbs so they twinkle with the rest
     for (const b of shopBulbs) bulbStrings.push(b);
+  }
+
+  // ── ENTERABLE SHOP #2: "AFTER HOURS" late-night cocktail bar ───────────────
+  // SW corner of the district, footprint X∈[-22,-13], Z∈[3,9] (9 m × 6 m). Back
+  // wall sits clear in front of the south corner bar; the DOORWAY faces the lane
+  // (−Z). Same construction as VINYL & TONIC: four 0.25 m walls get individual
+  // AABB colliders EXCEPT across the 2.2 m doorway gap. Inside: an L-bar with a
+  // glowing back-bar bottle wall, stools, a booth table with seats, pendant
+  // lights, a neon "AFTER HOURS" strip + an exterior sign over the door.
+  {
+    const SX0 = -22, SX1 = -13;
+    const SZ0 = 3, SZ1 = 9;
+    const wh = 2.8, wt = 0.25;
+    const cx = (SX0 + SX1) / 2; // -17.5
+    const cz = (SZ0 + SZ1) / 2; // 6
+    const sw = SX1 - SX0;       // 9
+    const sd = SZ1 - SZ0;       // 6
+    const doorW = 2.2;
+    const shop = new THREE.Group();
+
+    const floor = box(sw, 0.08, sd, shopFloorMat, false);
+    floor.position.set(cx, 0.04, cz);
+    floor.receiveShadow = true;
+    shop.add(floor);
+    const roof = box(sw + 0.1, 0.2, sd + 0.1, shopRoofMat, false);
+    roof.position.set(cx, wh + 0.1, cz);
+    shop.add(roof);
+
+    function addWall(wx, wz, w, d, collide) {
+      const m = box(w, wh, d, shopWallMat, true);
+      m.position.set(wx, wh / 2, wz);
+      m.receiveShadow = true;
+      shop.add(m);
+      if (collide) addCollider(colliders, wx, wz, w, d);
+    }
+    addWall(cx, SZ1 - wt / 2, sw, wt, true);          // back wall
+    addWall(SX0 + wt / 2, cz, wt, sd, true);          // left wall
+    addWall(SX1 - wt / 2, cz, wt, sd, true);          // right wall
+    const frontZ = SZ0 + wt / 2;
+    const segW = (sw - doorW) / 2;
+    addWall(SX0 + segW / 2, frontZ, segW, wt, true);  // left front segment
+    addWall(SX1 - segW / 2, frontZ, segW, wt, true);  // right front segment
+    const lintel = box(doorW + 0.1, 0.45, wt, shopWoodMat, false);
+    lintel.position.set(cx, wh - 0.225, frontZ);
+    shop.add(lintel);
+
+    // rug
+    const rug = box(3.4, 0.03, 2.4, shopRugMat, false);
+    rug.position.set(cx, 0.09, cz - 0.2);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // L-bar: long run along the back + a short return down the left
+    const counterTopY = 1.02;
+    function addCounter(wx, wz, w, d) {
+      const base = box(w, 1.0, d, shopWoodMat, true);
+      base.position.set(wx, 0.5, wz);
+      base.castShadow = true; base.receiveShadow = true;
+      const top = box(w + 0.08, 0.08, d + 0.08, shopCounterTopMat, false);
+      top.position.set(wx, counterTopY, wz);
+      shop.add(base, top);
+    }
+    addCounter(cx - 0.6, SZ1 - 1.1, 5.0, 0.8);   // along back wall
+    addCounter(SX0 + 1.1, cz + 0.4, 0.8, 2.6);   // return down the left
+
+    // back-bar bottle wall (glowing shelves of "bottles" — instanced spines)
+    const bottleXforms = [];
+    const bottleColors = ["#4fffa0", "#ff4fa3", "#ffe24f", "#4fd2ff", "#ff7a2f", "#b14fff"];
+    const bottleColorList = [];
+    const tmpB = new THREE.Matrix4();
+    for (let s = 0; s < 2; s++) {
+      const sy = 1.45 + s * 0.55;
+      const board = box(4.6, 0.05, 0.32, shopShelfMat, false);
+      board.position.set(cx - 0.6, sy, SZ1 - 0.4);
+      shop.add(board);
+      for (let i = 0; i < 16; i++) {
+        const bxp = cx - 2.7 + i * 0.27;
+        tmpB.makeScale(1, 0.9 + (i % 3) * 0.18, 1);
+        tmpB.setPosition(bxp, sy + 0.28, SZ1 - 0.42);
+        bottleXforms.push(tmpB.clone());
+        bottleColorList.push(bottleColors[(i + s) % bottleColors.length]);
+      }
+    }
+    // a glowing material so the back-bar reads as lit liquor (registered to flicker)
+    const bottleMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff", emissive: "#ffffff", emissiveIntensity: 0.6, roughness: 0.5,
+    });
+    const bottleGeo = new THREE.BoxGeometry(0.1, 0.42, 0.1);
+    const bottleInst = new THREE.InstancedMesh(bottleGeo, bottleMat, bottleXforms.length);
+    const _bc = new THREE.Color();
+    for (let i = 0; i < bottleXforms.length; i++) {
+      bottleInst.setMatrixAt(i, bottleXforms[i]);
+      bottleInst.setColorAt(i, _bc.set(bottleColorList[i]));
+    }
+    bottleInst.instanceMatrix.needsUpdate = true;
+    if (bottleInst.instanceColor) bottleInst.instanceColor.needsUpdate = true;
+    bottleInst.castShadow = false; bottleInst.receiveShadow = false;
+    shop.add(bottleInst);
+    neonMats.push({ mat: bottleMat, base: 0.6, phase: 0.7, speed: 2.4 });
+
+    // stools at the back bar
+    function addShopStool(x, z) {
+      const pole = new THREE.Mesh(shopStoolPoleGeo, metalMat);
+      pole.position.set(x, 0.35, z);
+      pole.castShadow = true;
+      const seat = new THREE.Mesh(shopStoolSeatGeo, stoolSeatMat);
+      seat.position.set(x, 0.72, z);
+      seat.castShadow = true;
+      shop.add(pole, seat);
+    }
+    for (const sx of [cx - 2.0, cx - 0.6, cx + 0.8, cx + 2.2]) addShopStool(sx, SZ1 - 2.1);
+
+    // a small booth table + two seats near the door corner (right-front)
+    const tableLeg = box(0.12, 0.7, 0.12, shopWoodMat, true);
+    tableLeg.position.set(SX1 - 1.4, 0.35, SZ0 + 1.6);
+    const tableTop = box(1.0, 0.08, 1.0, shopCounterTopMat, false);
+    tableTop.position.set(SX1 - 1.4, 0.72, SZ0 + 1.6);
+    shop.add(tableLeg, tableTop);
+    for (const [sx, sz] of [[SX1 - 2.0, SZ0 + 1.6], [SX1 - 0.8, SZ0 + 1.6]]) {
+      const cube = box(0.5, 0.45, 0.5, stoolSeatMat, true);
+      cube.position.set(sx, 0.22, sz);
+      shop.add(cube);
+    }
+
+    // pendant lights
+    const shopBulbs = [];
+    for (const [bx, bz] of [[cx - 1.2, cz - 0.3], [cx + 1.2, cz + 0.6]]) {
+      const cord = new THREE.Mesh(shopCordGeo, frameMat);
+      cord.scale.y = 0.9;
+      cord.position.set(bx, wh - 0.45, bz);
+      const bulb = new THREE.Mesh(shopBulbGeo, shopBulbMat);
+      bulb.position.set(bx, wh - 0.95, bz);
+      shop.add(cord, bulb);
+      shopBulbs.push(bulb);
+    }
+
+    // interior neon strip behind the bar
+    const innerSign = artPanel(3.0, 0.7, "neon", {
+      lines: ["AFTER HOURS"], color: "#ff7a2f", color2: "#4fd2ff",
+      emissiveIntensity: 0.9, file: "neon-afterhours-inner.png",
+    });
+    innerSign.position.set(cx - 0.6, 2.45, SZ1 - 0.16);
+    innerSign.rotation.y = Math.PI; // faces into the room toward the door
+    shop.add(innerSign);
+    neonMats.push({ mat: innerSign.material, base: 0.9, phase: 4.1, speed: 3.3 });
+
+    // exterior sign above the door, facing the lane (−Z)
+    const shopSign = artPanel(4.6, 1.1, "sign", {
+      text: "AFTER HOURS", bg: "#1a0f24", fg: "#ffd27a", file: "sign-afterhours.png",
+    });
+    shopSign.position.set(cx, wh + 0.55, SZ0 - 0.06);
+    shopSign.rotation.y = Math.PI;
+    shopSign.material.emissiveIntensity = 0.7;
+    shop.add(shopSign);
+    const signFrame = box(4.9, 1.35, 0.1, frameMat, false);
+    signFrame.position.set(cx, wh + 0.55, SZ0 - 0.12);
+    shop.add(signFrame);
+
+    group.add(shop);
+    for (const b of shopBulbs) bulbStrings.push(b);
+  }
+
+  // ── ENTERABLE SHOP #3: "PIXEL PALACE" neon arcade ──────────────────────────
+  // South-centre, footprint X∈[0.5,8.5], Z∈[3,9] (8 m × 6 m), sitting between the
+  // dance floor and the VINYL & TONIC shop, clear of both. DOORWAY faces the lane
+  // (−Z). Inside: a row of arcade cabinets (glowing instanced screens), a prize/
+  // token counter, a couple of stools, a glowing high-score board, pendant
+  // lights, and signage. The emissive screens flicker with the district neon.
+  {
+    const SX0 = 0.5, SX1 = 8.5;
+    const SZ0 = 3, SZ1 = 9;
+    const wh = 2.8, wt = 0.25;
+    const cx = (SX0 + SX1) / 2; // 4.5
+    const cz = (SZ0 + SZ1) / 2; // 6
+    const sw = SX1 - SX0;       // 8
+    const sd = SZ1 - SZ0;       // 6
+    const doorW = 2.2;
+    const shop = new THREE.Group();
+
+    const floor = box(sw, 0.08, sd, shopFloorMat, false);
+    floor.position.set(cx, 0.04, cz);
+    floor.receiveShadow = true;
+    shop.add(floor);
+    const roof = box(sw + 0.1, 0.2, sd + 0.1, shopRoofMat, false);
+    roof.position.set(cx, wh + 0.1, cz);
+    shop.add(roof);
+
+    function addWall(wx, wz, w, d, collide) {
+      const m = box(w, wh, d, shopWallMat, true);
+      m.position.set(wx, wh / 2, wz);
+      m.receiveShadow = true;
+      shop.add(m);
+      if (collide) addCollider(colliders, wx, wz, w, d);
+    }
+    addWall(cx, SZ1 - wt / 2, sw, wt, true);          // back wall
+    addWall(SX0 + wt / 2, cz, wt, sd, true);          // left wall
+    addWall(SX1 - wt / 2, cz, wt, sd, true);          // right wall
+    const frontZ = SZ0 + wt / 2;
+    const segW = (sw - doorW) / 2;
+    addWall(SX0 + segW / 2, frontZ, segW, wt, true);  // left front segment
+    addWall(SX1 - segW / 2, frontZ, segW, wt, true);  // right front segment
+    const lintel = box(doorW + 0.1, 0.45, wt, shopWoodMat, false);
+    lintel.position.set(cx, wh - 0.225, frontZ);
+    shop.add(lintel);
+
+    // rug
+    const rug = box(3.4, 0.03, 2.4, shopRugMat, false);
+    rug.position.set(cx, 0.09, cz - 0.3);
+    rug.receiveShadow = true;
+    shop.add(rug);
+
+    // a row of arcade cabinets along the back wall — cabinet body (shared mat) +
+    // a glowing screen each (one InstancedMesh of emissive screens, flickering).
+    const cabMat = shopShelfMat; // dark cabinet body reuses the shelf material
+    const screenMat = new THREE.MeshStandardMaterial({
+      color: "#101824", emissive: "#3fd6ff", emissiveIntensity: 0.8, roughness: 0.4, flatShading: true,
+    });
+    const screenGeo = new THREE.BoxGeometry(0.6, 0.5, 0.06);
+    const screenXforms = [];
+    const screenColors = ["#3fd6ff", "#ff4fa3", "#4fffa0", "#ffe24f"];
+    const screenColorList = [];
+    const tmpS = new THREE.Matrix4();
+    const cabZ = SZ1 - 0.65;
+    let ci = 0;
+    for (const sx of [cx - 2.7, cx - 0.9, cx + 0.9, cx + 2.7]) {
+      // cabinet body
+      const cab = box(0.8, 1.7, 0.7, cabMat, true);
+      cab.position.set(sx, 0.85, cabZ);
+      cab.castShadow = true; cab.receiveShadow = true;
+      // sloped control panel
+      const panel = box(0.8, 0.12, 0.4, shopWoodMat, false);
+      panel.position.set(sx, 0.95, cabZ - 0.5);
+      panel.rotation.x = -0.5;
+      shop.add(cab, panel);
+      // glowing screen (instanced) angled on the cabinet face
+      tmpS.makeRotationX(0.18);
+      tmpS.setPosition(sx, 1.42, cabZ - 0.36);
+      screenXforms.push(tmpS.clone());
+      screenColorList.push(screenColors[ci % screenColors.length]);
+      ci++;
+    }
+    const screenInst = new THREE.InstancedMesh(screenGeo, screenMat, screenXforms.length);
+    const _sc = new THREE.Color();
+    for (let i = 0; i < screenXforms.length; i++) {
+      screenInst.setMatrixAt(i, screenXforms[i]);
+      screenInst.setColorAt(i, _sc.set(screenColorList[i]));
+    }
+    screenInst.instanceMatrix.needsUpdate = true;
+    if (screenInst.instanceColor) screenInst.instanceColor.needsUpdate = true;
+    screenInst.castShadow = false; screenInst.receiveShadow = false;
+    shop.add(screenInst);
+    neonMats.push({ mat: screenMat, base: 0.8, phase: 5.0, speed: 4.0 });
+
+    // token / prize counter along the right wall
+    const base = box(0.8, 1.0, 3.2, shopWoodMat, true);
+    base.position.set(SX1 - 0.6, 0.5, cz + 0.4);
+    base.castShadow = true; base.receiveShadow = true;
+    const top = box(0.9, 0.08, 3.3, shopCounterTopMat, false);
+    top.position.set(SX1 - 0.6, 1.02, cz + 0.4);
+    shop.add(base, top);
+
+    // a couple of stools facing the cabinets
+    function addShopStool(x, z) {
+      const pole = new THREE.Mesh(shopStoolPoleGeo, metalMat);
+      pole.position.set(x, 0.35, z);
+      pole.castShadow = true;
+      const seat = new THREE.Mesh(shopStoolSeatGeo, stoolSeatMat);
+      seat.position.set(x, 0.72, z);
+      seat.castShadow = true;
+      shop.add(pole, seat);
+    }
+    addShopStool(cx - 1.8, SZ1 - 2.0);
+    addShopStool(cx + 0.0, SZ1 - 2.0);
+
+    // pendant lights
+    const shopBulbs = [];
+    for (const [bx, bz] of [[cx - 1.4, cz - 0.4], [cx + 1.4, cz + 0.4]]) {
+      const cord = new THREE.Mesh(shopCordGeo, frameMat);
+      cord.scale.y = 0.9;
+      cord.position.set(bx, wh - 0.45, bz);
+      const bulb = new THREE.Mesh(shopBulbGeo, shopBulbMat);
+      bulb.position.set(bx, wh - 0.95, bz);
+      shop.add(cord, bulb);
+      shopBulbs.push(bulb);
+    }
+
+    // interior high-score / now-playing neon strip on the left wall
+    const innerSign = artPanel(2.4, 0.7, "neon", {
+      lines: ["HIGH SCORE"], color: "#4fffa0", color2: "#ff4fa3",
+      emissiveIntensity: 0.9, file: "neon-highscore-inner.png",
+    });
+    innerSign.position.set(SX0 + 0.16, 2.0, cz);
+    innerSign.rotation.y = Math.PI / 2; // faces +X into the room
+    shop.add(innerSign);
+    neonMats.push({ mat: innerSign.material, base: 0.9, phase: 1.7, speed: 3.6 });
+
+    // exterior sign above the door, facing the lane (−Z)
+    const shopSign = artPanel(4.2, 1.1, "sign", {
+      text: "PIXEL PALACE", bg: "#10002b", fg: "#4cc9f0", file: "sign-pixelpalace.png",
+    });
+    shopSign.position.set(cx, wh + 0.55, SZ0 - 0.06);
+    shopSign.rotation.y = Math.PI;
+    shopSign.material.emissiveIntensity = 0.7;
+    shop.add(shopSign);
+    const signFrame = box(4.5, 1.35, 0.1, frameMat, false);
+    signFrame.position.set(cx, wh + 0.55, SZ0 - 0.12);
+    shop.add(signFrame);
+
+    group.add(shop);
+    for (const b of shopBulbs) bulbStrings.push(b);
+  }
+
+  // ── EXTRA STREET FLAVOR — benches, crates, a planter row, a food stall ──────
+  // Small lived-in props scattered on the open pavement, all clear of the
+  // through-lane (Z∈[-6,6]) and the new shop footprints / building setbacks.
+  {
+    // simple wooden bench (slats + two legs), reused via a helper
+    function addBench(x, z, rotY) {
+      const g = new THREE.Group();
+      const seat = box(1.8, 0.12, 0.5, shopWoodMat, true);
+      seat.position.y = 0.5;
+      const backrest = box(1.8, 0.5, 0.1, shopWoodMat, true);
+      backrest.position.set(0, 0.8, -0.2);
+      g.add(seat, backrest);
+      for (const lx of [-0.75, 0.75]) {
+        const leg = box(0.12, 0.5, 0.45, frameMat, false);
+        leg.position.set(lx, 0.25, 0);
+        g.add(leg);
+      }
+      g.position.set(x, 0, z);
+      g.rotation.y = rotY;
+      group.add(g);
+    }
+    addBench(-11.5, 8.4, 0);          // SW, in the gap beside AFTER HOURS
+    addBench(-1.0, -8.6, Math.PI);    // north kerb under the lounge windows
+    addBench(21.0, 8.6, 0);           // SE corner pavement
+
+    // a little stack of crates (street clutter)
+    function addCrates(x, z) {
+      const c0 = box(0.7, 0.7, 0.7, shopWoodMat, true);
+      c0.position.set(x, 0.35, z);
+      const c1 = box(0.6, 0.6, 0.6, shopWoodMat, true);
+      c1.position.set(x + 0.15, 0.95, z + 0.1);
+      const c2 = box(0.55, 0.55, 0.55, shopWoodMat, true);
+      c2.position.set(x - 0.25, 0.32, z + 0.55);
+      group.add(c0, c1, c2);
+    }
+    addCrates(-22.5, -8.0);   // NW corner alley clutter (clear of buildings)
+    addCrates(11.5, 9.2);     // SE, between the two south shops
+
+    // a tidy row of glowing planters along the NORTH lane edge (decorative);
+    // sits at z≈-6.8, just clear of the drive-lane (Z∈[-6,6]) in the pedestrian
+    // cross-lane gaps, so it never blocks the through-route.
+    for (const px of [-9.0, 0.0, 9.0]) {
+      const planter = box(1.2, 0.5, 0.6, planterMat, true);
+      planter.position.set(px, 0.25, -6.8);
+      group.add(planter);
+      // a small lit shrub on top (emissive, registered to flicker softly)
+      const shrubMat = new THREE.MeshStandardMaterial({
+        color: "#173a26", emissive: "#2fae5a", emissiveIntensity: 0.3, roughness: 0.9, flatShading: true,
+      });
+      const shrub = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4, 0), shrubMat);
+      shrub.position.set(px, 0.75, -6.8);
+      shrub.castShadow = true;
+      group.add(shrub);
+      neonMats.push({ mat: shrubMat, base: 0.3, phase: px, speed: 1.6 });
+    }
+
+    // a small street food stall (cart + striped canopy + a glowing menu board)
+    const stall = new THREE.Group();
+    const cart = box(2.2, 1.0, 1.0, shopWoodMat, true);
+    cart.position.y = 0.5;
+    const cartTop = box(2.3, 0.1, 1.1, shopCounterTopMat, false);
+    cartTop.position.y = 1.02;
+    const canopy = box(2.6, 0.12, 1.4, awningMat, false);
+    canopy.position.y = 2.0;
+    stall.add(cart, cartTop, canopy);
+    // four canopy posts
+    for (const [lx, lz] of [[-1.1, -0.6], [1.1, -0.6], [-1.1, 0.6], [1.1, 0.6]]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.95, 6), poleMat);
+      post.position.set(lx, 1.0, lz);
+      stall.add(post);
+    }
+    // a glowing menu board on the cart, facing the lane
+    const menu = artPanel(1.6, 0.7, "sign", {
+      text: "NOODLES", bg: "#2a0f1f", fg: "#ffd27a", file: "sign-noodles.png",
+    });
+    menu.position.set(0, 1.55, -0.55);
+    menu.material.emissiveIntensity = 0.7;
+    stall.add(menu);
+    stall.position.set(-20.0, 0, -7.5); // NW pavement, clear of buildings + lane
+    group.add(stall);
   }
 
   // ── UPDATE: flicker neon, cycle hues, spin marquee, pulse dance floor ──

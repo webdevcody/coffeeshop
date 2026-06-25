@@ -5,6 +5,7 @@
 
 import { Character } from "./character.js";
 import { makeCar } from "./car.js";
+import { makeBoat } from "./boat.js";
 import { makeSkateboard } from "./skateboard.js";
 import { getItem } from "../world/items.js";
 import {
@@ -15,6 +16,10 @@ import {
   setLabelText,
 } from "../ui/labels.js";
 import { NET } from "../config.js";
+
+// Sea surface height — mirrors ocean.js's waterY so a remote player's boat floats
+// at the same level as the local sea (this module can't see the live ocean instance).
+const WATER_Y = -0.8;
 
 export class RemotePlayers {
   constructor(scene) {
@@ -113,6 +118,14 @@ export class RemotePlayers {
       // Fresh car mesh painted to this player's color. We only use .group (never
       // edit car.js). The avatar is hidden so the car represents the player.
       e.rideGroup = makeCar({ color: e.color }).group;
+      this.scene.add(e.rideGroup);
+      body.visible = false;
+    } else if (ride === "boat") {
+      // Fresh boat mesh floating at the sea surface. Like the car it lives in scene
+      // space (not parented to the avatar) and follows the lerped XZ in update();
+      // the avatar is hidden so the boat represents the sailing player. We only use
+      // .group (never edit boat.js).
+      e.rideGroup = makeBoat({ waterY: WATER_Y }).group;
       this.scene.add(e.rideGroup);
       body.visible = false;
     } else if (ride === "skate") {
@@ -222,11 +235,14 @@ export class RemotePlayers {
       g.rotation.y = lerpAngle(g.rotation.y, e.target.ry, k);
       e.character.update(dt, e.moving);
 
-      // The car group lives in scene space (not parented to the avatar), so it
-      // follows the lerped transform here. Both sit at world y=0. The board needs
+      // The car/boat group lives in scene space (not parented to the avatar), so it
+      // follows the lerped XZ + heading here. The car sits at world y=0; the boat
+      // floats at the sea surface (WATER_Y, set on its group at build time) — we
+      // preserve the group's own base y instead of stomping it to 0. The board needs
       // no handling — it's parented under the avatar and moves with it.
       if (e.rideGroup) {
-        e.rideGroup.position.set(g.position.x, 0, g.position.z);
+        const ry = e.ride === "boat" ? WATER_Y : 0;
+        e.rideGroup.position.set(g.position.x, ry, g.position.z);
         e.rideGroup.rotation.y = g.rotation.y;
       }
 

@@ -5,10 +5,12 @@
 
 import * as THREE from "three";
 import { makeCar } from "./car.js";
+import { makeBoat } from "./boat.js";
 import { makeSkateboard } from "./skateboard.js";
 
 const FAR = 1e9;
 const CAR_REACH = 3.2; // how close you must be to enter the car
+const BOAT_REACH = 4.0; // how close (at a dock) you must be to board the boat
 const SKATE_SPEED = 1.9; // ground-speed multiplier while skating
 
 // --- Skate trick tuning (arcade + forgiving) --------------------------------
@@ -53,11 +55,23 @@ export function createRides(scene, opts) {
   const spawn = opts.carSpawn || { x: 4, z: 18, heading: 0 };
   // Interactable world objects (bench, piano, hoop, ATM, photo spot, hot-dog).
   // Given E-priority in the walk branch BETWEEN entering the car and mounting the
-  // board: car > interactable > skateboard. null when none were threaded in.
+  // board: car > boat > interactable > skateboard. null when none were threaded in.
   const interactables = opts.interactables || null;
+  // The ocean (water plane + docks + boat spawn + isWater predicate). null when no
+  // ocean was threaded in — in that case the boat is simply never created/offered.
+  const ocean = opts.ocean || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
+
+  // The drivable BOAT — built once (like the car), floating at the main dock tip in
+  // the water. It lives in the sea, so on foot you can only reach it from a dock;
+  // boarding/sailing/disembarking mirror the car's drive branch. null with no ocean.
+  let boat = null;
+  if (ocean) {
+    boat = makeBoat({ spawn: ocean.boatSpawn, waterY: ocean.waterY });
+    scene.add(boat.group);
+  }
 
   // Parked-car footprint, registered in the world colliders so you can't walk
   // through it. We mutate this same object in place: a tight box while parked,
@@ -66,7 +80,7 @@ export function createRides(scene, opts) {
   colliders.push(carCollider);
 
   let board = null;
-  let mode = "walk"; // walk | drive | skate
+  let mode = "walk"; // walk | drive | boat | skate
 
   // Per-frame skate physics sub-state. null while not skating; otherwise a small
   // record threaded across frames so air/grind survive between update() calls.
@@ -139,6 +153,32 @@ export function createRides(scene, opts) {
     const useE = controls.consumeUse ? controls.consumeUse() : false;
     const outdoors = local.pos.z > 11.5; // only offer rides outside the cafe
     const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH;
+    // The boat floats in the water at a dock tip, so this is only ever true when
+    // you're standing on a dock right next to it (you can't reach it across water).
+    const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH : false;
+
+    if (mode === "boat") {
+      const { throttle, steer } = controls.driveAxis();
+      boat.drive(dt, throttle, steer, ocean.isWater);
+      boat.updateCamera(camera, dt);
+      // Glue the (hidden) avatar + networked position to the boat so exiting is
+      // seamless and remotes see you sailing, not frozen on the dock.
+      local.pos.x = boat.state.x;
+      local.pos.z = boat.state.z;
+      local.facing = boat.state.heading;
+      if (useE) {
+        const s = boat.exitSpot(ocean.docks);
+        local.pos.x = s.x;
+        local.pos.z = s.z;
+        local.facing = s.facing;
+        // Stand the avatar on the dock (which is in `ground`) so it doesn't fall.
+        local.character.group.position.set(s.x, 0, s.z);
+        local.character.group.rotation.y = s.facing;
+        mode = "walk";
+        return { mode, prompt: "🚤 Press E to sail", overrideWalk: false };
+      }
+      return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
+    }
 
     if (mode === "drive") {
       car.drive(dt, controls.driveAxis(), colliders, isGround);
@@ -180,6 +220,13 @@ export function createRides(scene, opts) {
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
+      // BOAT: reachable only from a dock (it floats in the water). Boards between
+      // the car and the interactables in the E-priority order.
+      if (nearBoat) {
+        boat.resetCamera();
+        mode = "boat";
+        return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
+      }
       // INTERACTABLES: a world object in range claims E before the skateboard.
       // tryUse returns its HUD line (truthy) only when something was in range;
       // null falls through so pressing E in the open still mounts the board.
@@ -196,6 +243,7 @@ export function createRides(scene, opts) {
     let prompt = null;
     const ip = interactables && !local.sitting ? interactables.nearestPrompt(local.pos.x, local.pos.z) : null;
     if (nearCar) prompt = "🚗 Press E to drive";
+    else if (nearBoat && !local.sitting) prompt = "🚤 Press E to sail"; // boat hover sits between car and interactable
     else if (ip) prompt = ip; // interactable hover prompt sits between car and skate
     else if (outdoors && !local.sitting) prompt = "🛹 Press E to skateboard";
     return { mode, prompt, overrideWalk: false };
@@ -379,12 +427,14 @@ export function createRides(scene, opts) {
   return {
     update,
     car,
+    boat,
     get trick() { return skate ? skate.lastTrick : null; },
     get score() { return skate ? skate.score : 0; },
     get mode() { return mode; },
-    // Network-friendly ride tag: null while walking, "car" while driving, "skate"
-    // while on the board. Threaded through sendState so remotes render the mesh.
-    get ride() { return mode === "drive" ? "car" : mode === "skate" ? "skate" : null; },
+    // Network-friendly ride tag: null while walking, "car" while driving, "boat"
+    // while sailing, "skate" while on the board. Threaded through sendState so
+    // remotes render the matching mesh.
+    get ride() { return mode === "drive" ? "car" : mode === "boat" ? "boat" : mode === "skate" ? "skate" : null; },
   };
 }
 

@@ -97,6 +97,28 @@ function newsboxTex() {
   return c;
 }
 
+// Soft radial glow disc for the street-lamp ground pools: a warm white centre
+// that fades to fully transparent at the rim, on a transparent canvas. Used with
+// ADDITIVE blending so the black-equivalent (transparent) edge adds nothing and
+// only the bright core lifts the road beneath each lamp at night.
+function glowDiscTex() {
+  const [c, g] = cnv(128, 128);
+  g.clearRect(0, 0, 128, 128);
+  const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  // Guard for the headless test stub, whose fake 2D context returns no gradient
+  // object (real browsers always do). The texture is irrelevant to that geometry
+  // self-test; this just lets it import cityStreets.js without throwing.
+  if (grd && grd.addColorStop) {
+    grd.addColorStop(0.0, "rgba(255,235,190,1)");
+    grd.addColorStop(0.35, "rgba(255,215,140,0.55)");
+    grd.addColorStop(0.7, "rgba(255,200,120,0.18)");
+    grd.addColorStop(1.0, "rgba(255,200,120,0)");
+    g.fillStyle = grd;
+  }
+  g.fillRect(0, 0, 128, 128);
+  return c;
+}
+
 export function buildStreets() {
   const group = new THREE.Group();
   group.name = "streets";
@@ -211,7 +233,9 @@ export function buildStreets() {
   const postGeo = new THREE.CylinderGeometry(0.12, 0.14, 5, 6);
   const postMat = new THREE.MeshStandardMaterial({ color: "#2b2e33", roughness: 0.5, metalness: 0.6 });
   const headGeo = new THREE.BoxGeometry(0.5, 0.3, 0.5);
-  const headMat = new THREE.MeshStandardMaterial({ color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 0.9, roughness: 0.4 });
+  // Boosted head emissive so the bulbs glow stronger and read as the light source
+  // the ground pools fall under (was 0.9 — too weak to look "on" against night blue).
+  const headMat = new THREE.MeshStandardMaterial({ color: "#fff3cf", emissive: "#ffd98a", emissiveIntensity: 1.8, roughness: 0.4 });
   const spots = [];
   for (const x of VROADS) for (let z = NEAR + 12; z < FAR; z += 26) {
     for (const lx of [x - HALFR - 1.4, x + HALFR + 1.4]) if (!onRoad(lx, z)) spots.push([lx, z]);
@@ -227,6 +251,55 @@ export function buildStreets() {
   group.add(posts); group.add(heads);
   // Tight collider per street-lamp post (head box 0.5 -> half 0.25; posts at ax+-7.4).
   for (const [x, z] of spots) colliders.push({ minX: x - 0.25, maxX: x + 0.25, minZ: z - 0.25, maxZ: z + 0.25 });
+
+  // --- Warm "light pool" on the ground under every street lamp. -----------
+  // One InstancedMesh: a soft radial-glow disc (additive, depthWrite:false) laid
+  // flat on the road tier under each lamp's x,z. ADDITIVE blending means each disc
+  // only brightens what's beneath it — by day the scene is already bright so the
+  // pools are washed out and invisible; at night the scene sinks to deep blue so
+  // the same warm pools "switch on" purely from the contrast, no day/night wiring.
+  // polygonOffset (matching the crosswalk bias) floats them on the asphalt without
+  // z-fighting the road/decals; renderOrder 5 composites them above all road paint.
+  const poolTex = tex(glowDiscTex());
+  const poolMat = new THREE.MeshBasicMaterial({
+    map: poolTex, color: "#ffd9a0", transparent: true, opacity: 1.0,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
+    polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5,
+  });
+  // Bigger pools (11×11) at full opacity so the lamps read as BRIGHT posts even
+  // against the lifted moonlit-night ambient.
+  const pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(11, 11), poolMat, spots.length);
+  pools.renderOrder = 5;
+  const _poolQ = new THREE.Quaternion().setFromAxisAngle(_RIGHT, -Math.PI / 2);
+  const _poolV = new THREE.Vector3();
+  const _poolS = new THREE.Vector3(1, 1, 1);
+  spots.forEach(([x, z], i) => {
+    _poolV.set(x, 0.026, z);
+    m.compose(_poolV, _poolQ, _poolS); pools.setMatrixAt(i, m);
+  });
+  group.add(pools);
+
+  // --- A few REAL cast lights (hero PointLights) where players actually are. ---
+  // Hard-capped to <= 8 warm, modest-range/decay lights so the streets near the
+  // spawn approach and the two busiest main-avenue intersections get GENUINE cast
+  // light at night. NOT one-per-lamp (that would be hundreds of lights = GPU
+  // death) — the cheap additive pools above carry the rest of the street. Each
+  // sits at lamp-head height so it pools down onto the road like a real bulb.
+  const HERO_SPOTS = [
+    [0, NEAR + 6],     // spawn approach (centre avenue, just past the cafe)
+    [0, NEAR + 24],    // a little further up the spawn avenue
+    [0, 95],           // centre avenue × main cross street (busy junction)
+    [0, 155],          // centre avenue × next main cross street
+    [-60, 95],         // left avenue × main cross
+    [60, 95],          // right avenue × main cross
+    [-60, 155],        // left avenue × next cross
+    [60, 155],         // right avenue × next cross
+  ];
+  for (const [hx, hz] of HERO_SPOTS) {
+    const pl = new THREE.PointLight(0xffe0a0, 32, 36, 1.7); // warm, brighter, range 36 m
+    pl.position.set(hx, 5.2, hz);
+    group.add(pl);
+  }
 
   // Instanced roadside trees on the cross streets for greenery/density.
   const trunkGeo = new THREE.CylinderGeometry(0.18, 0.22, 1.6, 6);
@@ -477,8 +550,12 @@ function addStreetLife(group, m) {
   const signPostMat = new THREE.MeshStandardMaterial({ color: "#777", roughness: 0.5, metalness: 0.6 });
   const signSpots = []; // [x, z, type]  type 0 = stop, 1 = one-way
   let snToggle = 0;
+  // Sit at HALFR+1.8 (1.8 m past the 6 m lane edge) — nudged out a touch from the
+  // old 1.4 so the post never reads as crowding the kerb. Still well clear of the
+  // crosswalk paint, whose stripes span only ±5.5 across the approach (post is at
+  // ±7.8 on the cross axis, a 2.3 m gap), so no decal overlap.
   for (const ax of VROADS) for (const hz of HROADS) {
-    signSpots.push([ax - HALFR - 1.4, hz - HALFR - 1.4, (snToggle++) % 2]);
+    signSpots.push([ax - HALFR - 1.8, hz - HALFR - 1.8, (snToggle++) % 2]);
   }
   const signPosts = new THREE.InstancedMesh(signPostGeo, signPostMat, signSpots.length);
   signSpots.forEach(([x, z], i) => place(signPosts, i, x, 1.3, z));
@@ -634,7 +711,10 @@ function addStreetLife(group, m) {
   const bladeMat = new THREE.MeshStandardMaterial({ map: tex(streetSignTex()), roughness: 0.6, side: THREE.DoubleSide });
   const bladePostMat = new THREE.MeshStandardMaterial({ color: "#5a5e63", roughness: 0.5, metalness: 0.6 });
   const bladeSpots = [];
-  for (const ax of VROADS) for (const hz of HROADS) bladeSpots.push([ax + HALFR + 1.4, hz + HALFR + 1.4]);
+  // Matched to the sign posts: HALFR+1.8 from the intersection centre (1.8 m past
+  // the lane edge), nudged out from 1.4 so it stops crowding the kerb and stays
+  // clear of the crosswalk stripes (±5.5 across the approach; post at ±7.8).
+  for (const ax of VROADS) for (const hz of HROADS) bladeSpots.push([ax + HALFR + 1.8, hz + HALFR + 1.8]);
   const bladePosts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.6, 6), bladePostMat, bladeSpots.length);
   const blades = new THREE.InstancedMesh(new THREE.PlaneGeometry(2.4, 0.6), bladeMat, bladeSpots.length);
   bladeSpots.forEach(([x, z], i) => {

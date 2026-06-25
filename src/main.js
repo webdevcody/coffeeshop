@@ -8,6 +8,7 @@ import { createEngine } from "./engine/scene.js";
 import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
+import { buildOcean } from "./world/ocean.js";
 import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
@@ -25,7 +26,7 @@ import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
 
 const canvas = document.getElementById("scene");
-const { renderer, scene, camera, labelRenderer, updateDayNight } = createEngine(canvas);
+const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, getTimeOfDay } = createEngine(canvas);
 // Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
 // makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
 // glow. Built on the existing renderer/scene/camera; scene.js still owns tone
@@ -37,6 +38,29 @@ const postFX = createPostFX(renderer, scene, camera);
 // we add a second listener that resizes the composer with the same dimensions.
 window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
 const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
+
+// OCEAN: wraps the whole city in a huge animated sea so the landmass reads as an
+// island — adds a beach apron, a main dock + drivable boat, and four little
+// shop-islands. Built off the union AABB of the walkable `ground` rects so the
+// shoreline hugs the actual landmass. Its group is added straight to the scene; its
+// extra walkable rects / solid props are MERGED into the player + ride world below.
+const landBounds = ground.reduce(
+  (b, g) => ({
+    minX: Math.min(b.minX, g.minX),
+    maxX: Math.max(b.maxX, g.maxX),
+    minZ: Math.min(b.minZ, g.minZ),
+    maxZ: Math.max(b.maxZ, g.maxZ),
+  }),
+  { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity }
+);
+const ocean = buildOcean({ landBounds });
+scene.add(ocean.group);
+// Merged world surfaces: beaches/docks/island tops become walkable, island props
+// (huts, palms, rail posts) become solid. Used everywhere `ground`/`colliders` are
+// consumed by the player + rides so you can stroll the shoreline and sail the sea.
+const groundAll = ground.concat(ocean.ground);
+const collidersAll = colliders.concat(ocean.colliders);
+
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
 // skateboard. Pushes the parked car's footprint into `colliders`; drives off the
@@ -50,12 +74,13 @@ const controls = createControls(canvas);
 const interactables = buildInteractables();
 scene.add(interactables.group);
 
-const isGroundFn = (x, z) => ground.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
+const isGroundFn = (x, z) => groundAll.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
 const rides = createRides(scene, {
-  colliders,
+  colliders: collidersAll,
   isGround: isGroundFn,
   carSpawn: { x: 4, z: 18, heading: 0 },
-  interactables, // E priority: car > interactable > skateboard (handled in rides.js)
+  interactables, // E priority: car > boat > interactable > skateboard (handled in rides.js)
+  ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
 });
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
@@ -366,7 +391,7 @@ function colorFor(id, fallbackName) {
 
 // --- HUD wiring ------------------------------------------------------------
 hud.onJoin = ({ name, color }) => {
-  local = new LocalPlayer(scene, controls, colliders, { color }, name, seats, ground, spawn);
+  local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -458,20 +483,22 @@ function frame() {
   updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
   updateWorld?.(dt); // animate the street: cars driving by, birds overhead
   interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
+  ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
 
   if (joined && local) {
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
     const ride = rides.update(dt, camera, controls, local);
-    if (ride.mode === "drive") {
+    if (ride.mode === "drive" || ride.mode === "boat") {
+      // Driving a car OR sailing the boat: the vehicle owns the avatar + camera, so
+      // hide the on-foot avatar, suppress the bottom-center sit prompt, and show the
+      // bottom-right speedometer (fed by whichever vehicle is active).
       if (local.character?.group) local.character.group.visible = false;
-      // The drive HUD (bottom-right) carries the speedometer + "WASD / E exit"
-      // hint while driving, so suppress the bottom-center sit prompt to avoid
-      // showing the same hint twice.
       hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
-      hud.setDriveHud(true, rides.car.state.speed); // speedometer + drive hint
+      const speed = ride.mode === "boat" ? (rides.boat?.state?.speed ?? 0) : rides.car.state.speed;
+      hud.setDriveHud(true, speed); // speedometer + drive/sail hint
     } else {
       const seatedView = syncSeatedCamera();
       local.update(dt, camera, seatedView);
@@ -580,5 +607,5 @@ function maybeSendState() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, ocean, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

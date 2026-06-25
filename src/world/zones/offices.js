@@ -690,6 +690,360 @@ export function buildOffices() {
     products.commit(true);
   }
 
+  // ── ENTERABLE SHOP #2: "BREW HAVEN CAFÉ" — the namesake coffee bar you walk INTO ─
+  // A standalone room on the open EAST shoulder of the cross (mirror position of the
+  // deli): center (16,0), outer 8.0×7.0 → X[12,20] Z[-3.5,3.5]. Verified clear of the
+  // SE/NE buildings (X≥7.8 but their colliders sit at |Z|≥7.9), the trees (x=22), the
+  // pool, and the N-S drive lane (|x|≤5 stays fully open). Four real walls + floor +
+  // flat roof, with a 2.2 m DOORWAY GAP in the street-facing (−X, toward the central
+  // plaza) wall so a player crossing the cross walks straight in. Each wall segment
+  // gets its OWN AABB collider; the doorway gap gets NONE (genuinely walkable).
+  {
+    const sx = 16, sz = 0;          // shop center (open east-edge strip)
+    const SW = 8.0, SD = 7.0;       // outer width (X) × depth (Z)
+    const WT = 0.25, WH = 3.0;      // wall thickness, wall height
+    const hw = SW / 2, hd = SD / 2;
+    const door = 2.2;               // doorway clear width (in the −X plaza wall)
+    const fX = sx - hw;             // plaza-facing wall centerline (−X)
+    const bX = sx + hw;             // back wall centerline (+X)
+    const nZ = sz - hd, pZ = sz + hd; // side-wall centerlines (−Z, +Z)
+
+    // Themed materials (warm café palette) — created once, reused.
+    const cafeWall = new THREE.MeshStandardMaterial({ color: "#2f5d54", roughness: 0.9 });
+    const cafeTrim = new THREE.MeshStandardMaterial({ color: "#caa45a", roughness: 0.6, metalness: 0.2 });
+    const cafeFloor = new THREE.MeshStandardMaterial({ color: "#5a4632", roughness: 0.85 });
+    const barMat = new THREE.MeshStandardMaterial({ color: "#3a2a1c", roughness: 0.6 });
+    const barTop = new THREE.MeshStandardMaterial({ color: "#1d2a2a", roughness: 0.3, metalness: 0.4 });
+    const machineMat = new THREE.MeshStandardMaterial({ color: "#c9ccd2", roughness: 0.3, metalness: 0.85 });
+    const shelfMat = new THREE.MeshStandardMaterial({ color: "#4a3322", roughness: 0.75 });
+    const rugMat = new THREE.MeshStandardMaterial({ color: "#1f4a44", roughness: 0.95 });
+    const stoolMat = new THREE.MeshStandardMaterial({ color: "#caa45a", roughness: 0.5, metalness: 0.3 });
+    const tableMat = new THREE.MeshStandardMaterial({ color: "#3a2a1c", roughness: 0.6 });
+    const lampShade = new THREE.MeshStandardMaterial({
+      color: "#ffe2a6", roughness: 0.4, emissive: "#ffcf6a", emissiveIntensity: 0.85,
+    });
+    // Bright little café goods (cups / bean bags) for the shelves (one instanced bank).
+    const cupMat = new THREE.MeshStandardMaterial({ color: "#e4632e", roughness: 0.6, flatShading: true });
+    const goods = makeBank(unitBox, cupMat);
+
+    // FLOOR + flat ROOF/ceiling
+    box(SW, 0.12, SD, cafeFloor, sx, 0.06, sz, false);
+    box(SW + 0.3, 0.25, SD + 0.3, cafeTrim, sx, WH + 0.12, sz, true);
+
+    // WALLS (each its own collider; NO collider across the doorway gap)
+    box(WT, WH, SD, cafeWall, bX, WH / 2, sz, true); // back wall (+X)
+    colliders.push({ minX: bX - WT / 2, maxX: bX + WT / 2, minZ: sz - hd, maxZ: sz + hd });
+    box(SW, WH, WT, cafeWall, sx, WH / 2, nZ, true); // side wall (−Z)
+    colliders.push({ minX: sx - hw, maxX: sx + hw, minZ: nZ - WT / 2, maxZ: nZ + WT / 2 });
+    box(SW, WH, WT, cafeWall, sx, WH / 2, pZ, true); // side wall (+Z)
+    colliders.push({ minX: sx - hw, maxX: sx + hw, minZ: pZ - WT / 2, maxZ: pZ + WT / 2 });
+    // Plaza-facing wall (−X) with a 2.2 m DOORWAY GAP: two flanking segments + a high lintel.
+    const jamb = door / 2 + 0.05;
+    const segLen = hd - jamb;
+    const segZneg = -hd + (hd - jamb) / 2;
+    const segZpos = hd - (hd - jamb) / 2;
+    box(WT, WH, segLen, cafeWall, fX, WH / 2, segZneg, true);
+    colliders.push({ minX: fX - WT / 2, maxX: fX + WT / 2, minZ: segZneg - segLen / 2, maxZ: segZneg + segLen / 2 });
+    box(WT, WH, segLen, cafeWall, fX, WH / 2, segZpos, true);
+    colliders.push({ minX: fX - WT / 2, maxX: fX + WT / 2, minZ: segZpos - segLen / 2, maxZ: segZpos + segLen / 2 });
+    box(WT, 0.6, door, cafeTrim, fX, WH - 0.3, sz, true); // lintel (no collider — walkable)
+
+    // SHOP SIGN above the door, OUTSIDE, facing the plaza (−X), un-mirrored.
+    // Default panel faces +Z; rotating −PI/2 about Y turns the readable face to −X.
+    const cafeSign = artPanel(3.4, 1.1, "sign", {
+      text: "BREW HAVEN CAFÉ",
+      bg: "#0c2a28", fg: "#ffd24a",
+      glyph: "☕",
+      emissiveIntensity: 0.5,
+      file: "sign-brewhavencafe.png",
+    });
+    cafeSign.position.set(fX - WT / 2 - 0.06, WH + 0.45, sz);
+    cafeSign.rotation.y = -Math.PI / 2; // readable face points −X (out to the plaza)
+    cafeSign.castShadow = true;
+    group.add(cafeSign);
+
+    // INTERIOR CONTENT (cozy café) ─────────────────────────────────────────────
+    box(3.4, 0.04, 4.2, rugMat, sx, 0.13, sz, false); // floor rug
+
+    // ESPRESSO BAR along the back wall: solid base + dark stone top + a chrome machine.
+    const bx0 = bX - 0.9;          // bar sits just in front of the back wall
+    box(1.0, 1.1, 4.6, barMat, bx0, 0.55, sz, true);    // bar body
+    box(1.1, 0.08, 4.7, barTop, bx0, 1.14, sz, true);   // bar top
+    box(0.7, 0.7, 1.1, machineMat, bx0, 1.5, sz - 0.2, true); // espresso machine
+    box(0.5, 0.4, 0.5, machineMat, bx0, 1.4, sz + 1.5, true); // grinder
+    // a row of cups waiting on the bar (instanced goods)
+    for (let i = 0; i < 5; i++) {
+      goods.add(bx0, 1.26, sz - 1.7 + i * 0.85, 0.22, 0.24, 0.22, 0, 0, 0);
+    }
+
+    // RETAIL SHELVES on the −Z wall stocked with bean bags / mugs (instanced goods).
+    const shZ = nZ + 0.25;
+    for (let s = 0; s < 3; s++) {
+      const shelfY = 0.7 + s * 0.7;
+      box(3.6, 0.06, 0.4, shelfMat, sx - 0.4, shelfY, shZ, true); // shelf board
+      for (let i = 0; i < 6; i++) {
+        goods.add(sx - 0.4 - 1.55 + i * 0.62, shelfY + 0.22, shZ, 0.32, 0.36, 0.3, 0, 0, 0);
+      }
+    }
+
+    // A LITTLE CAFÉ TABLE with two stools near the +Z window wall (sit-down corner).
+    {
+      const tx = sx - 0.2, tz = pZ - 1.3;
+      const tleg = new THREE.Mesh(poleGeo, tableMat);
+      tleg.scale.set(0.5, 0.95, 0.5);
+      tleg.position.set(tx, 0.48, tz);
+      tleg.castShadow = true;
+      group.add(tleg);
+      box(1.1, 0.08, 1.1, tableMat, tx, 0.96, tz, true); // round-ish table top
+      for (const sdz of [-0.85, 0.85]) {
+        const leg = new THREE.Mesh(poleGeo, stoolMat);
+        leg.scale.set(0.45, 0.7, 0.45);
+        leg.position.set(tx, 0.35, tz + sdz);
+        leg.castShadow = true;
+        group.add(leg);
+        box(0.45, 0.08, 0.45, stoolMat, tx, 0.72, tz + sdz, true); // seat
+      }
+    }
+
+    // MENU BOARD on the back wall, reading into the room (−X).
+    const cafeMenu = artPanel(2.0, 1.2, "sign", {
+      text: "ESPRESSO LATTE COLD BREW",
+      bg: "#0c2a28", fg: "#ffd24a",
+      emissiveIntensity: 0.4,
+      file: "sign-cafemenu.png",
+    });
+    cafeMenu.position.set(bX - WT / 2 - 0.05, 2.1, sz);
+    cafeMenu.rotation.y = -Math.PI / 2; // faces into the room (−X)
+    cafeMenu.castShadow = false;
+    group.add(cafeMenu);
+
+    // HANGING PENDANT LIGHTS (two glowing shades over the floor).
+    for (const lz of [sz - 1.4, sz + 1.4]) {
+      const lx = sx - 0.6;
+      box(0.04, 0.7, 0.04, cafeTrim, lx, WH - 0.35, lz, false); // cord
+      const shade = new THREE.Mesh(coneGeo, lampShade);
+      shade.scale.set(0.55, 0.45, 0.55);
+      shade.rotation.x = Math.PI;
+      shade.position.set(lx, WH - 0.75, lz);
+      group.add(shade);
+    }
+
+    goods.commit(true); // one InstancedMesh for all café goods
+  }
+
+  // ── ENTERABLE SHOP #3: "QUICKPRINT & COPY" — a corporate print/copy bureau ──
+  // A standalone room capping the NORTH end of the open N-S corridor: center (0,18),
+  // outer 8.0×6.0 → X[-4,4] Z[15,21]. Sits at the north terminus (clear of the
+  // pool/flagpoles to the south, between the NW (X≤−7) and NE (X≥7.9) buildings, and
+  // just south of the N-edge planters at z=22). Doorway GAP faces −Z (toward the
+  // plaza) so a player walking up the N-S corridor enters head-on. Walls each carry
+  // their own AABB collider; the doorway gap carries none.
+  {
+    const sx = 0, sz = 18;          // shop center (north terminus of the corridor)
+    const SW = 8.0, SD = 6.0;       // outer width (X) × depth (Z)
+    const WT = 0.25, WH = 3.0;
+    const hw = SW / 2, hd = SD / 2;
+    const door = 2.2;
+    const fZ = sz - hd;             // plaza-facing wall centerline (−Z)
+    const bZ = sz + hd;             // back wall centerline (+Z)
+    const wX = sx - hw, eX = sx + hw; // side-wall centerlines (−X, +X)
+
+    // Themed materials (clean corporate office-services palette).
+    const prWall = new THREE.MeshStandardMaterial({ color: "#dfe3e8", roughness: 0.9 });
+    const prTrim = new THREE.MeshStandardMaterial({ color: "#2f6f9c", roughness: 0.5, metalness: 0.3 });
+    const prFloor = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.85 });
+    const deskMat = new THREE.MeshStandardMaterial({ color: "#d7dadf", roughness: 0.5, metalness: 0.2 });
+    const deskTop = new THREE.MeshStandardMaterial({ color: "#3a3f45", roughness: 0.4 });
+    const copierMat = new THREE.MeshStandardMaterial({ color: "#e9ecef", roughness: 0.4, metalness: 0.3 });
+    const copierDark = new THREE.MeshStandardMaterial({ color: "#3a3f45", roughness: 0.5, metalness: 0.4 });
+    const shelfMat = new THREE.MeshStandardMaterial({ color: "#b8bcc2", roughness: 0.6, metalness: 0.2 });
+    const lampShade = new THREE.MeshStandardMaterial({
+      color: "#eaf4ff", roughness: 0.3, emissive: "#cfe6ff", emissiveIntensity: 0.7,
+    });
+    // Reams of bright paper / parcels for the shelves (one instanced bank).
+    const reamMat = new THREE.MeshStandardMaterial({ color: "#f4f6f8", roughness: 0.8, flatShading: true });
+    const reams = makeBank(unitBox, reamMat);
+
+    // FLOOR + flat ROOF/ceiling
+    box(SW, 0.12, SD, prFloor, sx, 0.06, sz, false);
+    box(SW + 0.3, 0.25, SD + 0.3, prTrim, sx, WH + 0.12, sz, true);
+
+    // WALLS (each its own collider; NO collider across the doorway gap)
+    box(SW, WH, WT, prWall, sx, WH / 2, bZ, true); // back wall (+Z)
+    colliders.push({ minX: sx - hw, maxX: sx + hw, minZ: bZ - WT / 2, maxZ: bZ + WT / 2 });
+    box(WT, WH, SD, prWall, wX, WH / 2, sz, true); // side wall (−X)
+    colliders.push({ minX: wX - WT / 2, maxX: wX + WT / 2, minZ: sz - hd, maxZ: sz + hd });
+    box(WT, WH, SD, prWall, eX, WH / 2, sz, true); // side wall (+X)
+    colliders.push({ minX: eX - WT / 2, maxX: eX + WT / 2, minZ: sz - hd, maxZ: sz + hd });
+    // Plaza-facing wall (−Z) with a 2.2 m DOORWAY GAP: two flanking segments + lintel.
+    const jamb = door / 2 + 0.05;
+    const segLen = hw - jamb;
+    const segXneg = -hw + (hw - jamb) / 2;
+    const segXpos = hw - (hw - jamb) / 2;
+    box(segLen, WH, WT, prWall, sx + segXneg, WH / 2, fZ, true);
+    colliders.push({ minX: sx + segXneg - segLen / 2, maxX: sx + segXneg + segLen / 2, minZ: fZ - WT / 2, maxZ: fZ + WT / 2 });
+    box(segLen, WH, WT, prWall, sx + segXpos, WH / 2, fZ, true);
+    colliders.push({ minX: sx + segXpos - segLen / 2, maxX: sx + segXpos + segLen / 2, minZ: fZ - WT / 2, maxZ: fZ + WT / 2 });
+    box(door, 0.6, WT, prTrim, sx, WH - 0.3, fZ, true); // lintel (no collider — walkable)
+
+    // SHOP SIGN above the door, OUTSIDE, facing the plaza (−Z), un-mirrored.
+    // Default panel faces +Z; rotating 180° turns the readable face to −Z.
+    const prSign = artPanel(3.6, 1.1, "sign", {
+      text: "QUICKPRINT & COPY",
+      bg: "#103a55", fg: "#eaf4ff",
+      emissiveIntensity: 0.45,
+      file: "sign-quickprint.png",
+    });
+    prSign.position.set(sx, WH + 0.45, fZ - WT / 2 - 0.06);
+    prSign.rotation.y = Math.PI; // readable face points −Z (out to the plaza)
+    prSign.castShadow = true;
+    group.add(prSign);
+
+    // INTERIOR CONTENT (busy print bureau) ─────────────────────────────────────
+    // SERVICE DESK across the back: solid base + dark counter top.
+    const dz0 = bZ - 0.9;
+    box(5.2, 1.1, 1.0, deskMat, sx, 0.55, dz0, true);   // desk body
+    box(5.4, 0.08, 1.1, deskTop, sx, 1.14, dz0, true);  // desk top
+    // a small monitor/terminal on the desk
+    box(0.7, 0.5, 0.08, copierDark, sx - 1.4, 1.45, dz0, true);
+
+    // BIG COPIER/PRINTER units against the +X wall.
+    for (let i = 0; i < 2; i++) {
+      const cz = sz - 1.2 + i * 2.4;
+      const cxp = eX - 0.7;
+      box(1.0, 1.3, 1.4, copierMat, cxp, 0.65, cz, true);     // copier body
+      box(1.05, 0.18, 1.45, copierDark, cxp, 1.45, cz, true); // lid/scanner
+      box(0.5, 0.1, 0.45, prTrim, cxp - 0.2, 1.56, cz, false); // control panel
+    }
+
+    // PAPER-REAM SHELVING against the −X wall (instanced reams/parcels).
+    const shX = wX + 0.3;
+    for (let s = 0; s < 3; s++) {
+      const shelfY = 0.7 + s * 0.75;
+      box(0.4, 0.06, 4.0, shelfMat, shX, shelfY, sz, true); // shelf board
+      for (let i = 0; i < 5; i++) {
+        reams.add(shX, shelfY + 0.2, sz - 1.6 + i * 0.8, 0.3, 0.3, 0.5, 0, 0, 0);
+      }
+    }
+
+    // A SELF-SERVE STANDING KIOSK near the door.
+    box(0.8, 1.2, 0.7, deskMat, sx + 2.6, 0.6, fZ + 1.2, true);
+    box(0.6, 0.45, 0.06, copierDark, sx + 2.6, 1.35, fZ + 1.2, true); // screen
+
+    // CEILING STRIP LIGHTS (two glowing panels).
+    for (const lx of [sx - 1.6, sx + 1.6]) {
+      box(2.4, 0.1, 0.5, lampShade, lx, WH - 0.18, sz, false);
+    }
+
+    reams.commit(true); // one InstancedMesh for all paper reams
+  }
+
+  // ── EXTRA STREET FLAVOR: bike racks, a coffee cart, bollards, lamp posts, news
+  // boxes and bins along the plaza margins so the campus feels lived-in. All placed
+  // on the SHOULDERS (clear of the |x|≤5 N-S and |z|≤5 E-W drive corridors) and well
+  // within the ±23 setback. Low/slim props are non-colliding; chunky ones collide. ──
+  {
+    // Shared flavor materials (created once, reused).
+    const steelMat = new THREE.MeshStandardMaterial({ color: "#7c848c", roughness: 0.45, metalness: 0.7 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: "#c5453f", roughness: 0.6, metalness: 0.3 });
+    const cartBody = new THREE.MeshStandardMaterial({ color: "#1f5a52", roughness: 0.6 });
+    const cartRoof = new THREE.MeshStandardMaterial({ color: "#caa45a", roughness: 0.5, metalness: 0.2 });
+    const binMat = new THREE.MeshStandardMaterial({ color: "#3a4750", roughness: 0.6, metalness: 0.3 });
+    const lampPost = new THREE.MeshStandardMaterial({ color: "#3c4248", roughness: 0.5, metalness: 0.6 });
+    const lampGlow = new THREE.MeshStandardMaterial({
+      color: "#fff0c8", roughness: 0.4, emissive: "#ffdf8a", emissiveIntensity: 0.9,
+    });
+
+    // BIKE RACKS: a low looped-bar rack (a couple of inverted-U hoops on a rail).
+    // Decorative + low → no collider. Two racks on the plaza margins.
+    // Built entirely from local children added to its own group `g2` (no box(),
+    // which would append to the world `group` at the wrong coords).
+    function bikeRack(bx, bz, rot = 0) {
+      const g2 = new THREE.Group();
+      // base rail
+      const rail = new THREE.Mesh(unitBox, steelMat);
+      rail.scale.set(2.6, 0.08, 0.12); rail.position.set(0, 0.05, 0);
+      rail.castShadow = true;
+      g2.add(rail);
+      // 3 inverted-U hoops
+      for (let i = -1; i <= 1; i++) {
+        const hx = i * 0.9;
+        const hoop = new THREE.Mesh(railGeo, steelMat);
+        hoop.scale.set(1, 0.85, 1); hoop.position.set(hx - 0.35, 0.45, 0);
+        const hoop2 = hoop.clone(); hoop2.position.set(hx + 0.35, 0.45, 0);
+        const top = new THREE.Mesh(railGeo, steelMat);
+        top.scale.set(1, 0.7, 1); top.rotation.z = Math.PI / 2; top.position.set(hx, 0.87, 0);
+        g2.add(hoop, hoop2, top);
+      }
+      g2.position.set(bx, 0, bz);
+      g2.rotation.y = rot;
+      group.add(g2);
+    }
+
+    // COFFEE CART: a small wheeled kiosk (themed to BREW HAVEN) parked on the SE
+    // inner-plaza shoulder, just outside the N-S drive lane and clear of the SE
+    // building front (which only reaches |x|≥7.3 at this z). Chunky → collides.
+    {
+      const cx = 6.5, cz = -8.5;
+      box(2.4, 1.2, 1.4, cartBody, cx, 0.7, cz, true);          // cart body
+      box(2.6, 0.12, 1.6, cartRoof, cx, 1.36, cz, true);        // counter shelf/lid
+      box(0.1, 1.4, 0.1, steelMat, cx - 1.1, 2.1, cz - 0.6, true); // umbrella pole
+      const para = new THREE.Mesh(coneGeo, accentMat);
+      para.scale.set(2.2, 0.8, 2.2);
+      para.position.set(cx - 1.1, 2.95, cz - 0.6);
+      para.castShadow = true;
+      group.add(para);                                          // parasol
+      // two wheels
+      for (const wz of [-0.55, 0.55]) {
+        const wheel = new THREE.Mesh(cylGeo, binMat);
+        wheel.scale.set(0.4, 0.16, 0.4); wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(cx + 1.0, 0.35, cz + wz);
+        wheel.castShadow = true; group.add(wheel);
+      }
+      const cartSign = artPanel(2.0, 0.7, "sign", {
+        text: "COFFEE", bg: "#0c2a28", fg: "#ffd24a", glyph: "☕", emissiveIntensity: 0.5,
+        file: "sign-coffeecart.png",
+      });
+      cartSign.position.set(cx, 1.9, cz + 0.72);
+      cartSign.castShadow = false;
+      group.add(cartSign);
+      collide(cx, cz, 2.6, 1.6);
+    }
+
+    // PEDESTRIAN LAMP POSTS: slim posts with a glowing globe, along the plaza margins.
+    // Slim → small collider at the base. Placed on shoulders, clear of drive lanes.
+    const lampSpots = [[-8, 8], [8, 8], [-8, -7], [8, -7]];
+    for (const [lx, lz] of lampSpots) {
+      const post = new THREE.Mesh(poleGeo, lampPost);
+      post.scale.set(1, 4.0, 1); post.position.set(lx, 2.0, lz);
+      post.castShadow = true; group.add(post);
+      const globe = new THREE.Mesh(cylGeo, lampGlow);
+      globe.scale.set(0.32, 0.32, 0.32); globe.position.set(lx, 4.1, lz);
+      group.add(globe);
+      box(0.5, 0.25, 0.5, lampPost, lx, 0.12, lz, true); // base
+      collide(lx, lz, 0.4, 0.4);
+    }
+
+    // BOLLARDS: a tidy line of short posts edging the plaza off the E-W shoulder so
+    // pedestrians read a kerb line. Slim + short → no collider (cosmetic).
+    for (let i = -2; i <= 2; i++) {
+      const bxp = i * 1.6;
+      const bol = new THREE.Mesh(cylGeo, steelMat);
+      bol.scale.set(0.16, 0.6, 0.16); bol.position.set(bxp, 0.3, 7.2);
+      bol.castShadow = true; group.add(bol);
+      box(0.08, 0.05, 0.08, accentMat, bxp, 0.62, 7.2, false); // reflective cap
+    }
+
+    // WASTE BINS + a NEWSPAPER BOX near the shop fronts (small flavor, no collide).
+    box(0.5, 0.8, 0.5, binMat, 11.0, 0.4, 1.6, true);   // bin by the café door
+    box(0.5, 0.8, 0.5, binMat, -11.0, 0.4, -1.6, true); // bin by the deli door
+    box(0.6, 1.0, 0.45, accentMat, 2.2, 0.5, 13.4, true); // news box by the print shop
+
+    // BIKE RACKS on the south plaza margin (clean rebuild: pure children, no box()).
+    bikeRack(-15, -7, 0);
+    bikeRack(15, -7, 0);
+  }
+
   // ── Commit all instanced banks (one draw call each) ───────────────────────
   mullions.commit(false); // curtain-wall bars: many hundreds, 1 InstancedMesh
   rails.commit(false);    // parapet rail posts + tubes

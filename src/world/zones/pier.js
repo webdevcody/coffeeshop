@@ -103,6 +103,30 @@ const goodsMats = [
   new THREE.MeshStandardMaterial({ color: "#c8a2c8", roughness: 0.7 }), // grape
   new THREE.MeshStandardMaterial({ color: "#ffcf3f", roughness: 0.7 }), // lemon
 ];
+// --- Bait & Tackle shop + street-flavour skins (created ONCE, reused) -------
+// A weathered seaside-blue chandlery: salt-bleached planks, navy trim, a buoy-
+// red roof. Crates, barrels, nets and a mounted catch dress both the interior
+// and the boardwalk so the district feels worked-in and lived-in.
+const tackleWallMat = new THREE.MeshStandardMaterial({ color: "#9fc6cf", roughness: 0.9 });
+const tackleRoofMat = new THREE.MeshStandardMaterial({ color: "#b8453e", roughness: 0.75 });
+const tackleTrimMat = new THREE.MeshStandardMaterial({ color: "#274a6b", roughness: 0.7 });
+const crateMat = new THREE.MeshStandardMaterial({ color: "#a9803f", roughness: 0.95 });
+const crateRimMat = new THREE.MeshStandardMaterial({ color: "#7d5230", roughness: 0.95 });
+const barrelMat = new THREE.MeshStandardMaterial({ color: "#6e4a2e", roughness: 0.9 });
+const barrelHoopMat = new THREE.MeshStandardMaterial({ color: "#3a3a3a", roughness: 0.5, metalness: 0.6 });
+const netMat = new THREE.MeshStandardMaterial({
+  color: "#caa86a", roughness: 1, transparent: true, opacity: 0.55,
+  side: THREE.DoubleSide, depthWrite: false,
+});
+const fishMat = new THREE.MeshStandardMaterial({ color: "#8fb8c8", roughness: 0.5, metalness: 0.25, flatShading: true });
+const planterMat = new THREE.MeshStandardMaterial({ color: "#7d5230", roughness: 0.95 });
+const leafMat = new THREE.MeshStandardMaterial({ color: "#5a9a4a", roughness: 0.85, flatShading: true });
+const lampPostMat = new THREE.MeshStandardMaterial({ color: "#2c2c30", roughness: 0.5, metalness: 0.5 });
+const lampGlowMat = new THREE.MeshStandardMaterial({
+  color: "#fff3c4", emissive: "#ffdf8a", emissiveIntensity: 1.3, roughness: 0.3,
+});
+const benchMat = new THREE.MeshStandardMaterial({ color: "#6b4a2c", roughness: 0.85 });
+const benchLegMat = new THREE.MeshStandardMaterial({ color: "#33363b", roughness: 0.5, metalness: 0.5 });
 
 // --- Shared geometries (reused across repeated props) ----------------------
 const pilingGeo = new THREE.CylinderGeometry(0.22, 0.26, 5, 8);
@@ -137,6 +161,88 @@ function makeRailing(length) {
   const rail = box(length, 0.55, 0.09, railMat);
   rail.position.set(0, 0.68, 0);
   g.add(rail);
+  return g;
+}
+
+// A small wooden crate: a body box plus four thin corner battens so it reads as
+// slatted, not a plain cube. Cheap (5 meshes), reused all over the boardwalk.
+function makeCrate(s = 0.8) {
+  const g = new THREE.Group();
+  const body = box(s, s, s, crateMat);
+  g.add(body);
+  const t = s * 0.08;
+  for (const sx of [-s / 2 + t / 2, s / 2 - t / 2]) {
+    const batten = box(t, s + 0.02, t, crateRimMat, false);
+    batten.position.set(sx, 0, 0);
+    g.add(batten);
+  }
+  const lid = box(s + 0.04, t, s + 0.04, crateRimMat, false);
+  lid.position.y = s / 2;
+  g.add(lid);
+  return g;
+}
+
+// A barrel: a tapered cylinder body with two dark metal hoops.
+function makeBarrel() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.3, 0.92, 12), barrelMat);
+  body.position.y = 0.46;
+  body.castShadow = true;
+  g.add(body);
+  for (const hy of [0.26, 0.66]) {
+    const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.345, 0.03, 6, 14), barrelHoopMat);
+    hoop.rotation.x = Math.PI / 2;
+    hoop.position.y = hy;
+    g.add(hoop);
+  }
+  return g;
+}
+
+// A planter box of seaside greenery: a wooden trough with a couple of leafy cones.
+function makePlanter() {
+  const g = new THREE.Group();
+  const trough = box(1.4, 0.5, 0.5, planterMat);
+  trough.position.y = 0.25;
+  g.add(trough);
+  for (const lx of [-0.45, 0.05, 0.5]) {
+    const bush = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.55, 7), leafMat);
+    bush.position.set(lx, 0.72, 0);
+    bush.castShadow = true;
+    g.add(bush);
+  }
+  return g;
+}
+
+// A lamp post: a slim pole, a cross-arm and a glowing lantern globe (decorative).
+function makeLampPost() {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 3.4, 8), lampPostMat);
+  pole.position.y = 1.7;
+  pole.castShadow = true;
+  g.add(pole);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.12, 0.18, 8), lampPostMat);
+  cap.position.y = 3.45;
+  g.add(cap);
+  const globe = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), lampGlowMat);
+  globe.position.y = 3.28;
+  g.add(globe);
+  return g;
+}
+
+// A slatted boardwalk bench: a seat, a back and two end legs.
+function makeBench() {
+  const g = new THREE.Group();
+  const seat = box(1.8, 0.1, 0.5, benchMat);
+  seat.position.y = 0.5;
+  g.add(seat);
+  const back = box(1.8, 0.5, 0.1, benchMat);
+  back.position.set(0, 0.78, -0.2);
+  g.add(back);
+  for (const lx of [-0.75, 0.75]) {
+    const leg = box(0.12, 0.5, 0.46, benchLegMat, false);
+    leg.position.set(lx, 0.25, 0);
+    g.add(leg);
+  }
   return g;
 }
 
@@ -726,6 +832,285 @@ export function buildPier() {
   addCollider(colliders, shopCx + rightX, shopCz, WT, shopD);  // right wall
   for (const sx of [-(DOOR_W / 2 + frontSegW / 2), (DOOR_W / 2 + frontSegW / 2)]) {
     addCollider(colliders, shopCx + sx, shopCz + frontZ, frontSegW, WT); // front flanks
+  }
+
+  // --- ENTERABLE BAIT & TACKLE / FISH-MARKET SHACK ------------------------
+  // A second walk-in shop on the open RIGHT side of the promenade, in front of
+  // the ferris wheel and just right of the pier hall (which ends X=16). Its whole
+  // footprint sits in LOCAL X[16.5,22.7], Z[-16.8,-12.4] — clear of the hall, the
+  // wheel base (front edge Z=-18.2) and the lane (ends Z=-12), and fully inside
+  // the [-23,23] setback. Same construction as the Scoops shack: 4 thin walls
+  // with a doorway gap in the +Z (street-facing) front wall, a floor and a roof.
+  // Each load-bearing wall gets its own AABB collider; the doorway gap gets none.
+  const tCx = 19.6, tCz = -14.6;            // room centre
+  const tW = 6.2, tD = 4.4, tH = 3.0;       // 6.2 m wide × 4.4 m deep × 3 m tall
+  const tWT = 0.25;                          // wall thickness
+  const tDOOR = 2.0;                          // doorway gap width
+  const tackle = new THREE.Group();
+  tackle.position.set(tCx, 0, tCz);
+  const tFrontZ = tD / 2;   // +Z wall (street-facing), local +2.2
+  const tBackZ = -tD / 2;   // -Z wall, local -2.2
+  const tLeftX = -tW / 2;   // local -3.1
+  const tRightX = tW / 2;   // local +3.1
+
+  // Floor (salt-bleached planks) + flat roof slab + a buoy-red eave fascia.
+  const tFloor = new THREE.Mesh(new THREE.PlaneGeometry(tW, tD), shackFloorMat);
+  tFloor.rotation.x = -Math.PI / 2;
+  tFloor.position.y = 0.12;
+  tFloor.receiveShadow = true;
+  tackle.add(tFloor);
+  const tRoof = box(tW + 0.4, 0.2, tD + 0.4, tackleRoofMat);
+  tRoof.position.set(0, tH + 0.1, 0);
+  tackle.add(tRoof);
+  const tFascia = box(tW + 0.4, 0.4, 0.12, tackleTrimMat, false);
+  tFascia.position.set(0, tH - 0.2, tFrontZ + 0.22);
+  tackle.add(tFascia);
+
+  // Walls (thin boxes), each its own mesh + own collider; doorway gap has neither.
+  const tBack = box(tW, tH, tWT, tackleWallMat);
+  tBack.position.set(0, tH / 2, tBackZ);
+  tackle.add(tBack);
+  const tLeft = box(tWT, tH, tD, tackleWallMat);
+  tLeft.position.set(tLeftX, tH / 2, 0);
+  tackle.add(tLeft);
+  const tRight = box(tWT, tH, tD, tackleWallMat);
+  tRight.position.set(tRightX, tH / 2, 0);
+  tackle.add(tRight);
+  const tFrontSegW = (tW - tDOOR) / 2; // each flank = 2.1 m
+  for (const sx of [-(tDOOR / 2 + tFrontSegW / 2), (tDOOR / 2 + tFrontSegW / 2)]) {
+    const seg = box(tFrontSegW, tH, tWT, tackleWallMat);
+    seg.position.set(sx, tH / 2, tFrontZ);
+    tackle.add(seg);
+  }
+  const tLintel = box(tDOOR + 0.3, 0.4, tWT, tackleTrimMat, false);
+  tLintel.position.set(0, tH - 0.2, tFrontZ);
+  tackle.add(tLintel);
+
+  // INTERIOR -----------------------------------------------------------------
+  // A welcome mat just inside the door.
+  const tMat = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.6), rugMat);
+  tMat.rotation.x = -Math.PI / 2;
+  tMat.position.set(0, 0.13, tFrontZ - 1.1);
+  tackle.add(tMat);
+
+  // Sales COUNTER across the back, with a pale slab top + a brass till.
+  const tCounterW = 4.2, tCounterD = 0.9, tCounterH = 1.0;
+  const tCounterCz = tBackZ + tCounterD / 2 + 0.4;
+  const tCounter = box(tCounterW, tCounterH, tCounterD, counterMat);
+  tCounter.position.set(0, tCounterH / 2 + 0.12, tCounterCz);
+  tackle.add(tCounter);
+  const tCounterTop = box(tCounterW + 0.2, 0.12, tCounterD + 0.2, counterTopMat, false);
+  tCounterTop.position.set(0, tCounterH + 0.18, tCounterCz);
+  tackle.add(tCounterTop);
+  const till = box(0.5, 0.34, 0.4, tackleTrimMat, false);
+  till.position.set(-1.4, tCounterH + 0.41, tCounterCz);
+  tackle.add(till);
+
+  // Wall SHELVES of tackle: two tiers of plank shelf on the back wall plus a
+  // tidy grid of instanced "boxes of gear" in bright lure colours.
+  const tShelfX = 1.0, tShelfW = 3.2;
+  for (let tier = 0; tier < 2; tier++) {
+    const shelf = box(tShelfW, 0.1, 0.45, shelfMat, false);
+    shelf.position.set(tShelfX, 1.95 + tier * 0.55, tBackZ + tWT / 2 + 0.25);
+    tackle.add(shelf);
+  }
+  const tGoodGeo = new THREE.BoxGeometry(0.3, 0.34, 0.26);
+  const tGoodsCount = 8;
+  const tGoods = new THREE.InstancedMesh(tGoodGeo, goodsMats[2], tGoodsCount);
+  tGoods.castShadow = true;
+  const tgm = new THREE.Matrix4();
+  let tgi = 0;
+  for (let tier = 0; tier < 2; tier++) {
+    for (let i = 0; i < 4; i++) {
+      tgm.makeTranslation(
+        tShelfX - tShelfW / 2 + 0.5 + i * 0.75,
+        1.95 + tier * 0.55 + 0.22,
+        tBackZ + tWT / 2 + 0.25,
+      );
+      tGoods.setMatrixAt(tgi++, tgm);
+    }
+  }
+  tGoods.instanceMatrix.needsUpdate = true;
+  tackle.add(tGoods);
+
+  // PROPS: a stack of fish crates, a brine barrel, a coil of rope, and a hung
+  // fishing net draped across the left-back corner.
+  const crateA = makeCrate(0.7); crateA.position.set(tLeftX + 0.7, 0.47, tBackZ + 0.9); tackle.add(crateA);
+  const crateB = makeCrate(0.7); crateB.position.set(tLeftX + 0.7, 1.17, tBackZ + 0.9); crateB.rotation.y = 0.3; tackle.add(crateB);
+  const brine = makeBarrel(); brine.position.set(tLeftX + 0.7, 0.12, tFrontZ - 1.0); tackle.add(brine);
+  const coil = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.1, 6, 14), ropeMat);
+  coil.rotation.x = Math.PI / 2;
+  coil.position.set(tRightX - 0.7, 0.24, tBackZ + 0.9);
+  tackle.add(coil);
+  const hungNet = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.6), netMat);
+  hungNet.position.set(tLeftX + tWT + 0.04, tH - 1.0, tBackZ + 1.2);
+  hungNet.rotation.y = Math.PI / 2;
+  tackle.add(hungNet);
+
+  // A mounted "catch of the day" fish trophy on the back wall (a stretched body
+  // + tail fin), above the counter — a little focal point.
+  const fishBody = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), fishMat);
+  fishBody.scale.set(1.7, 0.7, 0.5);
+  fishBody.position.set(tShelfX - 1.4, 2.55, tBackZ + tWT / 2 + 0.12);
+  tackle.add(fishBody);
+  const fishTail = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.5, 4), fishMat);
+  fishTail.rotation.z = Math.PI / 2;
+  fishTail.position.set(tShelfX - 1.4 + 0.7, 2.55, tBackZ + tWT / 2 + 0.12);
+  tackle.add(fishTail);
+
+  // Hanging interior LIGHT.
+  const tCord = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.5, 6), stoolLegMat);
+  tCord.position.set(0, tH - 0.25, 0.4);
+  tackle.add(tCord);
+  const tBulb = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), bulbMat);
+  tBulb.position.set(0, tH - 0.55, 0.4);
+  tackle.add(tBulb);
+
+  // Interior menu/price board on the back wall (faces +Z).
+  const tMenu = artPanel(2.0, 1.0, "sign", {
+    text: "FRESH CATCH", bg: "#274a6b", fg: "#eaf6fb",
+    file: "pier-tackle-menu.png", emissiveIntensity: 0.5,
+  });
+  tMenu.position.set(-1.7, 1.5, tBackZ + tWT / 2 + 0.02);
+  tackle.add(tMenu);
+
+  // OUTSIDE shop sign above the door, facing the street (+Z).
+  const tSign = artPanel(3.6, 1.0, "sign", {
+    text: "BAIT & TACKLE", bg: "#0b6e7a", fg: "#fff8e1",
+    file: "pier-tackle-sign.png", emissiveIntensity: 0.55,
+  });
+  tSign.position.set(0, tH + 0.45, tFrontZ + 0.2);
+  tackle.add(tSign);
+
+  group.add(tackle);
+
+  // Per-wall colliders (world = local + tackle centre); doorway gap gets none.
+  addCollider(colliders, tCx, tCz + tBackZ, tW, tWT);    // back wall
+  addCollider(colliders, tCx + tLeftX, tCz, tWT, tD);    // left wall
+  addCollider(colliders, tCx + tRightX, tCz, tWT, tD);   // right wall
+  for (const sx of [-(tDOOR / 2 + tFrontSegW / 2), (tDOOR / 2 + tFrontSegW / 2)]) {
+    addCollider(colliders, tCx + sx, tCz + tFrontZ, tFrontSegW, tWT); // front flanks
+  }
+
+  // --- STREET-LEVEL FLAVOUR along the promenade ----------------------------
+  // Benches, lamp posts, planters, crates/barrels and a couple of market stalls
+  // dress the boardwalk so it feels worked-in. All of these sit in the OPEN
+  // promenade band (behind the lane, Z≲-12) or just at its kerb, clear of the
+  // buildings, the deck (X in [-3,3]) and the lighthouse (X in [-2,2], Z[-11,-7]).
+  // Small props (benches, planters, crates, lamp bases) are walk-around scenery;
+  // each gets a small footprint collider so the car can't drive through them.
+
+  // Lamp posts spaced along the back of the promenade (no collider — slim poles
+  // the player brushes past; keeps the boardwalk drivable but lit).
+  for (const [lx, lz] of [[-21, -13], [-9.5, -13], [3, -13.2], [16, -13], [22, -13]]) {
+    const lamp = makeLampPost();
+    lamp.position.set(lx, 0, lz);
+    group.add(lamp);
+  }
+
+  // Benches facing the sea, set at the seaward kerb of the lane (Z≈-2.2) where
+  // there's open boardwalk, well clear of the deck mouth (X in [-3,3]).
+  for (const [bx, bz, ry] of [[-13, -2.4, 0], [-7, -2.4, 0], [8, -2.4, 0], [13.5, -2.4, 0]]) {
+    const bench = makeBench();
+    bench.position.set(bx, 0.08, bz);
+    bench.rotation.y = ry;
+    group.add(bench);
+    addCollider(colliders, bx, bz, 1.9, 0.7);
+  }
+
+  // Planters bracketing the pier-deck entrance and dotted along the promenade.
+  for (const [px, pz] of [[-4.5, -3.5], [4.5, -3.5], [-18, -13.2], [-2, -13.2]]) {
+    const planter = makePlanter();
+    planter.position.set(px, 0.08, pz);
+    group.add(planter);
+    addCollider(colliders, px, pz, 1.5, 0.6);
+  }
+
+  // A few stacks of crates + barrels clustered as cargo against the building
+  // fronts (in the gaps between the lane and the shopfronts).
+  const cargo = [
+    [-11.5, -13.2, 0.8], [-10.6, -13.4, 0.6], [-11.0, -13.0, 0.0], // by the arcade
+    [2.6, -12.9, 0.7], [2.7, -13.4, 0.0],                          // by the scoops shack
+  ];
+  for (const [cx, cz, ry] of cargo) {
+    const crate = makeCrate(0.8);
+    crate.position.set(cx, 0.42, cz);
+    crate.rotation.y = ry;
+    group.add(crate);
+    addCollider(colliders, cx, cz, 0.85, 0.85);
+  }
+  for (const [bx, bz] of [[-12.4, -13.0], [15.2, -13.0]]) {
+    const barrel = makeBarrel();
+    barrel.position.set(bx, 0.08, bz);
+    group.add(barrel);
+    addCollider(colliders, bx, bz, 0.72, 0.72);
+  }
+
+  // Two open-air MARKET STALLS (striped awning over a counter of produce) tucked
+  // into the boardwalk between the lighthouse and the buildings — non-enterable
+  // flavour you can pull up to. Footprint X[-7..-5]/[5..7] sized; small collider.
+  function makeStall(label) {
+    const g = new THREE.Group();
+    const cnt = box(2.4, 0.95, 1.0, counterMat);
+    cnt.position.y = 0.6;
+    g.add(cnt);
+    const top = box(2.6, 0.1, 1.2, counterTopMat, false);
+    top.position.y = 1.12;
+    g.add(top);
+    // Crates of goods on the counter.
+    for (let i = 0; i < 3; i++) {
+      const tray = box(0.6, 0.18, 0.7, crateMat, false);
+      tray.position.set(-0.8 + i * 0.8, 1.26, 0);
+      g.add(tray);
+      const heap = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), goodsMats[i % goodsMats.length]);
+      heap.scale.y = 0.5;
+      heap.position.set(-0.8 + i * 0.8, 1.4, 0);
+      g.add(heap);
+    }
+    // Two posts + a striped awning roof tilted toward the shopper.
+    for (const sx of [-1.2, 1.2]) {
+      const post = box(0.1, 2.0, 0.1, columnMat, false);
+      post.position.set(sx, 1.0, -0.5);
+      g.add(post);
+    }
+    const slats = 5, slatW = 2.8 / slats;
+    const roof = new THREE.Group();
+    for (let i = 0; i < slats; i++) {
+      const slat = box(slatW + 0.02, 0.06, 1.4, i % 2 ? awningStripeMat : awningMat, false);
+      slat.position.set(-1.4 + (i + 0.5) * slatW, 2.0, -0.1);
+      roof.add(slat);
+    }
+    roof.rotation.x = 0.2;
+    g.add(roof);
+    const sign = artPanel(2.2, 0.7, "sign", {
+      text: label, bg: "#1a73e8", fg: "#fff8e1",
+      file: `pier-stall-${label.toLowerCase().replace(/[^a-z]/g, "")}.png`, emissiveIntensity: 0.5,
+    });
+    sign.position.set(0, 2.35, 0.0);
+    g.add(sign);
+    return g;
+  }
+  const stallA = makeStall("SHELLS");
+  stallA.position.set(-6, 0.08, -13.0);
+  group.add(stallA);
+  addCollider(colliders, -6, -13.0, 2.6, 1.2);
+  const stallB = makeStall("FRUIT");
+  stallB.position.set(6, 0.08, -13.0); // faces +Z toward the lane (no rotation → sign un-mirrored)
+  group.add(stallB);
+  addCollider(colliders, 6, -13.0, 2.6, 1.2);
+
+  // A scatter of life-ring buoys hung on the railings + a couple of small
+  // potted/decorative buoys standing on the boardwalk (no colliders — tiny).
+  const ringGeo = new THREE.TorusGeometry(0.34, 0.1, 6, 16);
+  for (const [rx, rz] of [[-3.2, -3.0], [3.2, -3.0]]) {
+    const ring = new THREE.Mesh(ringGeo, redMat);
+    ring.position.set(rx, 0.55, rz);
+    ring.rotation.x = Math.PI / 2;
+    group.add(ring);
+    // a white cross-band on each ring so it reads as a life-preserver
+    const band = box(0.12, 0.86, 0.14, whiteMat, false);
+    band.position.set(rx, 0.55, rz);
+    group.add(band);
   }
 
   // --- Seagulls circling overhead -----------------------------------------

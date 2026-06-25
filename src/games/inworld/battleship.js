@@ -2245,6 +2245,15 @@ export function createGame(ctx) {
   return {
     group,
     orientPolicy: "self", // we rotate the group ourselves so each seat sees its OWN ocean near
+    // A SPECTATOR renders shots/markers/FX purely from authoritative public
+    // snapshots (applyState) — its applyMove for "fire"/"result" is a no-op
+    // (`if (!mySide) return true`) that draws nothing. So battleship belongs to
+    // the snapshot-driven spectator class (like ludo/pong/tron/mancala/memory):
+    // it MUST opt OUT of board.js's post-move snapshot-swallow window. Leaving
+    // this at the default (true) arms that window for spectators, which swallows
+    // the very snapshot carrying each new shot — stranding a watcher one move
+    // behind (and risking the final winning shot / game-over never rendering).
+    spectatorAnimates: false,
     applyState,
     applyMove,
     applyReveal, // SPECTATOR-ONLY: render both revealed fleets (no-op for a seated player)

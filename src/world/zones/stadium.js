@@ -76,6 +76,37 @@ const merchBlue = new THREE.MeshStandardMaterial({ color: "#3667c0", roughness: 
 const merchGold = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.6 });
 const merchBall = new THREE.MeshStandardMaterial({ color: "#f2f2ee", roughness: 0.5 });
 
+// --- Concession (snack bar) + ticket-booth shop materials -------------------
+// Two more walk-IN structures on the pitch apron. The concession stand is a warm
+// food-stall theme (kraft/cream + roasted reds); the ticket booth is a compact
+// club-blue kiosk. All reuse the box() helper + per-wall AABB collider pattern.
+const concWallMat = new THREE.MeshStandardMaterial({ color: "#d9cdb4", roughness: 0.92 });
+const concRoofMat = new THREE.MeshStandardMaterial({ color: "#7a2f1f", roughness: 0.75 });
+const concTrimMat = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.55 });
+const concFloorMat = new THREE.MeshStandardMaterial({ color: "#5c5048", roughness: 0.9 });
+const griddleMat = new THREE.MeshStandardMaterial({ color: "#3a3d42", roughness: 0.4, metalness: 0.6 });
+const fryerMat = new THREE.MeshStandardMaterial({ color: "#c8c2b4", roughness: 0.35, metalness: 0.5 });
+const popcornMat = new THREE.MeshStandardMaterial({ color: "#f2e4b0", roughness: 0.8 });
+const ketchupMat = new THREE.MeshStandardMaterial({ color: "#b22a22", roughness: 0.5 });
+const mustardMat = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.5 });
+const cupMat = new THREE.MeshStandardMaterial({ color: "#d6402f", roughness: 0.6 });
+const boothWallMat = new THREE.MeshStandardMaterial({ color: "#243a78", roughness: 0.85 });
+const boothRoofMat = new THREE.MeshStandardMaterial({ color: "#16245a", roughness: 0.7 });
+const boothTrimMat = new THREE.MeshStandardMaterial({ color: "#e0b03a", roughness: 0.55 });
+const ticketMat = new THREE.MeshStandardMaterial({ color: "#f4ead0", roughness: 0.8 });
+
+// --- Street-flavour prop materials (created once, reused) -------------------
+const benchWoodMat = new THREE.MeshStandardMaterial({ color: "#7c5a3a", roughness: 0.8 });
+const benchLegMat = new THREE.MeshStandardMaterial({ color: "#37404a", roughness: 0.5, metalness: 0.5 });
+const crateMat = new THREE.MeshStandardMaterial({ color: "#8a6a40", roughness: 0.85 });
+const planterMat = new THREE.MeshStandardMaterial({ color: "#5b6168", roughness: 0.9 });
+const hedgeMat = new THREE.MeshStandardMaterial({ color: "#356b34", roughness: 1 });
+const binMat = new THREE.MeshStandardMaterial({ color: "#2f3a33", roughness: 0.7, metalness: 0.2 });
+const turnstileMat = new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 0.5, metalness: 0.6 });
+const bollardLampMat = new THREE.MeshStandardMaterial({
+  color: "#fff3cf", emissive: "#ffe08a", emissiveIntensity: 0.85, roughness: 0.4,
+});
+
 // --- Shared geometries (reused across repeated props) ----------------------
 const lampGeo = new THREE.BoxGeometry(1.0, 1.1, 0.2);      // one floodlight lamp bank
 // Buttress column on the OUTER back of the grandstand shell (shared, instanced).
@@ -575,6 +606,362 @@ export function buildStadium() {
     shop.add(shopSign);
 
     group.add(shop);
+  }
+
+  // --- ENTERABLE CONCESSION / SNACK STAND (south apron) ----------------------
+  // Mirror-side walk-IN food stall on the -Z pitch apron (clears the centre
+  // circle and the Z≈0 drive corridor). Real room: 4 walls + floor + flat roof,
+  // with a 2.2 m DOORWAY GAP in the pitch-facing (+Z) wall. Each solid wall pushes
+  // its own AABB; the doorway has none, so the player walks straight in. Inside:
+  // a serving counter with a griddle + fryer, a popcorn machine, a condiment
+  // shelf and a couple of bistro stools. All within LOCAL [-23, 23].
+  {
+    const SW = 8.0;          // width (X)
+    const SD = 6.0;          // depth (Z)
+    const WT = 0.25;         // wall thickness
+    const WH = 3.2;          // wall height
+    const SCX = 0.0;         // centre X
+    const SCZ = -6.4;        // centre Z (door faces +Z toward the pitch)
+    const x0 = SCX - SW / 2, x1 = SCX + SW / 2;
+    const z0 = SCZ - SD / 2, z1 = SCZ + SD / 2;   // z0=back(-Z), z1=front(+Z, door)
+    const DOOR = 2.2;
+    const segW = (SW - DOOR) / 2;
+    const FY = 0.13;
+
+    const stand = new THREE.Group();
+
+    // FLOOR slab
+    const floor = box(SW, 0.12, SD, concFloorMat, false);
+    floor.position.set(SCX, FY - 0.06, SCZ);
+    floor.receiveShadow = true;
+    stand.add(floor);
+
+    // WALLS helper (box wall + collider)
+    const addWall = (cx, cz, w, d) => {
+      const wall = box(w, WH, d, concWallMat);
+      wall.position.set(cx, FY + WH / 2, cz);
+      stand.add(wall);
+      colliders.push({
+        minX: cx - w / 2, maxX: cx + w / 2,
+        minZ: cz - d / 2, maxZ: cz + d / 2,
+      });
+    };
+    addWall(SCX, z0, SW + WT, WT);          // BACK (-Z) full width
+    addWall(x0, SCZ, WT, SD);               // LEFT (-X)
+    addWall(x1, SCZ, WT, SD);               // RIGHT (+X)
+    addWall(x0 + segW / 2, z1, segW, WT);   // FRONT (+Z) left of door
+    addWall(x1 - segW / 2, z1, segW, WT);   // FRONT (+Z) right of door
+    // doorway gap x ∈ [-1.1, 1.1] has NO wall + NO collider.
+
+    // Door lintel (decorative, passable)
+    const lintel = box(DOOR + 0.4, 0.5, WT, concTrimMat);
+    lintel.position.set(SCX, FY + WH - 0.25, z1);
+    stand.add(lintel);
+
+    // ROOF + fascia
+    const roof = box(SW + WT + 0.4, 0.2, SD + WT + 0.4, concRoofMat);
+    roof.position.set(SCX, FY + WH + 0.1, SCZ);
+    roof.castShadow = true;
+    stand.add(roof);
+    const fascia = box(SW + WT + 0.5, 0.3, SD + WT + 0.5, concTrimMat, false);
+    fascia.position.set(SCX, FY + WH - 0.05, SCZ);
+    stand.add(fascia);
+
+    // Striped awning over the doorway (jaunty market-stall vibe)
+    const awning = box(SW * 0.7, 0.12, 1.1, concTrimMat, false);
+    awning.position.set(SCX, FY + WH - 0.55, z1 + 0.55);
+    awning.rotation.x = -0.32;
+    stand.add(awning);
+
+    // SERVING COUNTER along the back, facing the door
+    const counter = box(5.2, 1.0, 0.9, counterMat);
+    counter.position.set(SCX, FY + 0.5, z0 + 1.1);
+    stand.add(counter);
+    const counterTop = box(5.4, 0.1, 1.1, counterTopMat, false);
+    counterTop.position.set(SCX, FY + 1.05, z0 + 1.1);
+    stand.add(counterTop);
+
+    // GRIDDLE + FRYER on the counter
+    const griddle = box(1.6, 0.18, 0.8, griddleMat);
+    griddle.position.set(SCX - 1.4, FY + 1.19, z0 + 1.1);
+    stand.add(griddle);
+    const fryer = box(0.9, 0.5, 0.7, fryerMat);
+    fryer.position.set(SCX + 1.5, FY + 1.35, z0 + 1.1);
+    stand.add(fryer);
+
+    // POPCORN MACHINE (cabinet + glowing kernels) on the right wall
+    const popBase = box(0.9, 0.8, 0.8, ketchupMat);
+    popBase.position.set(x1 - 0.7, FY + 0.4, SCZ + 1.6);
+    stand.add(popBase);
+    const popGlass = box(0.86, 0.7, 0.76, caseMat, false);
+    popGlass.position.set(x1 - 0.7, FY + 1.15, SCZ + 1.6);
+    stand.add(popGlass);
+    const popcorn = box(0.7, 0.4, 0.6, popcornMat, false);
+    popcorn.position.set(x1 - 0.7, FY + 1.0, SCZ + 1.6);
+    stand.add(popcorn);
+
+    // CONDIMENT SHELF on the left wall with ketchup/mustard/cup rows
+    const condShelf = box(0.45, 0.07, 3.2, shelfMat, false);
+    condShelf.position.set(x0 + 0.4, FY + 1.5, SCZ);
+    stand.add(condShelf);
+    {
+      const bGeo = new THREE.BoxGeometry(0.22, 0.34, 0.22);
+      const bMats = [ketchupMat, mustardMat, cupMat];
+      for (let r = 0; r < 3; r++) {
+        const inst = new THREE.InstancedMesh(bGeo, bMats[r], 3);
+        inst.castShadow = true;
+        const m = new THREE.Matrix4();
+        for (let p = 0; p < 3; p++) {
+          m.makeTranslation(x0 + 0.4, FY + 1.72, SCZ - 1.0 + (r * 3 + p) * 0.32 - 0.5);
+          inst.setMatrixAt(p, m);
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        stand.add(inst);
+      }
+    }
+
+    // BISTRO STOOLS at the doorway side of the counter
+    for (const sx of [SCX - 1.4, SCX + 1.4]) {
+      const stool = new THREE.Group();
+      const legs = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.7, 6), stoolMat);
+      legs.position.y = 0.35;
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.1, 12), mustardMat);
+      seat.position.y = 0.74;
+      legs.castShadow = seat.castShadow = true;
+      stool.add(legs, seat);
+      stool.position.set(sx, FY, z0 + 2.3);
+      stand.add(stool);
+    }
+
+    // MENU BOARD on the back wall (interior, faces the door +Z)
+    const menu = artPanel(3.0, 1.3, "sign", {
+      text: "SNACKS · DRINKS", bg: "#7a2f1f", fg: "#ffe14d",
+      emissiveIntensity: 0.4, file: "stadium-conc-menu.png",
+    });
+    menu.position.set(SCX, FY + 2.3, z0 + WT / 2 + 0.04);
+    stand.add(menu);
+
+    // HANGING BULB
+    {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 4), stoolMat);
+      cord.position.set(SCX, FY + WH - 0.35, SCZ + 0.4);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), shopBulbMat);
+      bulb.position.set(SCX, FY + WH - 0.62, SCZ + 0.4);
+      stand.add(cord, bulb);
+    }
+
+    // OUTSIDE STALL SIGN above the door (faces +Z toward the pitch approach;
+    // artPanel faces +Z by default so no rotation needed).
+    const standSign = artPanel(5.0, 1.2, "sign", {
+      text: "MATCHDAY GRILL", bg: "#7a2f1f", fg: "#ffe14d",
+      emissiveIntensity: 0.5, file: "stadium-conc-sign.png",
+    });
+    standSign.position.set(SCX, FY + WH + 0.55, z1 + WT / 2 + 0.05);
+    stand.add(standSign);
+
+    group.add(stand);
+  }
+
+  // --- ENTERABLE TICKET BOOTH (west apron) -----------------------------------
+  // A compact walk-IN club-blue kiosk tucked on the -X apron, between the pitch
+  // and the west gate, clear of the Z≈0 drive lane (sits at z≈+4.5). Smaller
+  // footprint than the shops but still a real room: 4 walls + floor + roof with a
+  // 1.8 m DOORWAY GAP in the +Z (pitch-facing) wall, a ticket counter with a
+  // glass screen, a stub of tickets and a wall schedule. Within LOCAL [-23, 23].
+  {
+    const SW = 5.0;          // width (X)
+    const SD = 4.2;          // depth (Z)
+    const WT = 0.22;
+    const WH = 3.0;
+    const SCX = -16.0;       // centre X (west apron, clear of pitch oval RX=13.5)
+    const SCZ = 4.6;         // centre Z (off the Z≈0 gate corridor)
+    const x0 = SCX - SW / 2, x1 = SCX + SW / 2;
+    const z0 = SCZ - SD / 2, z1 = SCZ + SD / 2;   // z1 = front (+Z) with door
+    const DOOR = 1.8;
+    const segW = (SW - DOOR) / 2;
+    const FY = 0.13;
+
+    const booth = new THREE.Group();
+
+    const floor = box(SW, 0.12, SD, concFloorMat, false);
+    floor.position.set(SCX, FY - 0.06, SCZ);
+    floor.receiveShadow = true;
+    booth.add(floor);
+
+    const addWall = (cx, cz, w, d) => {
+      const wall = box(w, WH, d, boothWallMat);
+      wall.position.set(cx, FY + WH / 2, cz);
+      booth.add(wall);
+      colliders.push({
+        minX: cx - w / 2, maxX: cx + w / 2,
+        minZ: cz - d / 2, maxZ: cz + d / 2,
+      });
+    };
+    addWall(SCX, z0, SW + WT, WT);          // BACK (-Z)
+    addWall(x0, SCZ, WT, SD);               // LEFT (-X)
+    addWall(x1, SCZ, WT, SD);               // RIGHT (+X)
+    addWall(x0 + segW / 2, z1, segW, WT);   // FRONT (+Z) left of door
+    addWall(x1 - segW / 2, z1, segW, WT);   // FRONT (+Z) right of door
+    // doorway gap (no wall / no collider)
+
+    const lintel = box(DOOR + 0.4, 0.45, WT, boothTrimMat);
+    lintel.position.set(SCX, FY + WH - 0.22, z1);
+    booth.add(lintel);
+
+    const roof = box(SW + WT + 0.4, 0.2, SD + WT + 0.4, boothRoofMat);
+    roof.position.set(SCX, FY + WH + 0.1, SCZ);
+    roof.castShadow = true;
+    booth.add(roof);
+    const fascia = box(SW + WT + 0.5, 0.28, SD + WT + 0.5, boothTrimMat, false);
+    fascia.position.set(SCX, FY + WH - 0.05, SCZ);
+    booth.add(fascia);
+
+    // TICKET COUNTER across the back with a glass screen above
+    const counter = box(3.4, 1.05, 0.7, counterMat);
+    counter.position.set(SCX, FY + 0.52, z0 + 0.9);
+    booth.add(counter);
+    const counterTop = box(3.6, 0.1, 0.9, counterTopMat, false);
+    counterTop.position.set(SCX, FY + 1.1, z0 + 0.9);
+    booth.add(counterTop);
+    const screen = box(3.2, 1.1, 0.06, caseMat, false);
+    screen.position.set(SCX, FY + 1.75, z0 + 0.6);
+    booth.add(screen);
+
+    // A stub of printed tickets + a till on the counter
+    const tickets = box(0.5, 0.12, 0.3, ticketMat, false);
+    tickets.position.set(SCX - 0.9, FY + 1.21, z0 + 0.9);
+    booth.add(tickets);
+    const till = box(0.45, 0.3, 0.4, stoolMat);
+    till.position.set(SCX + 1.0, FY + 1.3, z0 + 0.9);
+    booth.add(till);
+
+    // SCHEDULE / FIXTURE BOARD on the back wall (interior, faces +Z)
+    const sched = artPanel(2.4, 1.2, "billboard", {
+      title: "FIXTURES", sub: "GATES OPEN 6PM", a: "#16245a", b: "#070d1a",
+      accent: "#ffd24a", glyph: "⚽", emissiveIntensity: 0.4, file: "stadium-fixtures.png",
+    });
+    sched.position.set(SCX, FY + 2.35, z0 + WT / 2 + 0.04);
+    booth.add(sched);
+
+    // hanging bulb
+    {
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.45, 4), stoolMat);
+      cord.position.set(SCX, FY + WH - 0.32, SCZ + 0.3);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), shopBulbMat);
+      bulb.position.set(SCX, FY + WH - 0.56, SCZ + 0.3);
+      booth.add(cord, bulb);
+    }
+
+    // OUTSIDE "TICKETS" sign above the door (faces +Z, no rotation needed)
+    const boothSign = artPanel(3.4, 1.0, "sign", {
+      text: "TICKETS", bg: "#16245a", fg: "#ffe14d",
+      emissiveIntensity: 0.5, file: "stadium-tickets-sign.png",
+    });
+    boothSign.position.set(SCX, FY + WH + 0.5, z1 + WT / 2 + 0.05);
+    booth.add(boothSign);
+
+    group.add(booth);
+  }
+
+  // --- STREET-LEVEL FLAVOUR PROPS (benches, planters, crates, bins, lamps) ----
+  // Lived-in pitchside dressing scattered on clear apron ground between the pitch
+  // oval (RX 13.5 / RZ 10) and the seating tiers, kept OFF the Z≈0 drive corridor
+  // and away from the shop/booth footprints. Each solid prop pushes a small AABB.
+  {
+    // Reusable park-style bench (slatted seat + back + two legs).
+    const addBench = (px, pz, rotY) => {
+      const b = new THREE.Group();
+      const seat = box(2.2, 0.12, 0.5, benchWoodMat);
+      seat.position.y = 0.5;
+      const back = box(2.2, 0.5, 0.12, benchWoodMat);
+      back.position.set(0, 0.78, -0.2);
+      const legL = box(0.12, 0.5, 0.5, benchLegMat);
+      legL.position.set(-0.95, 0.25, 0);
+      const legR = legL.clone();
+      legR.position.x = 0.95;
+      b.add(seat, back, legL, legR);
+      b.position.set(px, 0.13, pz);
+      b.rotation.y = rotY;
+      group.add(b);
+      // collider in WORLD-axis local space (bench is roughly axis-aligned)
+      const halfX = Math.abs(Math.cos(rotY)) > 0.5 ? 1.2 : 0.4;
+      const halfZ = Math.abs(Math.cos(rotY)) > 0.5 ? 0.4 : 1.2;
+      colliders.push({ minX: px - halfX, maxX: px + halfX, minZ: pz - halfZ, maxZ: pz + halfZ });
+    };
+    // Benches along the east apron (between pitch and east gate), facing the pitch.
+    addBench(16.0, -4.0, Math.PI / 2);
+    addBench(16.0, 4.0, Math.PI / 2);
+    addBench(-9.5, -8.6, 0);
+
+    // Planters with a hedge cap — a couple framing the merch-shop approach.
+    const addPlanter = (px, pz) => {
+      const pot = box(1.2, 0.7, 1.2, planterMat);
+      pot.position.set(px, 0.13 + 0.35, pz);
+      const hedge = box(1.1, 0.5, 1.1, hedgeMat);
+      hedge.position.set(px, 0.13 + 0.95, pz);
+      hedge.castShadow = true;
+      group.add(pot, hedge);
+      colliders.push({ minX: px - 0.65, maxX: px + 0.65, minZ: pz - 0.65, maxZ: pz + 0.65 });
+    };
+    addPlanter(-4.8, 3.2);
+    addPlanter(4.8, 3.2);
+    addPlanter(11.5, 8.2);
+    addPlanter(-11.5, -8.2);
+
+    // Stacked supply crates near the concession stand.
+    const addCrate = (px, py, pz, s) => {
+      const c = box(s, s, s, crateMat);
+      c.position.set(px, 0.13 + s / 2 + py, pz);
+      group.add(c);
+      if (py === 0) colliders.push({ minX: px - s / 2, maxX: px + s / 2, minZ: pz - s / 2, maxZ: pz + s / 2 });
+    };
+    addCrate(4.6, 0, -8.4, 0.9);
+    addCrate(4.6, 0.9, -8.4, 0.7);
+    addCrate(5.6, 0, -8.6, 0.8);
+
+    // Litter bins (cylinders) dotted around — small colliders.
+    const addBin = (px, pz) => {
+      const bin = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.28, 0.9, 12), binMat);
+      bin.position.set(px, 0.13 + 0.45, pz);
+      bin.castShadow = true;
+      group.add(bin);
+      colliders.push({ minX: px - 0.35, maxX: px + 0.35, minZ: pz - 0.35, maxZ: pz + 0.35 });
+    };
+    addBin(-6.5, 4.6);
+    addBin(6.5, 4.6);
+    addBin(12.5, 4.6);
+
+    // Entrance TURNSTILES flanking each ±X gate (a row of rotating-arm posts).
+    const addTurnstile = (px, pz) => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 1.1, 10), turnstileMat);
+      post.position.set(px, 0.13 + 0.55, pz);
+      post.castShadow = true;
+      const arm = box(1.3, 0.08, 0.08, turnstileMat, false);
+      arm.position.set(px, 0.13 + 0.95, pz);
+      group.add(post, arm);
+      colliders.push({ minX: px - 0.3, maxX: px + 0.3, minZ: pz - 0.3, maxZ: pz + 0.3 });
+    };
+    // Place turnstiles just inside each gate, OFF the Z≈0 centre lane so cars pass.
+    addTurnstile(18.5, 2.6);
+    addTurnstile(18.5, -2.6);
+    addTurnstile(-18.5, 2.6);
+    addTurnstile(-18.5, -2.6);
+
+    // Bollard path lights lining the apron — short posts with emissive caps.
+    const addBollard = (px, pz) => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 1.0, 8), towerMat);
+      post.position.set(px, 0.13 + 0.5, pz);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), bollardLampMat);
+      cap.position.set(px, 0.13 + 1.05, pz);
+      group.add(post, cap);
+      colliders.push({ minX: px - 0.18, maxX: px + 0.18, minZ: pz - 0.18, maxZ: pz + 0.18 });
+    };
+    // NOTE: keep all bollards OFF the Z≈0 drive corridor so a car can pass the
+    // ±X gates; the two pitch-end pairs sit at |z|≈3.4, flanking the goal mouths.
+    for (const [bx, bz] of [
+      [-9.0, 8.8], [9.0, 8.8], [-9.0, -8.8], [9.0, -8.8],
+      [14.6, 3.4], [14.6, -3.4], [-14.6, 3.4], [-14.6, -3.4],
+    ]) addBollard(bx, bz);
   }
 
   // --- update: flicker floodlights + orbit blimp -----------------------------

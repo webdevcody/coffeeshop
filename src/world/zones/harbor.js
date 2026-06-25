@@ -596,6 +596,203 @@ export function buildHarbor() {
     group.add(ring);
   }
 
+  // ── MORE ENTERABLE SHOPS + DOCK FLAVOR (additive enrichment) ──────────────
+  // Two further walk-in shops on the OPEN pier deck (X[-16,-2], Z[-14,18]) plus
+  // a scatter of lived-in props. Both shops are self-contained rooms (own floor,
+  // 4 walls with a doorway GAP, ceiling) whose colliders are per-wall AABBs so
+  // the doorway stays clear. All footprints stay well inside X,Z ∈ [-23,23] and
+  // clear the road seams. Fronts face +Z (the open south pier) so artPanel signs
+  // read un-mirrored with NO rotation.
+
+  // Shared shop materials for the two rooms (created ONCE, reused).
+  const matShop2Wall = new THREE.MeshStandardMaterial({ color: "#6c5740", roughness: 0.95 });
+  const matShop2Floor = new THREE.MeshStandardMaterial({ color: "#856a48", roughness: 0.96 });
+  const matShop2Roof = new THREE.MeshStandardMaterial({ color: "#3a4a44", roughness: 0.85, metalness: 0.3 });
+  const matShop2Trim = new THREE.MeshStandardMaterial({ color: "#2a4046", roughness: 0.8 });
+  const matShop2Counter = new THREE.MeshStandardMaterial({ color: "#5e4228", roughness: 0.85 });
+  const matShop2Top = new THREE.MeshStandardMaterial({ color: "#cba86a", roughness: 0.5, metalness: 0.2 });
+  const matShop2Shelf = new THREE.MeshStandardMaterial({ color: "#7e6240", roughness: 0.9 });
+  const matShop2Lamp = new THREE.MeshStandardMaterial({ color: "#ffe9b0", emissive: "#ffcf6a", emissiveIntensity: 0.9, roughness: 0.6 });
+  const matCrate = new THREE.MeshStandardMaterial({ color: "#8a6a3e", roughness: 0.95 });
+  const matBarrel = new THREE.MeshStandardMaterial({ color: "#5a4326", roughness: 0.9 });
+  const matNet = new THREE.MeshStandardMaterial({ color: "#3c5a4a", roughness: 1, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+  const matFish = new THREE.MeshStandardMaterial({ color: "#b8c4cc", roughness: 0.5, metalness: 0.3 });
+  const matIce = new THREE.MeshStandardMaterial({ color: "#cfe6ee", roughness: 0.3, metalness: 0.1 });
+  const matProd2 = [
+    new THREE.MeshStandardMaterial({ color: "#c8412f", roughness: 0.8 }),
+    new THREE.MeshStandardMaterial({ color: "#2f9e58", roughness: 0.8 }),
+    new THREE.MeshStandardMaterial({ color: "#e0a52a", roughness: 0.8 }),
+    new THREE.MeshStandardMaterial({ color: "#3b6fb0", roughness: 0.8 }),
+  ];
+
+  // Reusable enterable-room shell: floor + 4 walls (front split round a doorway
+  // GAP) + ceiling + an exterior sign over the door. Pushes per-wall colliders.
+  // Returns useful interior bounds so the caller can furnish the room.
+  function makeShopShell(cx, cz, w, d, wallH, signOpts, doorW = 2.2) {
+    const wallT = 0.25;
+    const floorY = 0.22;                 // pier deck top
+    const frontZ = cz + d / 2;           // +Z wall (faces open pier)
+    const backZ = cz - d / 2;
+    const leftX = cx - w / 2;
+    const rightX = cx + w / 2;
+
+    // Floor slab.
+    addBox(boxGeo, matShop2Floor, cx, floorY + 0.02, cz, w, 0.1, d);
+    // Back wall.
+    addBox(boxGeo, matShop2Wall, cx, floorY + wallH / 2, backZ, w, wallH, wallT);
+    colliders.push({ minX: leftX, maxX: rightX, minZ: backZ - wallT / 2, maxZ: backZ + wallT / 2 });
+    // Left + right side walls.
+    addBox(boxGeo, matShop2Wall, leftX, floorY + wallH / 2, cz, wallT, wallH, d);
+    colliders.push({ minX: leftX - wallT / 2, maxX: leftX + wallT / 2, minZ: backZ, maxZ: frontZ });
+    addBox(boxGeo, matShop2Wall, rightX, floorY + wallH / 2, cz, wallT, wallH, d);
+    colliders.push({ minX: rightX - wallT / 2, maxX: rightX + wallT / 2, minZ: backZ, maxZ: frontZ });
+    // Front wall: two segments flanking a centred doorway GAP (no collider spans it).
+    const segW = (w - doorW) / 2;
+    addBox(boxGeo, matShop2Wall, leftX + segW / 2, floorY + wallH / 2, frontZ, segW, wallH, wallT);
+    colliders.push({ minX: leftX, maxX: leftX + segW, minZ: frontZ - wallT / 2, maxZ: frontZ + wallT / 2 });
+    addBox(boxGeo, matShop2Wall, rightX - segW / 2, floorY + wallH / 2, frontZ, segW, wallH, wallT);
+    colliders.push({ minX: rightX - segW, maxX: rightX, minZ: frontZ - wallT / 2, maxZ: frontZ + wallT / 2 });
+    // Door lintel (above head height, NO collider — gap below stays walkable).
+    addBox(boxGeo, matShop2Trim, cx, floorY + wallH - 0.25, frontZ, doorW + 0.3, 0.5, wallT + 0.04, false);
+    // Ceiling cap.
+    addBox(boxGeo, matShop2Roof, cx, floorY + wallH + 0.08, cz, w + 0.5, 0.2, d + 0.5);
+    // Exterior sign over the door, facing +Z (un-mirrored, no rotation).
+    const sign = artPanel(Math.min(w - 1.0, 4.6), 1.2, "sign", signOpts);
+    sign.position.set(cx, floorY + wallH + 0.45, frontZ + wallT / 2 + 0.05);
+    group.add(sign);
+    // Two warm hanging lamps under the ceiling.
+    for (const lx of [cx - w / 4, cx + w / 4]) {
+      addBox(boxGeo, matShop2Lamp, lx, floorY + wallH - 0.45, cz - 0.1, 0.5, 0.22, 0.5, false);
+      addBox(cylGeo, matShop2Trim, lx, floorY + wallH - 0.18, cz - 0.1, 0.03, 0.4, 0.03, false);
+    }
+    return { floorY, frontZ, backZ, leftX, rightX, segLcx: leftX + segW / 2 };
+  }
+
+  // ── SHOP 2: DOCKSIDE FISH MARKET (north pier, between quay & bait shack) ───
+  // Footprint X[-15,-7] Z[-12.5,-5.5] (8w × 7d), centred (-11,-9), on the plank
+  // deck north of the bait shack and clear of the bollard/cleat line at Z=-8.
+  {
+    const fm = makeShopShell(-11, -9, 8, 7, 3.2, {
+      text: "DOCKSIDE FISH MARKET", bg: "#13414f", fg: "#ffd23f",
+      file: "harbor-fish-market.png", emissiveIntensity: 0.55,
+    });
+    const cx = -11, cz = -9;
+    // Long ice-bed display counter across the back, heaped with fresh catch.
+    addBox(boxGeo, matShop2Counter, cx, fm.floorY + 0.5, fm.backZ + 1.0, 6.2, 1.0, 1.0);
+    addBox(boxGeo, matIce, cx, fm.floorY + 1.05, fm.backZ + 1.0, 6.0, 0.14, 0.9, false);
+    for (let i = 0; i < 6; i++) {
+      const fish = new THREE.Mesh(boxGeo, matFish);
+      fish.scale.set(0.7, 0.16, 0.26);
+      fish.position.set(cx - 2.4 + i * 0.95, fm.floorY + 1.18, fm.backZ + 0.9 + (i % 2) * 0.3);
+      fish.rotation.y = (i % 2 ? 0.3 : -0.3);
+      group.add(fish);
+    }
+    // Hanging fishing NET draped on the left wall (flat decorative plane).
+    const net = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.0), matNet);
+    net.position.set(fm.leftX + 0.18, fm.floorY + 1.9, cz + 0.4);
+    net.rotation.y = Math.PI / 2;
+    group.add(net);
+    // Stacked produce crates against the right wall.
+    for (let s = 0; s < 3; s++) {
+      addBox(boxGeo, matCrate, fm.rightX - 0.6, fm.floorY + 0.35 + s * 0.62, cz - 1.4 + (s % 2) * 0.4, 1.0, 0.6, 1.0, false);
+    }
+    // A chalk price board (interior sign) above the counter, facing +Z.
+    const board = artPanel(2.6, 1.0, "sign", { text: "CATCH OF THE DAY", bg: "#1c2a26", fg: "#eaf2ec", file: "harbor-fish-board.png" });
+    board.position.set(cx, fm.floorY + 2.5, fm.backZ + 0.2);
+    group.add(board);
+    // Barrel of ice by the door + a stool.
+    addBox(cylGeo, matBarrel, fm.rightX - 0.8, fm.floorY + 0.5, fm.frontZ - 1.0, 0.8, 1.0, 0.8, false);
+  }
+
+  // ── SHOP 3: HARBOR FERRY TICKET OFFICE (south pier, near the south end) ────
+  // Footprint X[-15,-7] Z[12.5,18.5] (8w × 6d), centred (-11,15.5), on the open
+  // south pier deck clear of the bait shack (maxZ 9.25) and inside [-23,23].
+  {
+    const fo = makeShopShell(-11, 15.5, 8, 6, 3.2, {
+      text: "HARBOR FERRY TICKETS", bg: "#5a3a22", fg: "#ffe08a",
+      file: "harbor-ferry-office.png", emissiveIntensity: 0.55,
+    });
+    const cx = -11, cz = 15.5;
+    // Ticket counter with a glass-topped window across the back.
+    addBox(boxGeo, matShop2Counter, cx, fo.floorY + 0.55, fo.backZ + 0.9, 5.6, 1.1, 0.8);
+    addBox(boxGeo, matShop2Top, cx, fo.floorY + 1.13, fo.backZ + 0.9, 5.8, 0.1, 0.9, false);
+    // Wall of shelved schedules / parcels (left wall) with little boxes.
+    const shX = fo.leftX + 0.42;
+    for (let s = 0; s < 3; s++) {
+      const sy = fo.floorY + 0.9 + s * 0.8;
+      addBox(boxGeo, matShop2Shelf, shX, sy, cz + 0.4, 0.35, 0.06, 3.0, false);
+      for (let p = 0; p < 3; p++) {
+        addBox(boxGeo, matProd2[(s + p) % matProd2.length], shX, sy + 0.2, cz - 0.9 + p * 0.9, 0.24, 0.3, 0.34, false);
+      }
+    }
+    // A timetable board (interior sign) above the counter, facing +Z.
+    const board = artPanel(3.0, 1.1, "sign", { text: "DEPARTURES", bg: "#13414f", fg: "#ffd23f", file: "harbor-ferry-board.png" });
+    board.position.set(cx, fo.floorY + 2.5, fo.backZ + 0.2);
+    group.add(board);
+    // A waiting bench by the right wall + two short stanchion posts by the door.
+    addBox(boxGeo, matShop2Counter, fo.rightX - 0.7, fo.floorY + 0.45, cz, 0.7, 0.5, 2.4, false);
+    addBox(boxGeo, matShop2Shelf, fo.rightX - 0.7, fo.floorY + 0.95, cz, 0.7, 0.6, 0.12, false);
+    for (const dz of [-0.6, 0.6]) {
+      addBox(cylGeo, matSteel, cx + 1.6, fo.floorY + 0.55, fo.frontZ - 1.2 + dz, 0.08, 1.0, 0.08, false);
+    }
+  }
+
+  // ── Lobster pots, crates, barrels & a net stand scattered on the deck ─────
+  // (decorative, NO colliders — small enough to step past, keep hot path clear)
+  const lobsterGeo = new THREE.BoxGeometry(0.9, 0.55, 0.9);
+  for (const [px, pz, r] of [[-4.2, -11, 0.2], [-3.6, -6, -0.4], [-15.0, -11.5, 0.5], [-4.0, 11, 0.3]]) {
+    const pot = new THREE.Mesh(lobsterGeo, matCrate);
+    pot.position.set(px, 0.5, pz);
+    pot.rotation.y = r;
+    pot.castShadow = true;
+    group.add(pot);
+    // domed rim (a flattened cylinder) so it reads as a trap, not just a crate
+    addBox(cylGeo, matBarrel, px, 0.82, pz, 0.7, 0.22, 0.7, false);
+  }
+  // A few stacked crates + barrels along the quay edge for cargo flavor.
+  for (const [px, pz] of [[-6.2, -12.5], [-6.2, -11.4], [-14.0, -6.0]]) {
+    addBox(boxGeo, matCrate, px, 0.55, pz, 1.0, 1.0, 1.0, true);
+  }
+  for (const [px, pz] of [[-5.2, 13.5], [-5.6, 14.6], [-14.6, 12.0]]) {
+    const bar = new THREE.Mesh(cylGeo, matBarrel);
+    bar.scale.set(0.8, 1.1, 0.8);
+    bar.position.set(px, 0.55, pz);
+    bar.castShadow = true;
+    group.add(bar);
+  }
+
+  // ── Dockside lamp posts (a warm glow head on a dark steel pole) ───────────
+  const lampHeadMat = new THREE.MeshStandardMaterial({ color: "#ffe6a8", emissive: "#ffcf6a", emissiveIntensity: 0.95, roughness: 0.5 });
+  for (const [lx, lz] of [[-16.6, -3], [-1.4, 7], [-16.6, 12], [-1.4, -8]]) {
+    addBox(cylGeo, matDarkSteel, lx, 1.6, lz, 0.14, 3.2, 0.14, true);
+    addBox(cylGeo, matDarkSteel, lx, 3.25, lz, 0.5, 0.12, 0.5, false);
+    addBox(boxGeo, lampHeadMat, lx, 3.05, lz, 0.42, 0.42, 0.42, false);
+  }
+
+  // ── A wooden produce/fish STALL on the quay (open-air, awning + crates) ───
+  // Set on the north quay band Z[-23,-14] in the open gap east of the crane,
+  // footprint ~X[8.5,13.5] Z[-13.5,-10.5], inside [-23,23] and clear of roads.
+  {
+    const sx = 11, sz = -12;
+    const matAwn = new THREE.MeshStandardMaterial({ color: "#b5453a", roughness: 0.85, side: THREE.DoubleSide });
+    // Four corner posts + a flat counter board.
+    for (const [dx, dz] of [[-2, -1.2], [2, -1.2], [-2, 1.2], [2, 1.2]]) {
+      addBox(cylGeo, matWood, sx + dx, 1.0, sz + dz, 0.12, 2.0, 0.12, true);
+    }
+    addBox(boxGeo, matShop2Counter, sx, 0.95, sz + 1.0, 4.4, 0.2, 0.8);
+    // Slanted striped awning over the stall.
+    const awn = addBox(boxGeo, matAwn, sx, 2.15, sz + 0.2, 4.8, 0.1, 3.2, false);
+    awn.rotation.x = -0.18;
+    // Crates of goods on the counter.
+    for (let i = 0; i < 3; i++) {
+      addBox(boxGeo, matProd2[i % matProd2.length], sx - 1.4 + i * 1.4, 1.25, sz + 1.0, 0.7, 0.4, 0.6, false);
+    }
+    // Small hanging sign on the front beam.
+    const stallSign = artPanel(2.2, 0.7, "sign", { text: "MARKET", bg: "#5a3a22", fg: "#ffd23f", file: "harbor-stall.png" });
+    stallSign.position.set(sx, 1.95, sz + 1.7);
+    group.add(stallSign);
+  }
+
   // ── ground: whole tile is walkable floor ──────────────────────────────────
   const ground = [{ minX: -30, maxX: 30, minZ: -30, maxZ: 30 }];
 

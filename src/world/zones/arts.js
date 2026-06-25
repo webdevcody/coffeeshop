@@ -635,6 +635,288 @@ function buildGiftShop(parent, colliders, cx, cz, W, D) {
   }
 }
 
+// ── Generalized ENTERABLE themed shop ───────────────────────────────────────
+// Like buildGiftShop, but the doorway can open on ANY cardinal face so the shop
+// can front the plaza from any side band. Builds 4 walls (the door-side wall is
+// split into two segments flanking a 2.2 m gap), a floor, a flat ceiling, an
+// exterior sign over the door, and a themed interior (counter, shelving with
+// instanced colourful "products", a couple of props, wall signage, two pendant
+// lights and a rug). Wall colliders are pushed individually — NONE across the
+// doorway gap, so the player walks straight in.
+//
+//   cx,cz,W,D — footprint centre + size (W along X, D along Z).
+//   doorDir   — "+X" | "-X" | "+Z" | "-Z": which wall carries the doorway gap,
+//               oriented toward the plaza.
+//   theme     — { sign:{text,bg,fg,file}, poster:{...}, accent:THREE.Material,
+//                 prop:"easel"|"wheel"|"frames" } chooses interior flavour.
+function buildThemedShop(parent, colliders, cfg) {
+  const { cx, cz, W, D, doorDir, theme } = cfg;
+  const t = 0.25;            // wall thickness
+  const h = 3.2;             // interior wall height
+  const door = 2.2;          // doorway gap width
+  const minX = cx - W / 2, maxX = cx + W / 2;
+  const minZ = cz - D / 2, maxZ = cz + D / 2;
+  const onX = doorDir === "+X" || doorDir === "-X";   // door wall is a side (X) wall
+  const sign = doorDir === "+X" ? 1 : doorDir === "-X" ? -1 : doorDir === "+Z" ? 1 : -1;
+
+  // Floor + flat ceiling.
+  const floor = box(W, 0.1, D, shopFloorMat, false);
+  floor.position.set(cx, 0.06, cz);
+  floor.receiveShadow = true;
+  const roof = box(W + 0.2, 0.2, D + 0.2, shopRoofMat);
+  roof.position.set(cx, h + 0.1, cz);
+  parent.add(floor, roof);
+
+  // Helper: a full solid wall on one of the four faces (no gap).
+  const solidWall = (face) => {
+    if (face === "+Z" || face === "-Z") {
+      const z = face === "+Z" ? maxZ - t / 2 : minZ + t / 2;
+      const wll = box(W, h, t, shopWallMat);
+      wll.position.set(cx, h / 2, z);
+      parent.add(wll);
+      addCollider(colliders, cx, z, W, t);
+    } else {
+      const x = face === "+X" ? maxX - t / 2 : minX + t / 2;
+      const wll = box(t, h, D, shopWallMat);
+      wll.position.set(x, h / 2, cz);
+      parent.add(wll);
+      addCollider(colliders, x, cz, t, D);
+    }
+  };
+  // Helper: the doorway wall on `face`, split into two segments flanking the gap.
+  const doorWall = (face) => {
+    const gapHalf = door / 2;
+    if (face === "+Z" || face === "-Z") {
+      const z = face === "+Z" ? maxZ - t / 2 : minZ + t / 2;
+      const segLen = (W - door) / 2;
+      for (const s of [-1, 1]) {
+        const segCx = s < 0 ? (minX + (cx - gapHalf)) / 2 : ((cx + gapHalf) + maxX) / 2;
+        const seg = box(segLen, h, t, shopWallMat);
+        seg.position.set(segCx, h / 2, z);
+        parent.add(seg);
+        addCollider(colliders, segCx, z, segLen, t);
+      }
+      const lintel = box(door + 0.2, 0.3, t, shopWallMat);
+      lintel.position.set(cx, h - 0.15, z);
+      parent.add(lintel);
+    } else {
+      const x = face === "+X" ? maxX - t / 2 : minX + t / 2;
+      const segLen = (D - door) / 2;
+      for (const s of [-1, 1]) {
+        const segCz = s < 0 ? (minZ + (cz - gapHalf)) / 2 : ((cz + gapHalf) + maxZ) / 2;
+        const seg = box(t, h, segLen, shopWallMat);
+        seg.position.set(x, h / 2, segCz);
+        parent.add(seg);
+        addCollider(colliders, x, segCz, t, segLen);
+      }
+      const lintel = box(t, 0.3, door + 0.2, shopWallMat);
+      lintel.position.set(x, h - 0.15, cz);
+      parent.add(lintel);
+    }
+  };
+
+  // Build all four faces; the doorDir face gets the gapped wall, the rest solid.
+  for (const face of ["+X", "-X", "+Z", "-Z"]) {
+    if (face === doorDir) doorWall(face); else solidWall(face);
+  }
+
+  // Exterior SHOP SIGN over the doorway, FRONT facing outward along doorDir so it
+  // reads un-mirrored from the plaza.
+  const signPanel = artPanel(Math.min((onX ? D : W) * 0.8, 4.2), 0.95, "sign", {
+    text: theme.sign.text, bg: theme.sign.bg, fg: theme.sign.fg || "#fff3cf",
+    emissiveIntensity: 0.5, file: theme.sign.file,
+  });
+  if (onX) {
+    signPanel.position.set(cx + sign * (W / 2 + 0.08), h + 0.55, cz);
+    signPanel.rotation.y = sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  } else {
+    signPanel.position.set(cx, h + 0.55, cz + sign * (D / 2 + 0.08));
+    signPanel.rotation.y = sign > 0 ? 0 : Math.PI;
+  }
+  parent.add(signPanel);
+
+  // === INTERIOR ============================================================
+  // "Back" wall = the wall OPPOSITE the doorway; props lean against it.
+  const accent = theme.accent || cTeal;
+
+  // Rug centred on the floor.
+  const rug = box(W * 0.62, 0.04, D * 0.62, rugMat, false);
+  rug.position.set(cx, 0.12, cz);
+  rug.receiveShadow = true;
+  const rugTrim = box(W * 0.62 + 0.16, 0.03, D * 0.62 + 0.16, rugTrimMat, false);
+  rugTrim.position.set(cx, 0.11, cz);
+  parent.add(rugTrim, rug);
+
+  // Service COUNTER tucked in the back-left interior corner (away from the door).
+  const counterX = onX ? cx - sign * (W * 0.18) : minX + 1.5;
+  const counterZ = onX ? minZ + 1.0 : cz - sign * (D * 0.22);
+  const counter = box(2.2, 1.0, 0.8, counterMat);
+  counter.position.set(counterX, 0.55, counterZ);
+  const counterTop = box(2.4, 0.1, 0.95, counterTopMat);
+  counterTop.position.set(counterX, 1.08, counterZ);
+  const register = box(0.45, 0.32, 0.38, counterTopMat);
+  register.position.set(counterX - 0.6, 1.3, counterZ);
+  parent.add(counter, counterTop, register);
+
+  // SHELVING against the back wall (opposite the door): three stacked planks
+  // stocked with colourful instanced "products".
+  const bx = onX ? maxX - sign * (t + 0.45) : cx + (onX ? 0 : W * 0.18);
+  const bz = onX ? cz + 0.6 : (sign > 0 ? minZ + t + 0.35 : maxZ - t - 0.35);
+  const shelfW = onX ? Math.min(D - 1.2, 3.2) : Math.min(W - 1.2, 3.2);
+  for (let s = 0; s < 3; s++) {
+    const plank = onX
+      ? box(0.4, 0.08, shelfW, shelfMat)
+      : box(shelfW, 0.08, 0.4, shelfMat);
+    plank.position.set(bx, 0.9 + s * 0.7, bz);
+    parent.add(plank);
+  }
+  const perShelf = 5, shelfRows = 3;
+  const goods = new THREE.InstancedMesh(goodGeo, accent, perShelf * shelfRows);
+  goods.castShadow = true;
+  goods.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(perShelf * shelfRows * 3), 3);
+  let gi = 0;
+  const _c = new THREE.Color();
+  for (let s = 0; s < shelfRows; s++) {
+    for (let p = 0; p < perShelf; p++) {
+      const u = -1.0 + p * 0.5;
+      if (onX) _dummy.position.set(bx, 1.18 + s * 0.7, bz + u);
+      else _dummy.position.set(bx + u, 1.18 + s * 0.7, bz);
+      _dummy.rotation.set(0, (p + s) * 0.4, 0);
+      _dummy.scale.set(1, 0.8 + ((p + s) % 3) * 0.18, 1);
+      _dummy.updateMatrix();
+      goods.setMatrixAt(gi, _dummy.matrix);
+      _c.copy(goodsMats[(p + s) % goodsMats.length].color);
+      goods.setColorAt(gi, _c);
+      gi++;
+    }
+  }
+  goods.instanceMatrix.needsUpdate = true;
+  if (goods.instanceColor) goods.instanceColor.needsUpdate = true;
+  parent.add(goods);
+
+  // THEMED PROP near the room centre-front.
+  const px = onX ? cx + sign * (W * 0.12) : cx + W * 0.18;
+  const pz = onX ? cz + D * 0.18 : cz + sign * (D * 0.12);
+  if (theme.prop === "wheel") {
+    // potter's wheel: a low disc table + a clay lump.
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.5, 0.7, 14), counterMat);
+    base.position.set(px, 0.35, pz);
+    base.castShadow = true;
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.08, 18), counterTopMat);
+    disc.position.set(px, 0.74, pz);
+    const clay = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.24, 0.32, 12), planterMat);
+    clay.position.set(px, 0.92, pz);
+    clay.castShadow = true;
+    parent.add(base, disc, clay);
+  } else if (theme.prop === "frames") {
+    // a stack of framed canvases leaning against the rug centre.
+    for (let k = 0; k < 3; k++) {
+      const canvas = box(0.06, 1.2 - k * 0.12, 0.9 - k * 0.1, goodsMats[k % goodsMats.length]);
+      canvas.position.set(px + k * 0.08, 0.62, pz + k * 0.14);
+      canvas.rotation.z = 0.12;
+      canvas.castShadow = true;
+      parent.add(canvas);
+    }
+  } else {
+    // default: an EASEL (tripod legs + a tilted painting board).
+    const g = new THREE.Group();
+    for (const a of [-0.32, 0.32]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.7, 6), shelfMat);
+      leg.position.set(a, 0.85, 0.18);
+      leg.rotation.x = 0.22;
+      g.add(leg);
+    }
+    const backLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.7, 6), shelfMat);
+    backLeg.position.set(0, 0.85, -0.35);
+    backLeg.rotation.x = -0.28;
+    g.add(backLeg);
+    const board = box(0.9, 1.1, 0.05, cWhite);
+    board.position.set(0, 1.25, 0.2);
+    board.rotation.x = -0.12;
+    const art = artPanel(0.74, 0.9, "poster", {
+      top: theme.poster.top, bottom: theme.poster.bottom, glyph: theme.poster.glyph,
+      accent: theme.poster.accent, bg: "#f1e8d4", emissiveIntensity: 0.3,
+      file: theme.poster.file + "-easel",
+    });
+    art.position.set(0, 1.26, 0.235);
+    art.rotation.x = -0.12;
+    g.add(board, art);
+    g.position.set(px, 0, pz);
+    parent.add(g);
+  }
+
+  // Wall SIGNAGE (framed poster) on the back wall, facing into the room.
+  const wallSign = artPanel(1.5, 0.95, "poster", {
+    top: theme.poster.top, bottom: theme.poster.bottom, foot: theme.poster.foot,
+    glyph: theme.poster.glyph, accent: theme.poster.accent, bg: "#f1e8d4",
+    emissiveIntensity: 0.35, file: theme.poster.file,
+  });
+  if (onX) {
+    wallSign.position.set(maxX - sign * (t + 0.05) - sign * 0.02, 2.1, cz);
+    wallSign.rotation.y = sign > 0 ? -Math.PI / 2 : Math.PI / 2;
+  } else {
+    wallSign.position.set(cx, 2.1, (sign > 0 ? minZ + t + 0.05 : maxZ - t - 0.05));
+    wallSign.rotation.y = sign > 0 ? 0 : Math.PI;
+  }
+  parent.add(wallSign);
+
+  // Two hanging PENDANT LIGHTS.
+  for (const lx of [cx - W * 0.22, cx + W * 0.22]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), cordMat);
+    cord.position.set(lx, h - 0.4, cz);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), bulbMat);
+    bulb.position.set(lx, h - 0.85, cz);
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.24, 12, 1, true), counterTopMat);
+    shade.position.set(lx, h - 0.72, cz);
+    parent.add(cord, bulb, shade);
+  }
+}
+
+// Crate stack: 1-3 stacked wooden art-supply crates. Returns a positioned Group.
+function makeCrateStack(x, z, ry, n) {
+  const g = new THREE.Group();
+  for (let i = 0; i < n; i++) {
+    const s = 0.8 - i * 0.12;
+    const crate = box(s, s, s, tankMat);
+    crate.position.set((i % 2) * 0.12 - 0.06, 0.4 + i * 0.78, (i % 2) * 0.1);
+    crate.rotation.y = i * 0.3;
+    g.add(crate);
+  }
+  g.position.set(x, 0, z);
+  g.rotation.y = ry;
+  return g;
+}
+
+// Market STALL: striped canopy on four poles over a display table. Returns Group.
+function makeStall(x, z, ry, canopyMat) {
+  const g = new THREE.Group();
+  const table = box(2.2, 0.1, 1.2, benchWood);
+  table.position.y = 0.9;
+  table.castShadow = true;
+  for (const [lx, lz] of [[-1.0, -0.5], [1.0, -0.5], [-1.0, 0.5], [1.0, 0.5]]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.9, 6), poleMat);
+    leg.position.set(lx, 0.45, lz);
+    g.add(leg);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.4, 6), poleMat);
+    post.position.set(lx, 1.2, lz);
+    g.add(post);
+  }
+  const canopy = box(2.6, 0.12, 1.6, canopyMat);
+  canopy.position.y = 2.4;
+  canopy.castShadow = true;
+  // a few colourful goods on the table
+  for (let i = 0; i < 4; i++) {
+    const item = new THREE.Mesh(goodGeo, goodsMats[i % goodsMats.length]);
+    item.position.set(-0.7 + i * 0.45, 1.1, (i % 2) * 0.3 - 0.15);
+    item.castShadow = true;
+    g.add(item);
+  }
+  g.add(table, canopy);
+  g.position.set(x, 0, z);
+  g.rotation.y = ry;
+  return g;
+}
+
 export function buildArts() {
   const group = new THREE.Group();
   const colliders = [];
@@ -848,6 +1130,47 @@ export function buildArts() {
   // plaza; the player walks straight in. Wall colliders are added individually,
   // none across the doorway gap.
   buildGiftShop(group, colliders, -17.6, -7.6, 7.6, 6.0);
+
+  // --- THREE more ENTERABLE themed shops ringing the plaza side-bands -------
+  // Each sits in an open band between a corner building and the plaza ring, well
+  // clear of BOTH through-lanes, with its doorway opening toward the plaza so the
+  // player walks straight in (wall colliders added individually; none span a gap).
+  //
+  // 1) PRINT LAB — NE band (mirror of the west gift shop). Door on -Z toward plaza.
+  //    Footprint 7.6(X)x6.0(Z) at (17.6,7.6) → X[13.8,21.4] Z[4.6,10.6].
+  buildThemedShop(group, colliders, {
+    cx: 17.6, cz: 7.6, W: 7.6, D: 6.0, doorDir: "-Z",
+    theme: {
+      sign: { text: "PRINT LAB", bg: "#3b7fd4", fg: "#f6efe0", file: "arts-shop-print.png" },
+      poster: { top: "FINE", bottom: "PRINTS", foot: "PRINT LAB", glyph: "◐",
+        accent: "#3b7fd4", file: "arts-print-poster.png" },
+      accent: cBlue, prop: "frames",
+    },
+  });
+
+  // 2) ART SUPPLY — NW band (north of the E-W lane, south of the Studio). Door +X.
+  //    Footprint 6.8(X)x4.6(Z) at (-17.8,7.1) → X[-21.2,-14.4] Z[4.8,9.4].
+  buildThemedShop(group, colliders, {
+    cx: -17.8, cz: 7.1, W: 6.8, D: 4.6, doorDir: "+X",
+    theme: {
+      sign: { text: "ART SUPPLY", bg: "#2bb7a3", fg: "#f6efe0", file: "arts-shop-supply.png" },
+      poster: { top: "PAINT", bottom: "& BRUSH", foot: "ART SUPPLY", glyph: "✦",
+        accent: "#2bb7a3", file: "arts-supply-poster.png" },
+      accent: cTeal, prop: "easel",
+    },
+  });
+
+  // 3) CERAMICS STUDIO — SE band (south of the E-W lane, north of the Cafe). Door -X.
+  //    Footprint 6.8(X)x4.6(Z) at (17.8,-7.1) → X[14.4,21.2] Z[-9.4,-4.8].
+  buildThemedShop(group, colliders, {
+    cx: 17.8, cz: -7.1, W: 6.8, D: 4.6, doorDir: "-X",
+    theme: {
+      sign: { text: "CERAMICS", bg: "#d24a96", fg: "#fff3cf", file: "arts-shop-ceramics.png" },
+      poster: { top: "HAND", bottom: "THROWN", foot: "CERAMICS STUDIO", glyph: "❖",
+        accent: "#d24a96", file: "arts-ceramics-poster.png" },
+      accent: cMagenta, prop: "wheel",
+    },
+  });
 
   // --- Banner flags on a row of slim poles flanking the plaza approach ------
   // Placed in the open corner quadrants, clear of BOTH through-lanes

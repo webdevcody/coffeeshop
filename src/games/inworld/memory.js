@@ -272,7 +272,10 @@ export function createGame(ctx) {
     // local-only hover lift; haloT the just-flipped ring pulse; wobbleT the
     // mismatch flip-back wobble. prevState tracks the last logical state so we can
     // detect NEW match / NEW up transitions and fire the one-shot flourishes.
-    anim.push({ faceUp: false, target: 0, mat: M.back, flipT: 1, flipFrom: 0, popT: 0, hoverT: 0, haloT: 0, wobbleT: 0, prevState: "down" });
+    // `lastFace` remembers the printed face material so a card flipping back DOWN
+    // keeps showing its glyph through the first (still-face-up) half of the hinge
+    // turn instead of snapping to the back the instant the flip-back begins.
+    anim.push({ faceUp: false, target: 0, mat: M.back, lastFace: M.back, flipT: 1, flipFrom: 0, popT: 0, hoverT: 0, haloT: 0, wobbleT: 0, prevState: "down" });
 
     const hmat = new THREE.MeshBasicMaterial({ color: PALETTE.accent, transparent: true, opacity: 0, depthWrite: false });
     haloMats.push(hmat);
@@ -655,9 +658,15 @@ export function createGame(ctx) {
       // Swap the printed material once past the edge-on midpoint so the value
       // never bleeds through the back before the card has turned over.
       const past = m.rotation.x >= Math.PI / 2;
+      // Flip-UP (faceUp): back on both halves until the edge-on midpoint, then the
+      // printed face on the -Y (index 3) slot. Flip-DOWN (!faceUp): the -Y slot is
+      // still tilted toward the viewer while past the midpoint, so keep showing the
+      // remembered glyph (a.lastFace) there until the card crosses to back-up — only
+      // then does the back take both slots. (audit: flip-back no longer snaps the
+      // glyph to the card back the instant the turn-back begins.)
       const desired = a.faceUp
         ? (past ? cardMaterials(M.back, a.mat) : cardMaterials(M.back, M.back))
-        : (past ? cardMaterials(a.mat, a.mat) : cardMaterials(a.mat, M.back));
+        : (past ? cardMaterials(M.back, a.lastFace) : cardMaterials(a.mat, M.back));
       if (m.material[2] !== desired[2] || m.material[3] !== desired[3]) m.material = desired;
     }
   }
@@ -730,6 +739,9 @@ export function createGame(ctx) {
       a.faceUp = faceUp;
       a.mat = mat;
       a.target = target;
+      // Remember the printed glyph while it's showing so a later flip-DOWN can keep
+      // displaying it through the first half of the hinge turn (see stepFlips).
+      if (faceUp) a.lastFace = mat;
       // Fire the match "pop" once, when a card NEWLY becomes matched. Everyone
       // receives the `matched` state, so the flourish is consistent across roles.
       // (audit I1)

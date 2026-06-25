@@ -95,6 +95,38 @@ const rugMat = new THREE.MeshStandardMaterial({ color: "#7a2f3a", roughness: 0.9
 // Warm hanging interior light bulbs — emissive, gently pulsed by update().
 const shopLightMat = new THREE.MeshStandardMaterial({ color: "#fff2c8", emissive: "#ffd27a", emissiveIntensity: 0.9, roughness: 0.4 });
 
+// --- Per-shop THEME palettes -------------------------------------------------
+// Each enterable shop reuses makeCoffeeShop's geometry but can swap a handful of
+// accent materials + its menu sign so the three new shops don't all look the
+// same as the original BYTE BREW kiosk. Mats are created ONCE here (no per-shop
+// allocation in update). `undefined` fields fall back to the shop defaults.
+// Bookshop (cool teal/paper): a quiet reading nook.
+const bookFloorMat = new THREE.MeshStandardMaterial({ color: "#3d4a50", roughness: 0.9 });
+const bookWallMat = new THREE.MeshStandardMaterial({ color: "#24323a", roughness: 0.9 });
+const bookProductMat = new THREE.MeshStandardMaterial({ color: "#c9b487", roughness: 0.7 }); // book spines (warm paper)
+const bookRugMat = new THREE.MeshStandardMaterial({ color: "#2f5a55", roughness: 0.95 });
+// Florist / plant shop (greens + terracotta).
+const plantWallMat = new THREE.MeshStandardMaterial({ color: "#33402e", roughness: 0.92 });
+const plantFloorMat = new THREE.MeshStandardMaterial({ color: "#5a4a36", roughness: 0.88 });
+const plantProductMat = new THREE.MeshStandardMaterial({ color: "#9c4a2a", roughness: 0.8 });  // terracotta pots
+const plantLeafMat = foliageMat;                                                                 // reuse shrub green
+const plantRugMat = new THREE.MeshStandardMaterial({ color: "#3a6b42", roughness: 0.95 });
+// Noodle / ramen bar (warm reds, paper-lantern glow).
+const ramenWallMat = new THREE.MeshStandardMaterial({ color: "#3a201c", roughness: 0.9 });
+const ramenFloorMat = new THREE.MeshStandardMaterial({ color: "#4a2e22", roughness: 0.85 });
+const ramenProductMat = new THREE.MeshStandardMaterial({ color: "#d8543a", roughness: 0.6 });   // bowls / sauce bottles
+const ramenLanternMat = new THREE.MeshStandardMaterial({ color: "#ff6a4a", emissive: "#ff3a22", emissiveIntensity: 0.8, roughness: 0.5 });
+const ramenRugMat = new THREE.MeshStandardMaterial({ color: "#5a1f24", roughness: 0.95 });
+
+// --- Extra street-furniture materials (lamps, stalls, crates, signage) ------
+const lampPostMat = new THREE.MeshStandardMaterial({ color: "#22242c", roughness: 0.5, metalness: 0.5, flatShading: true });
+const lampHeadMat = new THREE.MeshStandardMaterial({ color: "#fff3cf", emissive: "#ffdc8c", emissiveIntensity: 0.9, roughness: 0.4 });
+const crateMat = new THREE.MeshStandardMaterial({ color: "#7a5a34", roughness: 0.85, flatShading: true });
+const stallCanvasMatA = new THREE.MeshStandardMaterial({ color: "#b8403a", roughness: 0.9, flatShading: true });
+const stallCanvasMatB = new THREE.MeshStandardMaterial({ color: "#2f6f8a", roughness: 0.9, flatShading: true });
+const pylonMat = new THREE.MeshStandardMaterial({ color: "#1c1e26", roughness: 0.6, metalness: 0.4, flatShading: true });
+const trashMat = new THREE.MeshStandardMaterial({ color: "#3a3d45", roughness: 0.7, metalness: 0.3, flatShading: true });
+
 // Window-grid facade: an emissive CanvasTexture of lit windows, reused for all
 // tower faces (we tile it per-face via texture.repeat clones below).
 function makeWindowTexture() {
@@ -431,15 +463,24 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
 //   colliders— 5 wall AABBs in SHOP-LOCAL space (back + 2 sides + 2 front
 //              segments); the caller translates them by the shop's world center.
 //   lights   — emissive bulb materials for update() to pulse (warm flicker).
-function makeCoffeeShop(W, D, signText, signFile) {
+function makeCoffeeShop(W, D, theme = {}) {
   const g = new THREE.Group();
   const wallT = 0.25;          // wall thickness
   const wallH = 3.2;           // interior wall height
   const door = 2.2;            // doorway gap width (in the +Z street wall)
   const localColliders = [];   // wall AABBs in shop-local space
 
+  // THEME with fall-throughs to the original kiosk look (so the existing call
+  // and visuals are byte-for-byte unchanged when no theme is passed).
+  const wallMat = theme.wallMat || shopWallMat;
+  const floorMat = theme.floorMat || shopFloorMat;
+  const productMat = theme.productMat || productMatA;
+  const rugThemeMat = theme.rugMat || rugMat;
+  const menuLabel = theme.menu || "MENU";
+  const menuFile = theme.menuFile || "sign-shop-menu.png";
+
   // FLOOR — timber slab filling the footprint, top flush at y=0.
-  const floor = box(W, 0.2, D, shopFloorMat, false);
+  const floor = box(W, 0.2, D, floorMat, false);
   floor.position.y = -0.1;
   floor.receiveShadow = true;
   g.add(floor);
@@ -452,7 +493,7 @@ function makeCoffeeShop(W, D, signText, signFile) {
   // Helper: a wall segment box + its matching AABB collider (shop-local).
   // Outer face uses the warm exterior mat; a thin inner liner reads bright.
   const addWall = (cx, cz, w, d) => {
-    const wm = box(w, wallH, d, shopWallMat);
+    const wm = box(w, wallH, d, wallMat);
     wm.position.set(cx, wallH / 2, cz);
     g.add(wm);
     localColliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
@@ -486,7 +527,7 @@ function makeCoffeeShop(W, D, signText, signFile) {
   }
 
   // COZY RUG on the floor (just inside the door).
-  const rug = new THREE.Mesh(planeGeo, rugMat);
+  const rug = new THREE.Mesh(planeGeo, rugThemeMat);
   rug.rotation.x = -Math.PI / 2;
   rug.scale.set(W * 0.42, D * 0.34, 1);
   rug.position.set(0, 0.012, D * 0.06);
@@ -520,7 +561,7 @@ function makeCoffeeShop(W, D, signText, signFile) {
   }
   // Instanced little boxes/bags/tins on the shelves (one InstancedMesh, reused
   // boxGeo) — coffee roast bags, tins and boxed tech/cups for the kiosk vibe.
-  const prodMats = [productMatA, productMatB, productMatC];
+  const prodMats = [productMat, productMatB, productMatC];
   for (let pm = 0; pm < 3; pm++) {
     const im = new THREE.InstancedMesh(boxGeo, prodMats[pm], 6);
     im.castShadow = false; im.receiveShadow = false;
@@ -564,8 +605,8 @@ function makeCoffeeShop(W, D, signText, signFile) {
 
   // WALL SIGNAGE inside — a little menu board on the back wall above the bar.
   const menu = artPanel(2.2, 1.1, "sign", {
-    text: "MENU", bg: "#1c2430", fg: "#ffd27a",
-    emissive: "#caa64f", emissiveIntensity: 0.7, file: "sign-shop-menu.png",
+    text: menuLabel, bg: "#1c2430", fg: "#ffd27a",
+    emissive: "#caa64f", emissiveIntensity: 0.7, file: menuFile,
   });
   menu.position.set(-W * 0.16, 2.2, -D / 2 + wallT + 0.06);
   g.add(menu);
@@ -581,6 +622,54 @@ function makeCoffeeShop(W, D, signText, signFile) {
     bulb.position.set(lx, wallH - 0.55, D * 0.02);
     g.add(bulb);
     bulbMats.push(bm);
+  }
+
+  // --- THEMED interior accent prop (one per shop variety) -------------------
+  // Distinct centrepiece so the three new shops don't feel like clones of the
+  // kiosk. All built from the shared geos; only 'lanterns' adds an emissive mat
+  // to the flicker list (so it pulses with the bulbs).
+  if (theme.accent === "plants") {
+    // A little cluster of terracotta pots with leafy shrubs by the front window.
+    for (const [px, pz, sc] of [[-W * 0.32, D * 0.22, 1.0], [-W * 0.22, D * 0.3, 0.8], [-W * 0.36, D * 0.34, 0.7]]) {
+      const pot = cyl(0.26 * sc, 0.5 * sc, productMat);
+      pot.position.set(px, 0.25 * sc, pz);
+      g.add(pot);
+      const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.42 * sc, 8, 6), plantLeafMat);
+      leaf.scale.set(1, 1.3, 1);
+      leaf.position.set(px, 0.75 * sc, pz);
+      leaf.castShadow = true;
+      g.add(leaf);
+    }
+  } else if (theme.accent === "books") {
+    // A tall freestanding bookcase against the +X side with rows of spines.
+    const caseX = W / 2 - wallT - 0.3;
+    const bookcase = box(0.3, 2.6, D * 0.5, shelfMat);
+    bookcase.position.set(caseX, 1.3, -D * 0.05);
+    g.add(bookcase);
+    const im = new THREE.InstancedMesh(boxGeo, productMat, 24);
+    im.castShadow = false; im.receiveShadow = false;
+    let i = 0;
+    for (const sy of [0.7, 1.25, 1.8, 2.35]) {
+      for (let k = 0; k < 6; k++) {
+        const pz = -D * 0.05 - D * 0.2 + k * (D * 0.4 / 6);
+        _q.identity();
+        _v.set(caseX - 0.18, sy, pz);
+        _s.set(0.16, 0.34 + (k % 2) * 0.06, D * 0.4 / 6 * 0.7);
+        _mtx.compose(_v, _q, _s);
+        im.setMatrixAt(i++, _mtx);
+      }
+    }
+    im.instanceMatrix.needsUpdate = true;
+    g.add(im);
+  } else if (theme.accent === "lanterns") {
+    // Three glowing paper lanterns strung over the bar (join the flicker list).
+    for (const lx of [-W * 0.3, 0, W * 0.3]) {
+      const lm = ramenLanternMat.clone();
+      const lantern = cyl(0.2, 0.34, lm, false);
+      lantern.position.set(lx, wallH - 0.8, -D * 0.18);
+      g.add(lantern);
+      bulbMats.push(lm);
+    }
   }
 
   return { group: g, colliders: localColliders, lights: bulbMats };
@@ -789,37 +878,171 @@ export function buildDowntown() {
     group.add(curb);
   }
 
-  // --- ENTERABLE COFFEE / TECH KIOSK ----------------------------------------
-  // A small walk-in shop tucked into the open pocket of the NE quadrant, between
-  // the flagship tower (collider Zmin -15.2) and the outer block (collider Xmin
-  // 15.5), along the north inner edge. Footprint X[7,15] Z[-22.25,-15.75] — all
-  // inside the ±23 setback, no overlap with buildings/lanes/props. The DOORWAY
-  // faces +Z (south), toward the plaza/avenue cross — the street side.
-  const SHOP_W = 8, SHOP_D = 6.5;
-  const shopX = 11, shopZ = -19; // world center of the shop within this tile
-  const shop = makeCoffeeShop(SHOP_W, SHOP_D, "BYTE BREW", "sign-bytebrew.png");
-  shop.group.position.set(shopX, 0, shopZ);
-  group.add(shop.group);
-  // Translate the shop's LOCAL wall AABBs into tile-local space and add them as
-  // real colliders. The doorway gap carries NO collider, so the player can walk
-  // in through the +Z opening.
-  for (const c of shop.colliders) {
-    colliders.push({
-      minX: c.minX + shopX, maxX: c.maxX + shopX,
-      minZ: c.minZ + shopZ, maxZ: c.maxZ + shopZ,
+  // --- FOUR ENTERABLE SHOPS (one tucked into each quadrant's inner pocket) ---
+  // Every quadrant has a small open pocket along an inner edge, between its
+  // flagship tower (collider ±15.2) and its outer mid-rise block (collider
+  // ±22.9), all inside the ±23 setback and clear of the wide avenue cross. Each
+  // pocket holds a walk-in shop whose DOORWAY faces the plaza/avenue (the street
+  // side); the makeCoffeeShop room is built with its door on +Z, so we YAW the
+  // whole shop so that door points at the tile centre per pocket.
+  //
+  // shopLights accumulates every shop's animated emissive mats (warm flicker).
+  const shopLights = [];
+
+  // Place one shop at world (sx,sz) rotated by `yaw` (maps its local +Z door to
+  // a world direction): 0→+Z, π→-Z, +π/2→+X, -π/2→-X. Rotates the group AND its
+  // wall AABBs (90°/180° keep them axis-aligned), then drops an exterior sign on
+  // the door face. Reuses makeCoffeeShop — no new geometry per shop.
+  function placeShop(sx, sz, W, D, yaw, theme, signText, signFile) {
+    const s = makeCoffeeShop(W, D, theme);
+    s.group.position.set(sx, 0, sz);
+    s.group.rotation.y = yaw;
+    group.add(s.group);
+    // Rotate each local wall AABB about the shop centre, then translate to tile
+    // space. For yaw ∈ {0, ±π/2, π} the rotated box stays axis-aligned, so we
+    // just rotate the corner extents and re-min/max.
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    for (const c of s.colliders) {
+      const xs = [c.minX, c.maxX], zs = [c.minZ, c.maxZ];
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const x of xs) for (const z of zs) {
+        // THREE.Group.rotation.y rotates local (x,z) → (x·cos+z·sin, −x·sin+z·cos).
+        const rx = x * cy + z * sy, rz = -x * sy + z * cy;
+        if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+        if (rz < minZ) minZ = rz; if (rz > maxZ) maxZ = rz;
+      }
+      colliders.push({ minX: minX + sx, maxX: maxX + sx, minZ: minZ + sz, maxZ: maxZ + sz });
+    }
+    // Exterior shop SIGN above the doorway, on the door face, facing outward.
+    // The door face's outward offset is D/2 along the shop's local +Z, rotated
+    // by yaw; the sign's own normal must match (artPanel faces +Z by default).
+    const off = D / 2 + 0.08;
+    const sign = artPanel(3.0, 1.0, "sign", {
+      text: signText, bg: "#241a12", fg: "#ffd27a",
+      emissive: "#caa64f", emissiveIntensity: 0.85, file: signFile,
     });
+    // place at door-face midpoint (local (0, 3.55, off) rotated by yaw)
+    sign.position.set(sx + off * sy, 3.55, sz + off * cy);
+    sign.rotation.y = yaw;
+    group.add(sign);
+    for (const lm of s.lights) shopLights.push(lm);
   }
-  // OUTSIDE shop SIGN above the door, facing the street (+Z). artPanel faces +Z
-  // by default and signCanvas draws text left-to-right, so it reads un-mirrored
-  // on the street-facing normal — no rotation that would flip it.
-  const shopSign = artPanel(3.0, 1.0, "sign", {
-    text: "BYTE BREW", bg: "#241a12", fg: "#ffd27a",
-    emissive: "#caa64f", emissiveIntensity: 0.85, file: "sign-bytebrew.png",
-  });
-  shopSign.position.set(shopX, 3.55, shopZ + SHOP_D / 2 + 0.08);
-  group.add(shopSign);
-  // Hook the shop's hanging bulbs into the ambient animation (warm flicker).
-  const shopLights = shop.lights;
+
+  // 1) BYTE BREW — original coffee/tech kiosk, NE pocket, door faces +Z (south).
+  placeShop(11, -19, 8, 6.5, 0, {}, "BYTE BREW", "sign-bytebrew.png");
+  // 2) PAGE & PIXEL — bookshop, SW pocket along the south inner edge, door -Z.
+  placeShop(-11, 19, 8, 6.5, Math.PI, {
+    wallMat: bookWallMat, floorMat: bookFloorMat, productMat: bookProductMat,
+    rugMat: bookRugMat, accent: "books", menu: "READS", menuFile: "sign-shop-reads.png",
+  }, "PAGE & PIXEL", "sign-pagepixel.png");
+  // 3) FERN & FLORA — plant/florist, W pocket along the west inner edge, door +X.
+  placeShop(-19, 11, 8, 6.5, Math.PI / 2, {
+    wallMat: plantWallMat, floorMat: plantFloorMat, productMat: plantProductMat,
+    rugMat: plantRugMat, accent: "plants", menu: "PLANTS", menuFile: "sign-shop-plants.png",
+  }, "FERN & FLORA", "sign-fernflora.png");
+  // 4) NOODLE BAR — ramen counter, E pocket along the east inner edge, door -X.
+  placeShop(19, -11, 8, 6.5, -Math.PI / 2, {
+    wallMat: ramenWallMat, floorMat: ramenFloorMat, productMat: ramenProductMat,
+    rugMat: ramenRugMat, accent: "lanterns", menu: "RAMEN", menuFile: "sign-shop-ramen.png",
+  }, "NOODLE BAR", "sign-noodlebar.png");
+
+  // --- Extra street-level flavour around the now-lived-in quadrants ----------
+  // All props are decorative (NO colliders), reuse shared geos, and sit clear of
+  // the four shop footprints, the tower colliders, and the >6 m avenue lanes.
+
+  // Street lamps: a tall post + a glowing head. Heads join shopLights so they
+  // pulse warmly with the other emissive props (no extra update branch). Placed
+  // at plaza-corner setbacks (±8) and mid-quadrant edges, all off the lanes and
+  // out of the shop footprints.
+  const lampSpots = [
+    [-8, -8], [8, -8], [-8, 8], [8, 8],     // four plaza corners by the cross
+    [-8, -20], [8, -20], [-8, 20], [8, 20], // along the N/S inner kerbs
+    [-20, -8], [20, -8], [-20, 8], [20, 8], // along the E/W inner kerbs
+  ];
+  for (const [lx, lz] of lampSpots) {
+    const post = cyl(0.12, 4.2, lampPostMat);
+    post.position.set(lx, 2.1, lz);
+    group.add(post);
+    const arm = box(0.12, 0.12, 1.0, lampPostMat, false);
+    arm.position.set(lx, 4.0, lz + 0.4);
+    group.add(arm);
+    const hm = lampHeadMat.clone();
+    const head = box(0.5, 0.28, 0.5, hm, false);
+    head.position.set(lx, 3.95, lz + 0.85);
+    group.add(head);
+    shopLights.push(hm);
+  }
+
+  // A covered MARKET STALL (striped canopy on poles + a produce table) in the
+  // open SW plaza corner, facing the cross. Sits at X[-9,-5]ish, Z[8,10] — clear
+  // of the SW bookshop (X[-15,-7] Z[15.75,22.25]) and the lanes.
+  {
+    const sx = -7.5, sz = 13;
+    const table = box(3.0, 0.9, 1.4, crateMat);
+    table.position.set(sx, 0.45, sz);
+    group.add(table);
+    // sloped striped canopy (two angled boxes for an awning peak)
+    for (const [side, mat] of [[-1, stallCanvasMatA], [1, stallCanvasMatB]]) {
+      const awn = box(1.7, 0.08, 1.8, mat, false);
+      awn.position.set(sx + side * 0.8, 2.55, sz);
+      awn.rotation.z = side * 0.35;
+      group.add(awn);
+    }
+    for (const px of [-1.3, 1.3]) for (const pz of [-0.6, 0.6]) {
+      const pole = cyl(0.06, 2.4, pylonMat, false);
+      pole.position.set(sx + px, 1.2, sz + pz);
+      group.add(pole);
+    }
+    // produce crates on the table (instanced little boxes).
+    const im = new THREE.InstancedMesh(boxGeo, productMatB, 4);
+    im.castShadow = false; im.receiveShadow = false;
+    let i = 0;
+    for (const dx of [-0.9, -0.3, 0.3, 0.9]) {
+      _q.identity();
+      _v.set(sx + dx, 1.05, sz);
+      _s.set(0.4, 0.3, 0.9);
+      _mtx.compose(_v, _q, _s);
+      im.setMatrixAt(i++, _mtx);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    group.add(im);
+  }
+
+  // Stacked delivery CRATES beside two shop entrances (lived-in clutter).
+  for (const [cx, cz] of [[5.5, -16], [16, -5.5]]) {
+    for (const [dx, dy, dz] of [[0, 0.35, 0], [0.05, 1.0, 0.1], [-0.6, 0.4, 0.4]]) {
+      const crate = box(0.9, 0.7, 0.9, crateMat);
+      crate.position.set(cx + dx, dy, cz + dz);
+      crate.rotation.y = dz * 0.6;
+      group.add(crate);
+    }
+  }
+
+  // A few TRASH/RECYCLE bins tucked against kerbs.
+  for (const [bx, bz] of [[-6.4, -13], [6.4, 13], [13, -6.4]]) {
+    const bin = cyl(0.4, 1.0, trashMat);
+    bin.position.set(bx, 0.5, bz);
+    group.add(bin);
+    const lid = cyl(0.45, 0.1, metalMat, false);
+    lid.position.set(bx, 1.02, bz);
+    group.add(lid);
+  }
+
+  // A DIRECTORY PYLON (lit wayfinding sign) at the SE plaza corner, angled to the
+  // cross. Off the lanes (|x|,|z| > 6) and clear of footprints.
+  {
+    const px = 8.5, pz = 8.5;
+    const postP = box(0.3, 3.0, 0.3, pylonMat);
+    postP.position.set(px, 1.5, pz);
+    group.add(postP);
+    const dir = artPanel(1.6, 2.0, "sign", {
+      text: "DOWNTOWN", bg: "#10202e", fg: "#7fe0ff",
+      emissive: "#1c6fb0", emissiveIntensity: 0.8, file: "sign-directory.png",
+    });
+    dir.position.set(px, 3.4, pz);
+    dir.rotation.y = -Math.PI / 4; // face the plaza diagonally
+    group.add(dir);
+  }
 
   // --- Ambient animation ----------------------------------------------------
   let t = 0;

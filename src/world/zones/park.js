@@ -154,6 +154,32 @@ const flowerDotMats = flowerColors.map(
   (col) => new THREE.MeshStandardMaterial({ color: col, roughness: 0.7, emissive: col, emissiveIntensity: 0.12, flatShading: true })
 );
 
+// --- Garden centre / flower shop (enterable) materials (created ONCE) --------
+const gardenWallMat = new THREE.MeshStandardMaterial({ color: "#e6efe0", roughness: 0.92 }); // pale greenhouse plaster
+const gardenTrimMat = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.7 });  // leaf-green trim
+const gardenFloorMat = new THREE.MeshStandardMaterial({ color: "#b7a07a", roughness: 0.9 });  // terracotta-tan floor
+const gardenRoofMat = new THREE.MeshStandardMaterial({ color: "#cfe6d8", roughness: 0.8 });   // pale glasshouse roof
+const potMat = new THREE.MeshStandardMaterial({ color: "#b05a3a", roughness: 0.85, flatShading: true }); // terracotta pots
+const soilMat = new THREE.MeshStandardMaterial({ color: "#3a2a1c", roughness: 1 });            // potting soil
+const gardenAwningMat = new THREE.MeshStandardMaterial({ color: "#3f9d5a", roughness: 0.7, side: THREE.DoubleSide });
+// --- Park tea house / café (enterable) materials (created ONCE) --------------
+const teaWallMat = new THREE.MeshStandardMaterial({ color: "#f3e7d2", roughness: 0.9 });   // warm cream
+const teaTrimMat = new THREE.MeshStandardMaterial({ color: "#7a4a86", roughness: 0.7 });    // soft plum trim
+const teaFloorMat = new THREE.MeshStandardMaterial({ color: "#9a7048", roughness: 0.85 });  // honey timber
+const teaRoofMat = new THREE.MeshStandardMaterial({ color: "#efe6da", roughness: 0.85 });   // pale ceiling
+const teaTableTopMat = new THREE.MeshStandardMaterial({ color: "#d8c8a8", roughness: 0.6 }); // light café tabletop
+const teacupMat = new THREE.MeshStandardMaterial({ color: "#fbf6ee", roughness: 0.5, flatShading: true }); // porcelain
+const teaAwningMat = new THREE.MeshStandardMaterial({ color: "#8a5a96", roughness: 0.7, side: THREE.DoubleSide });
+const teaAwningStripeMat = new THREE.MeshStandardMaterial({ color: "#f6f1e7", roughness: 0.7, side: THREE.DoubleSide });
+// Shared crate/planter/stall flavour materials.
+const crateMat = new THREE.MeshStandardMaterial({ color: "#9c6b3e", roughness: 0.85 });
+const planterMat = new THREE.MeshStandardMaterial({ color: "#7c5a3a", roughness: 0.9 });
+const stallCanvasA = new THREE.MeshStandardMaterial({ color: "#c4524a", roughness: 0.75, side: THREE.DoubleSide });
+const stallCanvasB = new THREE.MeshStandardMaterial({ color: "#e9e2d2", roughness: 0.75, side: THREE.DoubleSide });
+const produceMats = ["#e34d4d", "#f0a93a", "#7bbf4a", "#d8b13a"].map(
+  (col) => new THREE.MeshStandardMaterial({ color: col, roughness: 0.6, flatShading: true })
+);
+
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const trunkGeo = new THREE.CylinderGeometry(0.16, 0.22, 1.6, 8);
 const blobGeo = new THREE.IcosahedronGeometry(1, 0); // unit foliage blob, scaled per use
@@ -562,6 +588,356 @@ function makeSnackShop(W = 8.0, D = 6.5, wallH = 3.0, T = 0.25, door = 2.2) {
   return { group: g, lights };
 }
 
+// An ENTERABLE garden centre / flower shop: a bright little glasshouse the player
+// can walk INTO. Same construction grammar as the snack shop — back + two side
+// walls + two short front segments flanking a centred doorway GAP, a tiled FLOOR
+// and a flat ROOF/ceiling. Themed interior: a long potting BENCH with terracotta
+// pots of flowers, tiered plant SHELVES on the back wall, a seed-rack, a watering
+// can and a green pendant lamp. Front faces −Z (the lane); the caller mounts the
+// outdoor sign + awning above the door and pushes matching wall colliders (NO
+// collider across the doorway). Returns { group, lights }.
+function makeGardenShop(W = 6.6, D = 6.0, wallH = 3.0, T = 0.25, door = 2.0) {
+  const g = new THREE.Group();
+  const hw = W / 2, hd = D / 2;
+
+  const floor = box(W, 0.12, D, gardenFloorMat);
+  floor.position.set(0, 0.06, 0);
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  const roof = box(W + 0.4, 0.2, D + 0.4, gardenRoofMat);
+  roof.position.set(0, wallH + 0.1, 0);
+  roof.castShadow = true;
+  roof.receiveShadow = true;
+  g.add(roof);
+
+  // Walls (caller adds matching AABB colliders).
+  const wallY = wallH / 2;
+  const back = box(W, wallH, T, gardenWallMat);
+  back.position.set(0, wallY, hd - T / 2);
+  g.add(back);
+  const left = box(T, wallH, D, gardenWallMat);
+  left.position.set(-hw + T / 2, wallY, 0);
+  g.add(left);
+  const right = box(T, wallH, D, gardenWallMat);
+  right.position.set(hw - T / 2, wallY, 0);
+  g.add(right);
+  const segW = (W - door) / 2;
+  const segCx = door / 2 + segW / 2;
+  const frontL = box(segW, wallH, T, gardenWallMat);
+  frontL.position.set(-segCx, wallY, -hd + T / 2);
+  g.add(frontL);
+  const frontR = box(segW, wallH, T, gardenWallMat);
+  frontR.position.set(segCx, wallY, -hd + T / 2);
+  g.add(frontR);
+  const lintel = box(door + 0.3, 0.4, T, gardenTrimMat);
+  lintel.position.set(0, wallH - 0.2, -hd + T / 2);
+  g.add(lintel);
+  for (const m of [back, frontL, frontR]) {
+    const band = box(m.scale.x, 0.18, T + 0.02, gardenTrimMat);
+    band.position.set(m.position.x, wallH - 0.09, m.position.z);
+    g.add(band);
+  }
+
+  // Striped (solid green) awning over the doorway outside (−Z).
+  const awY = wallH - 0.55, awZ = -hd - 0.5;
+  const awning = box(door + 1.4, 0.08, 1.1, gardenAwningMat);
+  awning.position.set(0, awY, awZ);
+  awning.rotation.x = -0.35;
+  awning.castShadow = true;
+  g.add(awning);
+
+  // Potting BENCH along the back, with terracotta pots + bright blooms on top.
+  const bench = box(4.0, 0.9, 0.8, counterMat);
+  bench.position.set(-0.2, 0.5, hd - 1.1);
+  bench.castShadow = true;
+  g.add(bench);
+  const benchTop = box(4.2, 0.1, 0.9, shelfMat);
+  benchTop.position.set(-0.2, 1.0, hd - 1.1);
+  g.add(benchTop);
+  const potGeo = new THREE.CylinderGeometry(0.2, 0.15, 0.32, 10);
+  const bloomGeo = new THREE.IcosahedronGeometry(0.18, 0);
+  const potXs = [-1.8, -1.1, -0.4, 0.3, 1.0, 1.7];
+  for (let i = 0; i < potXs.length; i++) {
+    const px = potXs[i] - 0.2;
+    const pot = new THREE.Mesh(potGeo, potMat);
+    pot.position.set(px, 1.22, hd - 1.1);
+    pot.castShadow = true;
+    g.add(pot);
+    const bloom = new THREE.Mesh(bloomGeo, flowerDotMats[i % flowerDotMats.length]);
+    bloom.position.set(px, 1.5, hd - 1.1);
+    g.add(bloom);
+  }
+
+  // Tiered plant SHELVES on the left wall, rows of small potted greens.
+  const potS = new THREE.CylinderGeometry(0.13, 0.1, 0.22, 8);
+  const greenS = new THREE.IcosahedronGeometry(0.14, 0);
+  for (const sy of [1.0, 1.8]) {
+    const shelf = box(0.45, 0.06, 3.4, shelfMat);
+    shelf.position.set(-hw + 0.4, sy, 0.1);
+    g.add(shelf);
+    for (const z of [-1.2, -0.5, 0.2, 0.9, 1.5]) {
+      const pot = new THREE.Mesh(potS, potMat);
+      pot.position.set(-hw + 0.4, sy + 0.14, z);
+      g.add(pot);
+      const grn = new THREE.Mesh(greenS, bushMat);
+      grn.position.set(-hw + 0.4, sy + 0.34, z);
+      g.add(grn);
+    }
+  }
+
+  // A seed/flower display rack by the door + a watering can prop.
+  const sackZ = -hd + 1.2;
+  for (let i = 0; i < 3; i++) {
+    const sack = box(0.5, 0.5, 0.5, soilMat);
+    sack.position.set(hw - 0.7 - i * 0.0, 0.31, sackZ - i * 0.6);
+    sack.castShadow = true;
+    g.add(sack);
+  }
+  const canBody = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.3, 10), metalMat);
+  canBody.position.set(hw - 0.7, 1.15, -hd + 1.2);
+  g.add(canBody);
+
+  // Floor pots of tall blooms flanking the entrance inside.
+  for (const sx of [-hw + 0.9, hw - 0.9]) {
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.22, 0.5, 10), potMat);
+    pot.position.set(sx, 0.31, -hd + 0.9);
+    pot.castShadow = true;
+    g.add(pot);
+    const stem = box(0.06, 0.7, 0.06, gardenTrimMat);
+    stem.position.set(sx, 0.85, -hd + 0.9);
+    g.add(stem);
+    const head = new THREE.Mesh(bloomGeo, flowerDotMats[1]);
+    head.position.set(sx, 1.25, -hd + 0.9);
+    head.scale.setScalar(1.4);
+    g.add(head);
+  }
+
+  // Back-wall sign + a green pendant bulb.
+  const board = artPanel(2.0, 0.9, "sign", {
+    text: "BLOOMS", bg: "#2d6a4f", fg: "#eaf7d8", accent: "#f0c64a",
+    file: "sign-park-garden-menu.png", emissiveIntensity: 0.4,
+  });
+  board.position.set(1.4, 2.1, hd - T - 0.02);
+  board.rotation.y = Math.PI;
+  g.add(board);
+
+  const lights = [];
+  const cord = box(0.03, 0.5, 0.03, metalMat);
+  cord.position.set(0, wallH - 0.25, -0.4);
+  g.add(cord);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), kioskBulbMat);
+  bulb.position.set(0, wallH - 0.55, -0.4);
+  g.add(bulb);
+  lights.push(bulb);
+
+  return { group: g, lights };
+}
+
+// An ENTERABLE park tea house / café: a snug room the player can walk INTO. Same
+// wall grammar (back + sides + two front segments flanking a centred doorway
+// GAP), timber FLOOR + flat ROOF. Interior: a service counter with a pastry case,
+// two small round café TABLES each with porcelain cups, a wall menu, a striped
+// awning outside and warm pendant bulbs. Front faces −Z; the caller mounts the
+// sign and pushes matching wall colliders (NO collider across the doorway).
+// Returns { group, lights }.
+function makeTeaHouse(W = 7.0, D = 5.6, wallH = 3.0, T = 0.25, door = 2.2) {
+  const g = new THREE.Group();
+  const hw = W / 2, hd = D / 2;
+
+  const floor = box(W, 0.12, D, teaFloorMat);
+  floor.position.set(0, 0.06, 0);
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  const roof = box(W + 0.4, 0.2, D + 0.4, teaRoofMat);
+  roof.position.set(0, wallH + 0.1, 0);
+  roof.castShadow = true;
+  roof.receiveShadow = true;
+  g.add(roof);
+
+  const wallY = wallH / 2;
+  const back = box(W, wallH, T, teaWallMat);
+  back.position.set(0, wallY, hd - T / 2);
+  g.add(back);
+  const left = box(T, wallH, D, teaWallMat);
+  left.position.set(-hw + T / 2, wallY, 0);
+  g.add(left);
+  const right = box(T, wallH, D, teaWallMat);
+  right.position.set(hw - T / 2, wallY, 0);
+  g.add(right);
+  const segW = (W - door) / 2;
+  const segCx = door / 2 + segW / 2;
+  const frontL = box(segW, wallH, T, teaWallMat);
+  frontL.position.set(-segCx, wallY, -hd + T / 2);
+  g.add(frontL);
+  const frontR = box(segW, wallH, T, teaWallMat);
+  frontR.position.set(segCx, wallY, -hd + T / 2);
+  g.add(frontR);
+  const lintel = box(door + 0.3, 0.4, T, teaTrimMat);
+  lintel.position.set(0, wallH - 0.2, -hd + T / 2);
+  g.add(lintel);
+  for (const m of [back, frontL, frontR]) {
+    const band = box(m.scale.x, 0.18, T + 0.02, teaTrimMat);
+    band.position.set(m.position.x, wallH - 0.09, m.position.z);
+    g.add(band);
+  }
+
+  // Striped awning over the doorway outside (−Z).
+  const awY = wallH - 0.55, awZ = -hd - 0.5;
+  const awning = box(door + 1.6, 0.08, 1.15, teaAwningMat);
+  awning.position.set(0, awY, awZ);
+  awning.rotation.x = -0.35;
+  awning.castShadow = true;
+  g.add(awning);
+  for (let i = -1; i <= 1; i++) {
+    const stripe = box(0.55, 0.085, 1.15, teaAwningStripeMat);
+    stripe.position.set(i * 1.2, awY + 0.002, awZ);
+    stripe.rotation.x = -0.35;
+    g.add(stripe);
+  }
+
+  // Service COUNTER along the back with a slate top + a small pastry case.
+  const counterBody = box(3.8, 1.0, 0.8, counterMat);
+  counterBody.position.set(0.6, 0.56, hd - 1.0);
+  counterBody.castShadow = true;
+  g.add(counterBody);
+  const counterTop = box(4.0, 0.1, 0.95, counterTopMat);
+  counterTop.position.set(0.6, 1.11, hd - 0.95);
+  g.add(counterTop);
+  const pastryCase = box(1.6, 0.5, 0.6, caseGlassMat);
+  pastryCase.position.set(-0.2, 1.42, hd - 0.95);
+  g.add(pastryCase);
+  for (let i = 0; i < 3; i++) {
+    const cake = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.12, 10), treatMats[i % treatMats.length]);
+    cake.position.set(-0.6 + i * 0.4, 1.36, hd - 0.95);
+    g.add(cake);
+  }
+  // An urn / tea boiler on the counter.
+  const urn = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 0.5, 12), metalMat);
+  urn.position.set(2.0, 1.4, hd - 0.95);
+  g.add(urn);
+
+  // Two round café TABLES with porcelain cups + a couple of stools each.
+  const tableTopGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.08, 16);
+  const tableLegGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.7, 8);
+  const cupGeo = new THREE.CylinderGeometry(0.07, 0.05, 0.1, 10);
+  const lights = [];
+  for (const [tx, tz] of [[-1.9, -0.6], [1.9, -1.0]]) {
+    const top = new THREE.Mesh(tableTopGeo, teaTableTopMat);
+    top.position.set(tx, 0.78, tz);
+    top.castShadow = true;
+    g.add(top);
+    const leg = new THREE.Mesh(tableLegGeo, metalMat);
+    leg.position.set(tx, 0.4, tz);
+    g.add(leg);
+    for (const [dx, dz] of [[-0.28, 0.1], [0.28, -0.1]]) {
+      const cup = new THREE.Mesh(cupGeo, teacupMat);
+      cup.position.set(tx + dx, 0.87, tz + dz);
+      g.add(cup);
+    }
+    for (const [sx, sz] of [[tx - 0.85, tz], [tx + 0.85, tz]]) {
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.09, 12), stoolSeatMat);
+      seat.position.set(sx, 0.5, sz);
+      g.add(seat);
+      const sleg = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, 0.5, 8), metalMat);
+      sleg.position.set(sx, 0.25, sz);
+      g.add(sleg);
+    }
+  }
+
+  // Wall menu board on the back wall.
+  const menu = artPanel(2.0, 1.0, "sign", {
+    text: "TEA & CAKE", bg: "#5a2e63", fg: "#f7e9c8", accent: "#f0c64a",
+    file: "sign-park-tea-menu.png", emissiveIntensity: 0.4,
+  });
+  menu.position.set(-1.8, 2.05, hd - T - 0.02);
+  menu.rotation.y = Math.PI;
+  g.add(menu);
+
+  // Two warm pendant bulbs.
+  for (const lx of [-1.6, 1.6]) {
+    const cord = box(0.03, 0.5, 0.03, metalMat);
+    cord.position.set(lx, wallH - 0.25, -0.4);
+    g.add(cord);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), kioskBulbMat);
+    bulb.position.set(lx, wallH - 0.55, -0.4);
+    g.add(bulb);
+    lights.push(bulb);
+  }
+
+  return { group: g, lights };
+}
+
+// A small open-air market STALL (street flavour, decorative): four posts, a
+// striped canvas roof, a plank counter and a few produce crates with instanced
+// produce blobs. No interior; the caller adds ONE tight collider for the body.
+function makeStall() {
+  const g = new THREE.Group();
+  // Posts.
+  for (const [x, z] of [[-1.2, -0.7], [1.2, -0.7], [-1.2, 0.7], [1.2, 0.7]]) {
+    const post = box(0.1, 1.9, 0.1, woodMat);
+    post.position.set(x, 0.95, z);
+    g.add(post);
+  }
+  // Plank counter.
+  const counter = box(2.6, 0.6, 1.4, woodMat);
+  counter.position.set(0, 0.7, 0);
+  counter.castShadow = true;
+  g.add(counter);
+  // Sloped striped canvas roof (two halves).
+  const roofA = box(2.8, 0.06, 0.9, stallCanvasA);
+  roofA.position.set(0, 2.0, -0.45);
+  roofA.rotation.x = 0.32;
+  roofA.castShadow = true;
+  g.add(roofA);
+  const roofB = box(2.8, 0.06, 0.9, stallCanvasB);
+  roofB.position.set(0, 2.0, 0.45);
+  roofB.rotation.x = -0.32;
+  roofB.castShadow = true;
+  g.add(roofB);
+  // Produce crates on the counter + instanced produce blobs.
+  const blobG = new THREE.IcosahedronGeometry(0.11, 0);
+  for (let c = 0; c < 3; c++) {
+    const crate = box(0.7, 0.3, 0.55, crateMat);
+    crate.position.set(-0.9 + c * 0.9, 1.15, 0);
+    g.add(crate);
+    const mat = produceMats[c % produceMats.length];
+    const inst = new THREE.InstancedMesh(blobG, mat, 5);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
+    let n = 0;
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 0; j++) {
+      if (n >= 5) break;
+      p.set(-0.9 + c * 0.9 + i * 0.16, 1.34, j * 0.16 + 0.08);
+      m.compose(p, q, s);
+      inst.setMatrixAt(n++, m);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    g.add(inst);
+  }
+  return g;
+}
+
+// A simple terracotta PLANTER box with a couple of bushy greens (decorative).
+function makePlanter() {
+  const g = new THREE.Group();
+  const boxBody = box(1.4, 0.5, 0.55, planterMat);
+  boxBody.position.y = 0.25;
+  boxBody.castShadow = true;
+  g.add(boxBody);
+  const soil = box(1.3, 0.08, 0.45, soilMat);
+  soil.position.y = 0.5;
+  g.add(soil);
+  for (const sx of [-0.4, 0.1, 0.5]) {
+    const grn = new THREE.Mesh(bushGeo, bushMat);
+    grn.position.set(sx, 0.7, 0);
+    grn.scale.set(0.34, 0.42, 0.34);
+    grn.castShadow = true;
+    g.add(grn);
+  }
+  return g;
+}
+
 export function buildPark() {
   const group = new THREE.Group();
   const colliders = [];
@@ -691,7 +1067,7 @@ export function buildPark() {
   // the pavilion footprint X∈[-21.85,-14.15], Z∈[-10.35,-3.65] after its setback.)
   const bushSpots = [
     [-12, -9], [-12, -3], [16, -6], [20, -2], [-8, 18], [8, 18],
-    [-22, 18], [22, 8], [-14, 22], [14, 22], [-4, -22], [6, -22],
+    [-22, 18], [-14, 22], [14, 22], [-4, -22], [6, -22],
     [22, -16], [-22, -16],
   ];
   const bushes = new THREE.InstancedMesh(bushGeo, bushMat, bushSpots.length);
@@ -906,6 +1282,106 @@ export function buildPark() {
   kioskSign.position.set(kx, kWallH + 0.55, kz - kHD - 0.06);
   kioskSign.rotation.y = Math.PI; // face −Z (the street/lane)
   group.add(kioskSign);
+
+  // --- Garden centre / flower shop (E side): an ENTERABLE shop ---------------
+  // Footprint W×D = 6.6×6.0 centred at (gcx, gcz). Its FRONT (−Z, doorway +
+  // awning + sign) faces the central green. Whole thing stays inside [-23,23]:
+  // X∈[15.7,22.3], Z∈[2,8], clear of the pond, fountain, picnic table (21,-7),
+  // beds and the perimeter trees. Reuses the shared kiosk bulb material so its
+  // pendant flickers with the others in update().
+  const gcx = 19, gcz = 5;
+  const gcW = 6.6, gcD = 6.0, gcWallH = 3.0, gcT = 0.25, gcDoor = 2.0;
+  const garden = makeGardenShop(gcW, gcD, gcWallH, gcT, gcDoor);
+  garden.group.position.set(gcx, 0, gcz);
+  group.add(garden.group);
+  const gcHW = gcW / 2, gcHD = gcD / 2;
+  const gcSegW = (gcW - gcDoor) / 2;
+  const gcSegCx = gcDoor / 2 + gcSegW / 2;
+  addCollider(colliders, gcx, gcz + gcHD - gcT / 2, gcW, gcT);            // back (+Z)
+  addCollider(colliders, gcx - gcHW + gcT / 2, gcz, gcT, gcD);            // left (−X)
+  addCollider(colliders, gcx + gcHW - gcT / 2, gcz, gcT, gcD);            // right (+X)
+  addCollider(colliders, gcx - gcSegCx, gcz - gcHD + gcT / 2, gcSegW, gcT); // front-left
+  addCollider(colliders, gcx + gcSegCx, gcz - gcHD + gcT / 2, gcSegW, gcT); // front-right
+  // (Doorway GAP at X∈[gcx−1, gcx+1] on the −Z line — no collider, walkable.)
+  const gardenSign = artPanel(2.8, 1.0, "sign", {
+    text: "GREENHOUSE", bg: "#3f9d5a", fg: "#f4ffe6",
+    accent: "#f0c64a", emissiveIntensity: 0.55, file: "sign-park-garden.png",
+  });
+  gardenSign.position.set(gcx, gcWallH + 0.55, gcz - gcHD - 0.06);
+  gardenSign.rotation.y = Math.PI; // face −Z (the green)
+  group.add(gardenSign);
+
+  // --- Park tea house / café (N side): an ENTERABLE shop --------------------
+  // Footprint W×D = 7.0×5.6 centred at (tcx, tcz). FRONT (−Z) faces the green.
+  // X∈[-3.5,3.5], Z∈[16.2,21.8] — inside [-23,23], clear of the north bushes
+  // (±8,18), trees and beds, and the N–S/E–W lanes. Reuses the shared bulb mat.
+  const tcx = 0, tcz = 19;
+  const tcW = 7.0, tcD = 5.6, tcWallH = 3.0, tcT = 0.25, tcDoor = 2.2;
+  const tea = makeTeaHouse(tcW, tcD, tcWallH, tcT, tcDoor);
+  tea.group.position.set(tcx, 0, tcz);
+  group.add(tea.group);
+  const tcHW = tcW / 2, tcHD = tcD / 2;
+  const tcSegW = (tcW - tcDoor) / 2;
+  const tcSegCx = tcDoor / 2 + tcSegW / 2;
+  addCollider(colliders, tcx, tcz + tcHD - tcT / 2, tcW, tcT);            // back (+Z)
+  addCollider(colliders, tcx - tcHW + tcT / 2, tcz, tcT, tcD);            // left (−X)
+  addCollider(colliders, tcx + tcHW - tcT / 2, tcz, tcT, tcD);            // right (+X)
+  addCollider(colliders, tcx - tcSegCx, tcz - tcHD + tcT / 2, tcSegW, tcT); // front-left
+  addCollider(colliders, tcx + tcSegCx, tcz - tcHD + tcT / 2, tcSegW, tcT); // front-right
+  // (Doorway GAP at X∈[tcx−1.1, tcx+1.1] on the −Z line — no collider, walkable.)
+  const teaSign = artPanel(3.0, 1.0, "sign", {
+    text: "TEA HOUSE", bg: "#7a4a86", fg: "#f7e9c8",
+    accent: "#ffd86b", emissiveIntensity: 0.55, file: "sign-park-tea.png",
+  });
+  teaSign.position.set(tcx, tcWallH + 0.55, tcz - tcHD - 0.06);
+  teaSign.rotation.y = Math.PI; // face −Z (the green)
+  group.add(teaSign);
+
+  // --- Street-level FLAVOUR: market stalls, planters, crates, extra lamps ----
+  // Two small open-air produce stalls on the lawn near the lane edges (front of
+  // the new shops), each with a tight body collider. Kept off the doorways.
+  const stallSpots = [[14, 6, Math.PI / 2], [-9, 16, 0]];
+  for (const [x, z, ry] of stallSpots) {
+    const stall = makeStall();
+    stall.position.set(x, 0, z);
+    stall.rotation.y = ry;
+    group.add(stall);
+    // Stall body is ~2.6 (X) × 1.8 (Z); swap when rotated 90° so the AABB fits.
+    const rot = Math.abs(Math.cos(ry)) < 0.5;
+    addCollider(colliders, x, z, rot ? 1.8 : 2.6, rot ? 2.6 : 1.8);
+  }
+
+  // Terracotta planters flanking the new shop entrances + along the path. Tight
+  // colliders (they are solid little boxes the player walks around).
+  const planterSpots = [
+    [16.4, 1.4, 0], [21.6, 1.4, 0],   // flank the garden shop's −Z doorway
+    [-3.6, 15.8, 0], [3.6, 15.8, 0],  // flank the tea house's −Z doorway
+    [11.5, -14.0, 0], [-15, 4, 0],    // a couple along the paths
+  ];
+  for (const [x, z, ry] of planterSpots) {
+    const pl = makePlanter();
+    pl.position.set(x, 0, z);
+    pl.rotation.y = ry;
+    group.add(pl);
+    addCollider(colliders, x, z, ry === 0 ? 1.4 : 0.55, ry === 0 ? 0.55 : 1.4);
+  }
+
+  // A few wooden crates stacked as lived-in clutter near the stalls (decorative,
+  // small — no colliders).
+  for (const [x, z, s] of [[12.5, 8.2, 1], [11.8, 8.0, 0.8], [-11, 14.5, 1], [-6.5, 17.5, 0.85]]) {
+    const crate = box(0.7 * s, 0.7 * s, 0.7 * s, crateMat);
+    crate.position.set(x, 0.35 * s, z);
+    crate.castShadow = true;
+    group.add(crate);
+  }
+
+  // Two extra path lamps lighting the new shop fronts (slim; tight colliders).
+  for (const [x, z] of [[19, 9], [5, 16]]) {
+    const lamp = makeLamp();
+    lamp.position.set(x, 0, z);
+    group.add(lamp);
+    addCollider(colliders, x, z, 0.4, 0.4);
+  }
 
   // Reusable scratch objects for the spray animation (NO per-frame alloc).
   const sprayM = new THREE.Matrix4();

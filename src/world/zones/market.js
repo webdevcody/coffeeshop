@@ -47,6 +47,15 @@ const chalkFrameMat = new THREE.MeshStandardMaterial({ color: "#6b4a28", roughne
 const hangMat = new THREE.MeshStandardMaterial({ color: "#9a3b28", roughness: 0.7, flatShading: true });
 const umbrellaPoleMat = new THREE.MeshStandardMaterial({ color: "#cfc7b6", roughness: 0.7 });
 
+// --- Street-flavor prop materials (benches, planters, barrels, signs) -------
+const benchSlatMat = new THREE.MeshStandardMaterial({ color: "#6e4a2a", roughness: 0.85 });
+const planterMat = new THREE.MeshStandardMaterial({ color: "#7d6f63", roughness: 0.95, flatShading: true });
+const soilMat = new THREE.MeshStandardMaterial({ color: "#3a2c20", roughness: 1 });
+const leafMat = new THREE.MeshStandardMaterial({ color: "#3f8f4a", roughness: 0.85, flatShading: true });
+const bloomMat = new THREE.MeshStandardMaterial({ color: "#d8453a", roughness: 0.7, flatShading: true });
+const barrelMat = new THREE.MeshStandardMaterial({ color: "#5a3a24", roughness: 0.8, flatShading: true });
+const barrelBandMat = new THREE.MeshStandardMaterial({ color: "#3a3a40", roughness: 0.5, metalness: 0.6 });
+
 // --- Shop-building materials (substantial brick storefronts) ---------------
 const brickMat = new THREE.MeshStandardMaterial({ color: "#9c5a44", roughness: 0.95 });
 const brickMat2 = new THREE.MeshStandardMaterial({ color: "#7d6f63", roughness: 0.95 });
@@ -116,6 +125,66 @@ function box(geo, mat, cast = true) {
 
 function addCollider(colliders, cx, cz, w, d) {
   colliders.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
+}
+
+// A simple slatted street bench (seat + backrest + two legs). `ry` faces the
+// seat-back so the seat opens toward the lane. Adds a tight collider.
+function makeBench(group, colliders, x, z, ry) {
+  const b = new THREE.Group();
+  b.position.set(x, 0, z);
+  b.rotation.y = ry;
+  group.add(b);
+  const seat = box(new THREE.BoxGeometry(1.7, 0.1, 0.5), benchSlatMat);
+  seat.position.set(0, 0.5, 0);
+  b.add(seat);
+  const back = box(new THREE.BoxGeometry(1.7, 0.45, 0.08), benchSlatMat);
+  back.position.set(0, 0.78, -0.21);
+  b.add(back);
+  for (const sx of [-0.7, 0.7]) {
+    const leg = box(new THREE.BoxGeometry(0.12, 0.5, 0.45), darkWood, false);
+    leg.position.set(sx, 0.25, 0);
+    b.add(leg);
+  }
+  // collider matches the rotated 1.7×0.5 footprint (ry is a multiple of ~90°).
+  const cos = Math.abs(Math.cos(ry)), sin = Math.abs(Math.sin(ry));
+  addCollider(colliders, x, z, 1.7 * cos + 0.5 * sin, 1.7 * sin + 0.5 * cos);
+}
+
+// A square stone planter with soil, a few leafy bushes and bright blooms.
+function makePlanter(group, colliders, x, z) {
+  const p = new THREE.Group();
+  p.position.set(x, 0, z);
+  group.add(p);
+  const tub = box(new THREE.BoxGeometry(1.1, 0.55, 1.1), planterMat);
+  tub.position.set(0, 0.275, 0);
+  p.add(tub);
+  const soil = box(new THREE.BoxGeometry(0.92, 0.1, 0.92), soilMat, false);
+  soil.position.set(0, 0.56, 0);
+  p.add(soil);
+  for (const [bx, bz, s] of [[-0.22, -0.18, 0.34], [0.2, 0.16, 0.3], [0.18, -0.2, 0.24]]) {
+    const bush = box(new THREE.SphereGeometry(s, 8, 6), leafMat);
+    bush.position.set(bx, 0.62 + s * 0.5, bz);
+    p.add(bush);
+  }
+  for (const [bx, bz] of [[-0.1, 0.22], [0.26, -0.04], [-0.28, 0.05]]) {
+    const bloom = box(new THREE.SphereGeometry(0.1, 6, 5), bloomMat, false);
+    bloom.position.set(bx, 0.92, bz);
+    p.add(bloom);
+  }
+  addCollider(colliders, x, z, 1.1, 1.1);
+}
+
+// A wooden barrel with two steel hoops (rolled-out shop stock).
+function makeBarrel(group, colliders, x, z) {
+  const body = box(new THREE.CylinderGeometry(0.34, 0.3, 0.78, 12), barrelMat);
+  body.position.set(x, 0.39, z);
+  group.add(body);
+  for (const by of [0.18, 0.6]) {
+    const hoop = box(new THREE.CylinderGeometry(0.35, 0.35, 0.06, 12), barrelBandMat, false);
+    hoop.position.set(x, by, z);
+    group.add(hoop);
+  }
+  addCollider(colliders, x, z, 0.7, 0.7);
 }
 
 // Build a SUBSTANTIAL shop building: a real 3D brick volume with width, depth
@@ -228,7 +297,12 @@ function makeShopBuilding(group, colliders, dummy, opts) {
 //   frontZsign  +1 if the front (door) wall faces +Z, -1 if it faces -Z
 //               (the doorway must open toward the central lane / street at z≈0)
 function makeDeliShop(group, colliders, dummy, col, opts) {
-  const { cx, cz, w, d, h, doorW, frontZsign } = opts;
+  const {
+    cx, cz, w, d, h, doorW, frontZsign,
+    outerText = "CORNER DELI", outerBg = "#8d0801",
+    innerText = "DELI MENU", innerBg = "#2d6a4f",
+    goodsColors = DELI_GOODS_COLORS,
+  } = opts;
   const t = 0.25;                       // wall thickness
   const halfW = w / 2, halfD = d / 2;
   const shop = new THREE.Group();
@@ -330,7 +404,7 @@ function makeDeliShop(group, colliders, dummy, col, opts) {
         dummy.scale.set(1, 0.7 + ((p + (sx > 0 ? 3 : 0)) % 3) * 0.25, 1);
         dummy.updateMatrix();
         goods.setMatrixAt(gi, dummy.matrix);
-        goods.setColorAt(gi, col.set(DELI_GOODS_COLORS[(p + gi) % DELI_GOODS_COLORS.length]));
+        goods.setColorAt(gi, col.set(goodsColors[(p + gi) % goodsColors.length]));
         gi++;
       }
     }
@@ -359,7 +433,7 @@ function makeDeliShop(group, colliders, dummy, col, opts) {
       dummy.rotation.set(0, 0, 0);
       dummy.updateMatrix();
       rackGoods.setMatrixAt(rgi, dummy.matrix);
-      rackGoods.setColorAt(rgi, col.set(DELI_GOODS_COLORS[(ly + p) % DELI_GOODS_COLORS.length]));
+      rackGoods.setColorAt(rgi, col.set(goodsColors[(ly + p) % goodsColors.length]));
       rgi++;
     }
   }
@@ -398,8 +472,9 @@ function makeDeliShop(group, colliders, dummy, col, opts) {
   // The panel faces +Z by default; flip it by π when the room's interior is on
   // the -Z side of the back wall so the text reads correctly to a player inside.
   const innerSign = artPanel(2.6, 0.9, "sign", {
-    text: "DELI MENU", bg: "#2d6a4f", fg: "#f7fff7",
-    emissiveIntensity: 0.3, file: "market-deli-menu.png",
+    text: innerText, bg: innerBg, fg: "#f7fff7",
+    emissiveIntensity: 0.3,
+    file: `market-inner-${innerText.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`,
   });
   innerSign.position.set(0, 2.3, backZ + frontZsign * 0.14);
   // Back wall is on the -frontZsign side; its inward face points +frontZsign.
@@ -411,8 +486,9 @@ function makeDeliShop(group, colliders, dummy, col, opts) {
   // Front wall faces frontZsign·Z toward the lane. artPanel front is +Z, so flip
   // when the front faces -Z to keep the text un-mirrored to a player on the street.
   const outerSign = artPanel(3.2, 1.1, "sign", {
-    text: "CORNER DELI", bg: "#8d0801", fg: "#fff3b0",
-    emissiveIntensity: 0.5, file: "market-corner-deli.png",
+    text: outerText, bg: outerBg, fg: "#fff3b0",
+    emissiveIntensity: 0.5,
+    file: `market-outer-${outerText.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`,
   });
   outerSign.position.set(0, h + 0.4, frontZ + frontZsign * 0.16);
   if (frontZsign < 0) outerSign.rotation.y = Math.PI;
@@ -809,6 +885,38 @@ export function buildMarket() {
     }
   }
 
+  // --- Street-level flavor: benches, planters & barrels (lived-in) --------
+  // BENCHES face the central lane from the open gaps BETWEEN stalls, at z=±6
+  // (outside the 8 m lane, in front of — but clear of — the stall produce at
+  // z≈7.4). Near row (z=+6) opens toward -Z (ry=π); far row (z=-6) opens +Z.
+  for (const bx of [-15.5, -5, 5, 15.5]) {
+    makeBench(group, colliders, bx, 6, Math.PI); // near row, seat faces the lane
+    makeBench(group, colliders, bx, -6, 0);      // far row, seat faces the lane
+  }
+
+  // PLANTERS flank each ENTERABLE shop's doorway (greenery either side of the
+  // door). South deli door front sits at z=-15 (opens +Z); the two north shops'
+  // doors sit at z=15 (open -Z). All planter spots are clear of hall columns
+  // (|z|=11.6) and inside the ±23 setback.
+  for (const px of [-1.9, 1.9]) makePlanter(group, colliders, px, -13.9);          // south deli
+  for (const px of [-5.75 - 1.7, -5.75 + 1.7]) makePlanter(group, colliders, px, 13.9); // cheese shop
+  for (const px of [5.75 - 1.7, 5.75 + 1.7]) makePlanter(group, colliders, px, 13.9);   // flower shop
+
+  // BARRELS & crate stacks set out as shop stock beside the storefront blocks,
+  // tucked into the clear gaps in front of the building fronts (|z|≈14.5).
+  makeBarrel(group, colliders, -9.6, 14.0);    // gap between CHEESE SHOP & FRESH GROCER
+  makeBarrel(group, colliders, 12.0, 14.0);    // in front of CORNER MART frontage
+  makeBarrel(group, colliders, -8.4, -14.2);   // by the south DELI/BAKERY gap
+  makeBarrel(group, colliders, 8.4, -14.2);
+  // A short stack of two crates beside the south deli doorway (reuses crateGeo).
+  for (const [stx, stz, sty] of [[3.6, -13.8, 0.27], [3.6, -13.8, 0.82], [4.25, -13.6, 0.27]]) {
+    const cr = box(crateGeo, crateMat);
+    cr.position.set(stx, sty, stz);
+    cr.rotation.y = 0.3;
+    group.add(cr);
+  }
+  addCollider(colliders, 3.85, -13.7, 1.4, 1.0);
+
   // --- Hanging string lights (instanced bulbs) — DENSE festoon canopy ------
   // Two families of strings, all sharing one InstancedMesh + the shared bulbMat:
   //  • cross strings: one per lamp X, dense catenary across the lane
@@ -887,6 +995,28 @@ export function buildMarket() {
   // doorway. Footprint x∈[-4.1,4.1], z∈[-22.1,-15] — all inside [-23,23].
   makeDeliShop(group, colliders, dummy, col, {
     cx: 0, cz: -18.5, w: 8, d: 7, h: 3.2, doorW: 2.2, frontZsign: 1,
+  });
+
+  // --- TWO MORE enterable shops along the open NORTH gap ------------------
+  // The north side has a wide clear gap between FRESH GROCER (right edge x≈-10.5)
+  // and CORNER MART (left edge x≈9). Two themed rooms sit side-by-side there,
+  // their doorways facing -Z toward the central lane (frontZsign = -1). Each is
+  // 6 m wide × 7 m deep, set back to cz=18.5 so the front (z≈15) clears the hall
+  // columns (z=11.6) and stalls (z=9), while the back (z≈22) stays inside the
+  // ±23 setback. A ~5.5 m walkable alley remains between them (x∈[-2.75,2.75]).
+  //   • CHEESE SHOP  — west: cx=-5.75 → x∈[-8.75,-2.75] (1.75 m gap to GROCER)
+  //   • FLOWER SHOP  — east: cx= 5.75 → x∈[ 2.75, 8.75] (0.25 m gap to MART)
+  makeDeliShop(group, colliders, dummy, col, {
+    cx: -5.75, cz: 18.5, w: 6, d: 7, h: 3.2, doorW: 2.0, frontZsign: -1,
+    outerText: "CHEESE SHOP", outerBg: "#b5651d",
+    innerText: "TODAY'S CHEESE", innerBg: "#9c6b1f",
+    goodsColors: ["#f3d27a", "#e8c25a", "#f7e7a8", "#d9b24a", "#caa46a", "#e8efe4"],
+  });
+  makeDeliShop(group, colliders, dummy, col, {
+    cx: 5.75, cz: 18.5, w: 6, d: 7, h: 3.2, doorW: 2.0, frontZsign: -1,
+    outerText: "FLOWER SHOP", outerBg: "#2f9e6e",
+    innerText: "FRESH BLOOMS", innerBg: "#7a2f6b",
+    goodsColors: ["#e0473c", "#e8b53a", "#a44fc0", "#3f7fd0", "#e8742a", "#5fae3f"],
   });
 
   // --- Rotating market hub sign (animated) --------------------------------
