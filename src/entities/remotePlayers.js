@@ -54,6 +54,12 @@ const BOARD_Z = 0.12;
 // altitude (curY) stacks on top of RIG_BASE_Y so flyers rise/fall as one rig.
 const SEAT_Y = { car: 0.6, boat: 0.34, rocket: 1.25, plane: 0.58, heli: 0.6 };
 const RIG_BASE_Y = { car: 0, boat: WATER_Y, rocket: ROCKET_BASE_Y, plane: 0, heli: 0 };
+// SHARED WORLD VEHICLES: each of these rig rides is a server-authoritative shared
+// object, so a remote piloting one gets its proxy posed from the canonical pose
+// (getVehicle(id)) instead of just chasing that avatar's lerped position — landing
+// it on the exact spot everyone agrees on. The rocket is NOT shared (no seed), so
+// it's absent here and its proxy keeps tracking the avatar.
+const SHARED_VEHICLE_ID = { car: "car-1", boat: "boat-1", plane: "plane-1", heli: "heli-1" };
 
 export class RemotePlayers {
   constructor(scene, opts = {}) {
@@ -322,13 +328,16 @@ export class RemotePlayers {
       // here, sharing the avatar's seat origin so the posed avatar sits in it. The
       // worn proxy (board/jetpack) is parented under the avatar and moves with it.
       if (e.rideGroup) {
-        // SHARED CAR: a remote driving the shared car gets its proxy posed from the
-        // server-authoritative "car-1" pose (so it matches the spot everyone sees),
-        // falling back to this avatar's lerped position if the pose isn't known yet.
-        // Other rig rides (boat/rocket/plane/heli) still track the avatar.
-        const sv = e.ride === "car" && this.getVehicle ? this.getVehicle("car-1") : null;
+        // SHARED VEHICLES: a remote piloting the shared car / boat / plane / heli gets
+        // its proxy posed from the server-authoritative pose (so it matches the spot
+        // everyone sees), falling back to this avatar's lerped position if the pose
+        // isn't known yet. The shared pose carries only x/z/heading, so altitude still
+        // comes from the synced curY (flyers rise on top of their rig base; a car/boat
+        // sits at curY≈0). The rocket isn't shared, so it tracks the avatar (sv null).
+        const vid = SHARED_VEHICLE_ID[e.ride];
+        const sv = vid && this.getVehicle ? this.getVehicle(vid) : null;
         if (sv) {
-          e.rideGroup.position.set(sv.x, RIG_BASE_Y.car || 0, sv.z);
+          e.rideGroup.position.set(sv.x, (RIG_BASE_Y[e.ride] || 0) + e.curY, sv.z);
           e.rideGroup.rotation.y = sv.heading;
         } else {
           e.rideGroup.position.set(g.position.x, (RIG_BASE_Y[e.ride] || 0) + e.curY, g.position.z);

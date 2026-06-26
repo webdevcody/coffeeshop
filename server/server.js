@@ -119,6 +119,18 @@ let nextId = 1;
 /** @type {Map<string, {id:string, type:string, x:number, z:number, heading:number, driverId:string|null}>} */
 const vehicles = new Map();
 vehicles.set("car-1", { id: "car-1", type: "car", x: 4, z: 18, heading: 0, driverId: null });
+// The boat, plane and heli are shared world objects EXACTLY like the car — the
+// existing "vehicle" handler / welcome roster / disconnect release already work for
+// any id, so they only need a seed here. Each is seeded at the SAME spawn the client
+// computes (so the very first frame already agrees for everyone). The coords were
+// resolved from the live world build:
+//   boat-1  → ocean.boatSpawn   = { x: landBounds.minX - 38.5, z: land centre-Z, heading: +π/2 }
+//             (main dock tip, facing out to sea). With the live landBounds this is x=-158.5, z=132.
+//   plane-1 → airport.planeSpawn = { x: rwX0 + 8 = 148, z: rwCz = 134, heading: +π/2 } (west runway threshold, nose EAST)
+//   heli-1  → airport.heliSpawn  = { x: helipads[0].x = 172, z: 106, heading: 0 } (main helipad, nose +Z)
+vehicles.set("boat-1", { id: "boat-1", type: "boat", x: -158.5, z: 132, heading: Math.PI / 2, driverId: null });
+vehicles.set("plane-1", { id: "plane-1", type: "plane", x: 148, z: 134, heading: Math.PI / 2, driverId: null });
+vehicles.set("heli-1", { id: "heli-1", type: "heli", x: 172, z: 106, heading: 0, driverId: null });
 
 // ---------------------------------------------------------------------------
 // Game-table room coordination
