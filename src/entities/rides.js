@@ -242,6 +242,13 @@ export function createRides(scene, opts) {
     return getVehicle ? getVehicle(id) : null;
   }
 
+  // True when vehicle `id` has a driver who isn't us — you can't board a craft another
+  // player is currently piloting (that would put two drivers on one vehicle).
+  function pilotedByOther(id) {
+    const v = sharedPose(id);
+    return !!(v && v.driverId && (!network || v.driverId !== network.id));
+  }
+
   // Copy the local vehicle's pose into our local shared-pose entry so our mirror
   // matches what we just sent. Scalars only — no allocation. No-op until the entry
   // exists. driverId claims (our id) or releases (null) the ride.
@@ -434,10 +441,10 @@ export function createRides(scene, opts) {
     // only the walk + fly branches act on it (toggle the jetpack on / land).
     const useJetpack = controls.consumeJetpack ? controls.consumeJetpack() : false;
     const outdoors = local.pos.z > 11.5; // only offer rides outside the cafe
-    const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH;
+    const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH && !pilotedByOther("car-1");
     // The boat floats in the water at a dock tip, so this is only ever true when
     // you're standing on a dock right next to it (you can't reach it across water).
-    const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH : false;
+    const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH && !pilotedByOther("boat-1") : false;
     // The rocket sits at pad centre (or, while docked, just outside the airlock), so
     // this is only true on the launchpad apron or beside the docked rocket. Docking
     // parks it past the airlock bulkhead, so re-boarding gets the wider reach.
@@ -445,8 +452,8 @@ export function createRides(scene, opts) {
     const nearRocket = rocket ? rocket.distanceTo(local.pos.x, local.pos.z) < rocketReach : false;
     // The plane sits at the west runway threshold; the heli on a south helipad —
     // both on the offshore airfield, reached on foot via the causeway.
-    const nearPlane = plane ? plane.distanceTo(local.pos.x, local.pos.z) < PLANE_REACH : false;
-    const nearHeli = heli ? heli.distanceTo(local.pos.x, local.pos.z) < HELI_REACH : false;
+    const nearPlane = plane ? plane.distanceTo(local.pos.x, local.pos.z) < PLANE_REACH && !pilotedByOther("plane-1") : false;
+    const nearHeli = heli ? heli.distanceTo(local.pos.x, local.pos.z) < HELI_REACH && !pilotedByOther("heli-1") : false;
 
     if (mode === "boat") {
       const { throttle, steer } = controls.driveAxis();
