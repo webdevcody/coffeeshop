@@ -135,8 +135,23 @@ export function buildStationRecreation(opts = {}) {
     trim.position.set(cx, WH - 0.2, cz);
     group.add(trim);
   }
-  wall(-HW - WT / 2, 0, WT, HD * 2 + WT);          // west
-  wall(HW + WT / 2, 0, WT, HD * 2 + WT);           // east
+  // West (-X / LEFT) + East (+X / RIGHT) END walls OPEN into the neighbouring
+  // zones: this module sits mid-run on one continuous east-west deck, so its X-end
+  // panels are "false walls" between zones. Instead of one solid panel each, build
+  // two short corner stubs per end and leave a WIDE full-height doorway gap
+  // (DOOR_W m, centered on z=0) so players walk straight through along the long
+  // axis and see clean into the next zone. The basketball hoop (z≈13), arcade
+  // (z≈12) and vending (z≈-10) all sit inside the surviving +Z/-Z stub regions, so
+  // they stay backed by wall; only the posters get re-anchored (below).
+  const DOOR_W = 11;                       // open span (>= 10 m), centered on z=0
+  const endSpan = HD * 2 + WT;             // full z-depth of an end wall
+  const stubD = (endSpan - DOOR_W) / 2;   // remaining corner-stub depth (each end)
+  const stubCz = DOOR_W / 2 + stubD / 2;  // stub centre offset in z
+  for (const sx of [-1, 1]) {              // -1 = west (left), +1 = east (right)
+    const wx = sx * (HW + WT / 2);
+    wall(wx, stubCz, WT, stubD);           // +Z corner stub
+    wall(wx, -stubCz, WT, stubD);          // -Z corner stub
+  }
   wall(0, HD + WT / 2, HW * 2 + WT, WT);           // north (screen wall)
   wall(-HW / 2 - 0.6, -HD - WT / 2, HW - 1.2, WT); // south-left  (doorway gap x[-2.5,2.5])
   wall(HW / 2 + 0.6, -HD - WT / 2, HW - 1.2, WT);  // south-right
@@ -479,10 +494,12 @@ export function buildStationRecreation(opts = {}) {
   plant(-HW + 1.2, -HD + 1.4, false);
   plant(HW - 1.2, -HD + 1.4, false);
 
-  // ── POSTERS (flat lit panels on the side walls; cosmetic) ──────────────────
+  // ── POSTERS (flat lit panels on the END-wall corner stubs; cosmetic) ───────
+  // (z values kept inside the surviving stub ranges — |z| >= 5.5 — so they stay
+  // mounted to wall now that the centre of each X-end is an open doorway.)
   const posterCols = ["#ff4d6d", "#4dd2ff", "#ffd24d", "#a14dff"];
   let pidx = 0;
-  for (const [sx, pzs] of [[-1, [-3, 4]], [1, [-2, 5]]]) {
+  for (const [sx, pzs] of [[-1, [-9, 8]], [1, [-7, 10]]]) {
     for (const pz of pzs) {
       const pm = new THREE.MeshStandardMaterial({ color: posterCols[pidx % 4], roughness: 0.6, metalness: 0.1, emissive: posterCols[pidx % 4], emissiveIntensity: 0.25 });
       const poster = box(0.05, 1.6, 1.2, pm, false, false);

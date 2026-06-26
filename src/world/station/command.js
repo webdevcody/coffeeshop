@@ -207,9 +207,17 @@ export function buildStationCommand(opts = {}) {
   // Back (-Z) wall split to leave a 4 m entrance gap at center.
   wallPanel(-9.75, -HD - WT / 2, HW - 1.5, "z");
   wallPanel(9.75, -HD - WT / 2, HW - 1.5, "z");
-  // Side walls (full depth).
-  wallPanel(-HW - WT / 2, 0, HD * 2, "x");
-  wallPanel(HW + WT / 2, 0, HD * 2, "x");
+  // Side walls (the LEFT/-X and RIGHT/+X ends that face the neighbouring zones):
+  // OPEN them with a wide, full-height central doorway so you walk straight down
+  // the station along X instead of hitting a wall. We keep ~10 m corner stubs at
+  // each end for structure and carve a 12 m gap (z in [-6, 6]) clean through.
+  const SIDE_GAP_HALF = 6;                        // half-width of the open doorway (gap = 12 m)
+  const SIDE_STUB_LEN = HD - SIDE_GAP_HALF;       // 10 m stub from doorway edge to each corner
+  const SIDE_STUB_C   = (SIDE_GAP_HALF + HD) / 2; // 11 m: center of each corner stub
+  for (const wx of [-HW - WT / 2, HW + WT / 2]) {
+    wallPanel(wx, -SIDE_STUB_C, SIDE_STUB_LEN, "x"); // aft (-Z) corner stub
+    wallPanel(wx,  SIDE_STUB_C, SIDE_STUB_LEN, "x"); // fore (+Z) corner stub
+  }
   // Front (+Z) wall — solid backing for the main viewscreen.
   wallPanel(0, HD + WT / 2, HW * 2, "z");
 
@@ -218,18 +226,25 @@ export function buildStationCommand(opts = {}) {
   const rivetPlacements = [];
   function greebleWallX(wx, faceNX) {
     // wx = wall plane X; faceNX = +1 if the visible face points toward +X.
+    // This wall now has a central doorway (|z| < SIDE_GAP_HALF), so its greebles
+    // are kept clear of the gap: ribs only sit on the corner stubs, and the conduit
+    // pipes are split into fore/aft runs that stop at the doorway edges.
     const fx = wx + faceNX * 0.06;
     for (let z = -HD + 2; z <= HD - 2; z += 3.6) {
+      if (Math.abs(z) < SIDE_GAP_HALF + 0.5) continue; // keep the doorway clear
       group.add(box(0.35, WALL_H - 1.4, 0.5, ribMat, fx, WALL_H / 2, z, false)); // rib pilaster
       rivetPlacements.push([fx + faceNX * 0.28, 1.1, z], [fx + faceNX * 0.28, WALL_H - 1.1, z]);
     }
-    // Two horizontal conduit pipes.
+    // Two horizontal conduit pipes, each SPLIT into fore/aft runs flanking the gap.
+    const segEnd = HD - 0.75, segLen = segEnd - SIDE_GAP_HALF, segC = (SIDE_GAP_HALF + segEnd) / 2;
     for (const py of [1.6, 4.4]) {
-      const p = cyl(0.16, HD * 2 - 1.5, py < 3 ? pipeMat : pipeDarkMat, fx + faceNX * 0.22, py, 0, false);
-      p.rotation.x = Math.PI / 2;
-      group.add(p);
+      for (const sgn of [-1, 1]) {
+        const p = cyl(0.16, segLen, py < 3 ? pipeMat : pipeDarkMat, fx + faceNX * 0.22, py, sgn * segC, false);
+        p.rotation.x = Math.PI / 2;
+        group.add(p);
+      }
     }
-    // A couple of louvered vents.
+    // A couple of louvered vents (on the corner stubs, clear of the doorway).
     for (const vz of [-7, 7]) {
       group.add(box(0.18, 1.4, 2.2, ventMat, fx + faceNX * 0.12, 2.6, vz, false));
       for (let s = -2; s <= 2; s++) {

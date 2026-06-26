@@ -205,9 +205,20 @@ export function buildStationMedbay(opts = {}) {
     group.add(stripe);
     addCol(cx, cz, w, d);
   }
-  wallSeg(0, -HZ, HX * 2, WALL_T);                 // back (-Z)
-  wallSeg(-HX, 0, WALL_T, HZ * 2);                 // left (-X)
-  wallSeg(HX, 0, WALL_T, HZ * 2);                  // right (+X)
+  wallSeg(0, -HZ, HX * 2, WALL_T);                 // back (-Z, with windows) — KEPT
+  // ── X-END WALLS OPENED UP ────────────────────────────────────────────────────
+  // The two FULL-DEPTH panels that used to seal local x=-19 and x=+19 (and which,
+  // once the modules are chained, stacked into a "forest" of false dividers between
+  // zones) are GONE. In their place we leave only short full-height CORNER PILASTERS
+  // tucked into the ±Z corners, so the shell keeps structure and ties into the side
+  // walls — while the central ~26 m is a clear, full-height doorway you walk straight
+  // through east↔west into the neighbouring module. (Supply cabinets that stood at
+  // these ends are free-standing groups with their own colliders, so they remain.)
+  const END_STUB = 3;                              // depth (along Z) of each corner pilaster
+  for (const ex of [-HX, HX]) {                    // both X ends (-X and +X)
+    wallSeg(ex, -HZ + END_STUB / 2, WALL_T, END_STUB);  // back-corner pilaster
+    wallSeg(ex,  HZ - END_STUB / 2, WALL_T, END_STUB);  // front-corner pilaster
+  }
   wallSeg(-11, HZ, 16, WALL_T);                    // front (+Z) left of door
   wallSeg(11, HZ, 16, WALL_T);                     // front (+Z) right of door
 

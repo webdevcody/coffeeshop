@@ -181,26 +181,38 @@ export function buildStationObservation(opts = {}) {
     group.add(strip);
   }
 
-  // ── SIDE + BACK BULKHEAD WALLS (with ribs, cove glow, greebles) ──────────────
+  // ── SIDE WALLS (±X) — OPENED into one continuous HALL ────────────────────────
+  // These are the LEFT/RIGHT bulkheads perpendicular to the long east-west axis
+  // (near local x = ±19, spanning the z-depth, facing the neighbouring zones).
+  // Instead of one sealed panel, each side is split into two short corner STUBS
+  // leaving a WIDE, full-height central DOORWAY so players walk straight through
+  // (along X) into the next zone — you now see clear from this zone to the next.
+  // Ribs, the warm cove strip and the pipe greeble all ride the remaining stubs;
+  // NOTHING (floor-to-ceiling) spans the opening.
+  const DOOR = 12;                  // central doorway width in z (>= 10 m, centered → z ∈ [-6, 6])
+  const STUB_D = HZ - DOOR / 2;     // depth of each corner stub  (= 10 m)
+  const STUB_CZ = HZ - STUB_D / 2;  // |z| of each stub's centre  (= 11 m)
   const buildSideWall = (sx) => {
-    const wall = box(0.5, H, HZ * 2, wallMat, false, true);
-    wall.position.set(sx * HX, H / 2, 0);
-    group.add(wall);
-    // Vertical ribs.
-    for (let z = -HZ + 3; z <= HZ - 3; z += 4) {
-      const rib = box(0.3, H - 0.6, 0.5, wallRibMat, false, false);
-      rib.position.set(sx * (HX - 0.35), H / 2, z);
-      group.add(rib);
-    }
-    // Warm cove strip along the wall/ceiling join.
-    const cove = box(0.25, 0.3, HZ * 2 - 2, warmGlowMat, false, false);
-    cove.position.set(sx * (HX - 0.3), H - 0.5, 0);
-    group.add(cove);
-    // A few pipe/greeble runs low on the wall.
-    for (const z of [-10, 8]) {
-      const pipe = mesh(new THREE.CylinderGeometry(0.18, 0.18, 6, 8), greebleMat, false, false);
+    for (const sz of [-1, 1]) {
+      const cz = sz * STUB_CZ;
+      // Short corner wall stub (full height); its inner end doubles as a doorway jamb.
+      const stub = box(0.5, H, STUB_D, wallMat, false, true);
+      stub.position.set(sx * HX, H / 2, cz);
+      group.add(stub);
+      // Vertical ribs on this stub only.
+      for (let z = cz - STUB_D / 2 + 1.5; z <= cz + STUB_D / 2 - 1.5; z += 4) {
+        const rib = box(0.3, H - 0.6, 0.5, wallRibMat, false, false);
+        rib.position.set(sx * (HX - 0.35), H / 2, z);
+        group.add(rib);
+      }
+      // Warm cove strip along this stub's wall/ceiling join.
+      const cove = box(0.25, 0.3, STUB_D - 1, warmGlowMat, false, false);
+      cove.position.set(sx * (HX - 0.3), H - 0.5, cz);
+      group.add(cove);
+      // A low pipe/greeble run on this stub.
+      const pipe = mesh(new THREE.CylinderGeometry(0.18, 0.18, STUB_D - 3, 8), greebleMat, false, false);
       pipe.rotation.x = Math.PI / 2;
-      pipe.position.set(sx * (HX - 0.5), 1.4, z);
+      pipe.position.set(sx * (HX - 0.5), 1.4, cz);
       group.add(pipe);
     }
   };
@@ -501,7 +513,9 @@ export function buildStationObservation(opts = {}) {
   buildPlant(-17, 9, 0.85);
   buildPlant(17, 9, 0.85);
 
-  // ── SIDE CONSOLES with holo screens (flush to the walls, off the walk path) ──
+  // ── SIDE CONSOLES with holo screens (flush to the side walls, off the walk path)
+  // Re-anchored onto the −Z corner STUB (z = -9) so they sit against a remaining
+  // wall segment instead of standing in the new central doorway. ──────────────
   const buildConsole = (lx, lz, yaw) => {
     const c = new THREE.Group();
     c.position.set(lx, 0, lz);
@@ -526,8 +540,8 @@ export function buildStationObservation(opts = {}) {
     }
     addCol(lx, lz, 3.2, 1.0);
   };
-  buildConsole(-17.6, -3, Math.PI / 2);
-  buildConsole(17.6, -3, -Math.PI / 2);
+  buildConsole(-17.6, -9, Math.PI / 2);
+  buildConsole(17.6, -9, -Math.PI / 2);
 
   // ── LIGHTS — warm rim + cool earthshine (non-shadow, distance-limited) ───────
   const warmA = new THREE.PointLight("#ffcaa0", 0.9, 34, 2.0);

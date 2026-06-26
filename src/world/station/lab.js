@@ -146,20 +146,28 @@ export function buildStationLab(opts = {}) {
       group.add(seam);
     }
   }
-  panelWall(0, 15.8, 38, T_WALL);   addCol(0, 15.8, 38, T_WALL);   // +Z back (containment bay)
-  panelWall(0, -15.8, 38, T_WALL);  addCol(0, -15.8, 38, T_WALL);  // -Z front (wet bench)
-  panelWall(18.8, 0, T_WALL, 32);   addCol(18.8, 0, T_WALL, 32);   // +X right
-  // -X left split around a 5 m doorway (z[-2.5,2.5]) so the player can walk in.
-  panelWall(-18.8, -9.25, T_WALL, 13.5); addCol(-18.8, -9.25, T_WALL, 13.5);
-  panelWall(-18.8, 9.25, T_WALL, 13.5);  addCol(-18.8, 9.25, T_WALL, 13.5);
-  // Lit door surround + header above the gap.
-  const doorHeader = box(T_WALL + 0.1, 1.0, 5.4, panelTrimMat, false, false);
-  doorHeader.position.set(-18.8, H_WALL - 0.5, 0);
-  group.add(doorHeader);
-  for (const dz of [-2.7, 2.7]) {
-    const jamb = box(0.18, H_WALL - 1.0, 0.18, addGlow(new THREE.MeshStandardMaterial({ color: "#0c2a30", emissive: "#23e8d0", emissiveIntensity: 1.0, roughness: 0.4 }), 0.9, 0.3, 0.9, dz), false, false);
-    jamb.position.set(-18.6, (H_WALL - 1.0) / 2, dz);
-    group.add(jamb);
+  panelWall(0, 15.8, 38, T_WALL);   addCol(0, 15.8, 38, T_WALL);   // +Z back (containment bay)  — KEEP (window wall)
+  panelWall(0, -15.8, 38, T_WALL);  addCol(0, -15.8, 38, T_WALL);  // -Z front (wet bench)        — KEEP (window wall)
+  // The two X-end walls (perpendicular to the long east-west deck axis) are now OPENED:
+  // each becomes a pair of short corner stubs framing a 10 m full-height centre gap
+  // (local z[-5,5]) so you walk straight through this zone into the neighbouring one.
+  // +X right: was one solid 32 m panel — now stubs z[5,16] and z[-16,-5] (gap z[-5,5]).
+  panelWall(18.8, -10.5, T_WALL, 11); addCol(18.8, -10.5, T_WALL, 11);
+  panelWall(18.8, 10.5, T_WALL, 11);  addCol(18.8, 10.5, T_WALL, 11);
+  // -X left: was split around a 5 m door — widened to the same 10 m full-height opening.
+  panelWall(-18.8, -10.5, T_WALL, 11); addCol(-18.8, -10.5, T_WALL, 11);
+  panelWall(-18.8, 10.5, T_WALL, 11);  addCol(-18.8, 10.5, T_WALL, 11);
+  // Lit door surrounds framing each 10 m opening (top lintel + glowing side jambs) so the
+  // openings read as intentional portals between zones rather than holes in a wall.
+  for (const hx of [-18.8, 18.8]) {
+    const doorHeader = box(T_WALL + 0.1, 1.0, 10.8, panelTrimMat, false, false);
+    doorHeader.position.set(hx, H_WALL - 0.5, 0);
+    group.add(doorHeader);
+    for (const dz of [-5, 5]) {
+      const jamb = box(0.18, H_WALL - 1.0, 0.18, addGlow(new THREE.MeshStandardMaterial({ color: "#0c2a30", emissive: "#23e8d0", emissiveIntensity: 1.0, roughness: 0.4 }), 0.9, 0.3, 0.9, dz + hx * 0.05), false, false);
+      jamb.position.set(hx - Math.sign(hx) * 0.2, (H_WALL - 1.0) / 2, dz);
+      group.add(jamb);
+    }
   }
 
   // ── CEILING + glow strips ────────────────────────────────────────────────────

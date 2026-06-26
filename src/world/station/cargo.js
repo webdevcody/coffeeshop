@@ -343,9 +343,20 @@ export function buildStationCargo(opts = {}) {
   // Back wall.
   wallPanel(0, WALL_H / 2, HZ + WALL_T / 2, HX * 2 + WALL_T, WALL_H, WALL_T);
   solid(0, HZ + WALL_T / 2, HX * 2 + WALL_T, WALL_T);
-  // Left wall.
-  wallPanel(-HX - WALL_T / 2, WALL_H / 2, 0, WALL_T, WALL_H, HZ * 2);
-  solid(-HX - WALL_T / 2, 0, WALL_T, HZ * 2);
+  // Left (-X) wall — OPENED into the neighbouring zone: two flanks around a wide
+  // central full-height doorway gap (no blank divider across the X end).
+  const LWX = -HX - WALL_T / 2;
+  const DOOR_HZ = 5.5;                  // half-depth of the X-end doorways → 11 m clear
+  const flankD  = HZ - DOOR_HZ;         // 10.5 m of wall on each side of the gap
+  const flankCz = DOOR_HZ + flankD / 2; // 10.75 m centre of each flank
+  for (const sz of [-1, 1]) {
+    wallPanel(LWX, WALL_H / 2, sz * flankCz, WALL_T, WALL_H, flankD);
+    solid(LWX, sz * flankCz, WALL_T, flankD);
+  }
+  // High lintel spanning the left doorway (above head height — no collider).
+  const lintelL = box(WALL_T, WALL_H - 2.6, DOOR_HZ * 2, wallMat, false, false);
+  lintelL.position.set(LWX, 2.6 + (WALL_H - 2.6) / 2, 0);
+  group.add(lintelL);
   // Front wall: two flanks around the doorway gap.
   for (const sx of [-1, 1]) {
     const segW = HX - 3;            // each flank x∈[3,19] (or mirror)
@@ -356,14 +367,24 @@ export function buildStationCargo(opts = {}) {
   const lintel = box(6.2, WALL_H - 2.6, WALL_T, wallMat, false, false);
   lintel.position.set(0, 2.6 + (WALL_H - 2.6) / 2, -HZ - WALL_T / 2);
   group.add(lintel);
-  // Right (+X) wall — segmented around a viewport opening z∈[1,9], y∈[1.4,5.6].
+  // Right (+X) wall — OPENED to match: a solid SOUTH flank that still carries the
+  // airlock hatch, and a NORTH flank carrying the re-anchored viewport, split by the
+  // same wide central full-height doorway gap. (Was one full-span wall behind glass.)
   const RWX = HX + WALL_T / 2;
-  const winZ0 = 1, winZ1 = 9, winY0 = 1.4, winY1 = 5.6;
-  wallPanel(RWX, winY0 / 2, 0, WALL_T, winY0, HZ * 2);                                  // below sill
-  wallPanel(RWX, (winY1 + WALL_H) / 2, 0, WALL_T, WALL_H - winY1, HZ * 2);              // above header
-  wallPanel(RWX, (winY0 + winY1) / 2, (-HZ + winZ0) / 2, WALL_T, winY1 - winY0, HZ + winZ0); // south of window
-  wallPanel(RWX, (winY0 + winY1) / 2, (HZ + winZ1) / 2, WALL_T, winY1 - winY0, HZ - winZ1);  // north of window
-  solid(RWX, 0, WALL_T, HZ * 2); // full-span collider (glass is impassable anyway)
+  // South flank z∈[-16,-5.5] (the airlock hatch is mounted on it — see §9).
+  wallPanel(RWX, WALL_H / 2, -flankCz, WALL_T, WALL_H, flankD);
+  solid(RWX, -flankCz, WALL_T, flankD);
+  // North flank z∈[5.5,16] — segmented around the viewport opening.
+  const winZ0 = 6.75, winZ1 = 14.75, winY0 = 1.4, winY1 = 5.6;
+  wallPanel(RWX, winY0 / 2, flankCz, WALL_T, winY0, flankD);                       // below sill
+  wallPanel(RWX, (winY1 + WALL_H) / 2, flankCz, WALL_T, WALL_H - winY1, flankD);   // above header
+  wallPanel(RWX, (winY0 + winY1) / 2, (DOOR_HZ + winZ0) / 2, WALL_T, winY1 - winY0, winZ0 - DOOR_HZ); // south jamb
+  wallPanel(RWX, (winY0 + winY1) / 2, (HZ + winZ1) / 2, WALL_T, winY1 - winY0, HZ - winZ1);           // north jamb
+  solid(RWX, flankCz, WALL_T, flankD); // north flank collider (glass impassable)
+  // High lintel spanning the right doorway (above head height — no collider).
+  const lintelR = box(WALL_T, WALL_H - 2.6, DOOR_HZ * 2, wallMat, false, false);
+  lintelR.position.set(RWX, 2.6 + (WALL_H - 2.6) / 2, 0);
+  group.add(lintelR);
   // Wall ribs down the back wall for an industrial read (cosmetic).
   for (let rx = -16; rx <= 16; rx += 4) {
     const rib = box(0.3, WALL_H - 0.6, 0.3, wallRibMat, false, false);
@@ -548,7 +569,7 @@ export function buildStationCargo(opts = {}) {
   // ── 9) SIDE AIRLOCK + VIEWPORT + DOCKED SUPPLY POD (in/through the +X wall) ──
   // Sealed round HATCH (south of the window).
   {
-    const hz = -7;
+    const hz = -10;   // centred on the solid south flank, clear of the doorway
     const ringT = mesh(new THREE.TorusGeometry(1.5, 0.22, 10, 24), airlockFrameMat, false, false);
     ringT.rotation.y = Math.PI / 2;
     ringT.position.set(HX + 0.02, 2.3, hz);
@@ -589,7 +610,7 @@ export function buildStationCargo(opts = {}) {
       const jamb = box(WALL_T + 0.1, winY1 - winY0 + 0.8, 0.4, airlockFrameMat, false, false);
       jamb.position.set(HX, cy, jz); group.add(jamb);
     }
-    for (const mz of [3.7, 6.3]) {
+    for (const mz of [9.42, 12.08]) {
       const mull = box(0.14, winY1 - winY0, 0.14, airlockFrameMat, false, false);
       mull.position.set(HX, cy, mz); group.add(mull);
     }
@@ -598,7 +619,7 @@ export function buildStationCargo(opts = {}) {
   {
     const back = mesh(new THREE.PlaneGeometry(60, 40), spaceBackMat, false, false);
     back.rotation.y = -Math.PI / 2;   // faces -X (back toward the bay)
-    back.position.set(HX + 42, 4, 5);
+    back.position.set(HX + 42, 4, 10.75);
     group.add(back);
     // Starfield (cheap Points cloud out beyond +X, visible through the viewport).
     const N = 320;
@@ -608,7 +629,7 @@ export function buildStationCargo(opts = {}) {
     for (let i = 0; i < N; i++) {
       pos[i * 3] = HX + 6 + rnd() * 34;
       pos[i * 3 + 1] = -4 + rnd() * 16;
-      pos[i * 3 + 2] = -16 + rnd() * 34;
+      pos[i * 3 + 2] = -6.25 + rnd() * 34;
     }
     const sg = new THREE.BufferGeometry();
     sg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -618,7 +639,7 @@ export function buildStationCargo(opts = {}) {
     group.add(stars);
     // Docked SUPPLY POD aligned with the viewport (nose berthed at the window).
     const pod = new THREE.Group();
-    pod.position.set(HX + 6.5, 3.5, 5);
+    pod.position.set(HX + 6.5, 3.5, 10.75);
     group.add(pod);
     const podBody = cyl(1.4, 1.4, 4.5, podMat, false, false);
     podBody.rotation.z = Math.PI / 2;   // axis along X
