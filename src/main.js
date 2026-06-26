@@ -11,6 +11,7 @@ import { createAudio } from "./engine/audio.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
+import { buildAirport } from "./world/airport.js";
 import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
@@ -70,6 +71,15 @@ scene.add(ocean.group);
 // space.rocketSpawn and tops out near the station.
 const space = buildSpace({ landBounds });
 scene.add(space.group);
+// AIRPORT: an offshore AIRFIELD ISLAND east of the city, reachable on foot by a
+// walkable causeway off the city's east edge — wired EXACTLY like the OCEAN /
+// SPACE modules. Its group is added to the scene and its world (the island top +
+// causeway deck as walkable `ground`, plus hangar walls / tower / light + sock
+// poles / causeway rails as solid `colliders`) is merged below. The rideable
+// PLANE parks at airport.planeSpawn (west runway threshold) and the HELI on
+// airport.heliSpawn (south helipad) — both built in rides.js.
+const airport = buildAirport({ landBounds });
+scene.add(airport.group);
 // Merged world surfaces: beaches/docks/island tops + the launchpad apron become
 // walkable; island props (huts, palms, rail posts) + the gantry/fuel-tanks/flood
 // masts become solid. Used everywhere `ground`/`colliders` are consumed by the
@@ -78,8 +88,8 @@ scene.add(space.group);
 // walkable ground (the player is LIFTED to space.stationFloorY on them — see
 // local.setStation below) and its hull-wall / console AABBs join the colliders so
 // you can't walk through them while strolling the station at altitude.
-const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround);
-const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders);
+const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground);
+const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders);
 
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -102,6 +112,7 @@ const rides = createRides(scene, {
   interactables, // E priority: car > boat > rocket > interactable > skateboard (handled in rides.js)
   ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
   space, // launchable rocket parks on space.rocketSpawn; jetpack fly mode (F) lives here too
+  airport, // rideable plane parks at airport.planeSpawn, heli at airport.heliSpawn (handled in rides.js)
 });
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
@@ -623,12 +634,13 @@ function frame() {
   interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
   ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle
+  airport.update(dt); // animate the airfield: rotating radar dish, blinking strobes, swaying windsock
 
   if (joined && local) {
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
     const ride = rides.update(dt, camera, controls, local);
-    if (ride.mode === "drive" || ride.mode === "boat" || ride.mode === "rocket") {
+    if (ride.mode === "drive" || ride.mode === "boat" || ride.mode === "rocket" || ride.mode === "plane" || ride.mode === "heli") {
       // Driving a car, sailing the boat, OR flying the rocket: the vehicle owns the
       // avatar + camera, so hide the on-foot avatar, suppress the bottom-center sit
       // prompt, and show the bottom-right speedometer (fed by whichever vehicle is
@@ -649,11 +661,13 @@ function frame() {
       hud.setHeldItem(null);
       const vstate = ride.mode === "boat" ? rides.boat?.state
         : ride.mode === "rocket" ? rides.rocket?.state
+        : ride.mode === "plane" ? rides.plane?.state
+        : ride.mode === "heli" ? rides.heli?.state
         : rides.car?.state;
       const speed = vstate?.speed ?? 0;
-      // NOS gauge: car/boat expose state.nos + state.boosting; the rocket has no tank
-      // (pass null → the gauge hides itself).
-      const nos = ride.mode === "rocket" ? null : (vstate?.nos ?? null);
+      // NOS gauge: car/boat expose state.nos + state.boosting; the rocket / plane /
+      // heli have no tank (pass null → the gauge hides itself).
+      const nos = (ride.mode === "rocket" || ride.mode === "plane" || ride.mode === "heli") ? null : (vstate?.nos ?? null);
       const boosting = vstate?.boosting ?? false;
       hud.setDriveHud(true, speed, nos, boosting); // speedometer + NOS gauge + hint
       // Vehicle engine hum, pitch/level rising with speed (top speed ~12 m/s).
@@ -861,5 +875,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, audio, gameMap, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, audio, gameMap, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

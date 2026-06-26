@@ -32,6 +32,17 @@
 // frame (no Vector3 churn: positions are written component-wise via .set / += ).
 
 import * as THREE from "three";
+// 10 richly-detailed themed interior modules strung along the station deck.
+import { buildStationCommand } from "./station/command.js";
+import { buildStationObservation } from "./station/observation.js";
+import { buildStationLab } from "./station/lab.js";
+import { buildStationGarden } from "./station/garden.js";
+import { buildStationQuarters } from "./station/quarters.js";
+import { buildStationMedbay } from "./station/medbay.js";
+import { buildStationEngineering } from "./station/engineering.js";
+import { buildStationCargo } from "./station/cargo.js";
+import { buildStationRecreation } from "./station/recreation.js";
+import { buildStationGalley } from "./station/galley.js";
 
 // ── Shared materials (created ONCE) ───────────────────────────────────────────
 // Launchpad / ground.
@@ -153,6 +164,7 @@ export function buildSpace(opts = {}) {
   // you stand on a `stationGround` rect; `stationColliders` block you inside.
   const stationGround = [];    // walkable interior deck rects (world XZ; lifted to stationFloorY)
   const stationColliders = []; // interior walls / consoles (world XZ AABBs)
+  const stationModuleUpdates = []; // per-frame update fns of the 10 themed interior modules
 
   // Animated handles collected at build → mutated allocation-free in update().
   const beacons = [];    // { mat, rate, phase }  blinking nav lights
@@ -708,6 +720,46 @@ export function buildSpace(opts = {}) {
       f.mesh.rotation.x += f.spin * 0.5 * dt;
     }
     earth.rotation.y += dt * 0.008;
+    // Pump the 10 themed interior modules (console glow, holograms, robots, etc.).
+    for (let i = 0; i < stationModuleUpdates.length; i++) stationModuleUpdates[i](dt);
+  }
+
+  // ── 10 THEMED INTERIOR MODULES strung EAST off the control room ──────────────
+  // Each is a self-contained, richly-detailed zone at the station altitude on a
+  // continuous deck (x≈301..681 at z=IZ): command bridge → observation deck →
+  // lab → garden → quarters → medbay → engineering → cargo → recreation → galley.
+  // We add each module's GROUP + its walkable GROUND rect + its update, but
+  // DELIBERATELY DROP each module's own colliders (their perimeter walls would
+  // trap you between zones) and instead wrap the whole run in one OUTER HULL — so
+  // you can walk the entire station freely and explore every section.
+  const STATION_MODULES = [
+    buildStationCommand, buildStationObservation, buildStationLab, buildStationGarden,
+    buildStationQuarters, buildStationMedbay, buildStationEngineering, buildStationCargo,
+    buildStationRecreation, buildStationGalley,
+  ];
+  let mox = 320;
+  for (const buildMod of STATION_MODULES) {
+    const m = buildMod({ ox: mox, oz: IZ, floorY: stationFloorY });
+    group.add(m.group);
+    if (Array.isArray(m.ground)) for (const g of m.ground) stationGround.push(g);
+    if (typeof m.update === "function") stationModuleUpdates.push(m.update);
+    mox += 38; // contiguous 38 m-wide decks: 320, 358, ... , 662
+  }
+  // Outer hull around the whole run (x≈301..681, z = IZ±19): long side walls + an
+  // east end cap, as colliders so you can't step off the deck into space; the west
+  // end opens onto the existing control room. Cheap visual panels included.
+  {
+    const runMinX = 301, runMaxX = 681, midX = (runMinX + runMaxX) / 2, runLen = runMaxX - runMinX;
+    for (const sz of [-19, 19]) {
+      addAABB(stationColliders, midX, IZ + sz, runLen, WALL_T);
+      const wl = box(runLen, WALL_H, WALL_T, wallMat, false, true);
+      wl.position.set(midX, stationFloorY + WALL_H / 2, IZ + sz);
+      group.add(wl);
+    }
+    addAABB(stationColliders, runMaxX, IZ, WALL_T, 40);
+    const cap = box(WALL_T, WALL_H, 40, wallMat, false, true);
+    cap.position.set(runMaxX, stationFloorY + WALL_H / 2, IZ);
+    group.add(cap);
   }
 
   return {
