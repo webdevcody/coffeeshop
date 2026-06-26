@@ -122,7 +122,7 @@ export class HUD {
           <div class="help-row"><kbd>Shift</kbd><span>Sprint / NOS (＋Ctrl = ultra)</span></div>
           <div class="help-row"><kbd>F</kbd><span>Jetpack fly</span></div>
           <div class="help-row"><kbd>1 2 3</kbd><span>Weapons (0 holster)</span></div>
-          <div class="help-row"><kbd>B</kbd><span>Fire weapon</span></div>
+          <div class="help-row"><kbd>B / Click</kbd><span>Fire weapon (hold to auto-fire)</span></div>
           <div class="help-row"><kbd>P</kbd><span>Parachute</span></div>
           <div class="help-row"><kbd>M</kbd><span>City map</span></div>
           <div class="help-row"><kbd>V</kbd><span>Flashlight</span></div>
