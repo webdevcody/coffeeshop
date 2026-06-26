@@ -742,8 +742,29 @@ export function buildSpace(opts = {}) {
     const m = buildMod({ ox: mox, oz: IZ, floorY: stationFloorY });
     group.add(m.group);
     if (Array.isArray(m.ground)) for (const g of m.ground) stationGround.push(g);
+    // Keep each module's walls/furniture SOLID (no more "false walls" you pass
+    // through) EXCEPT any collider that crosses the central walking corridor
+    // (z within ±3.5 of the spine) — those are the inter-zone divider walls, left
+    // OPEN so you can still walk the whole station end to end. Side/perimeter walls
+    // and off-corridor furniture stay solid.
+    if (Array.isArray(m.colliders)) for (const c of m.colliders) {
+      if (c.maxZ > IZ - 3.6 && c.minZ < IZ + 3.6) continue; // crosses the corridor → leave open
+      stationColliders.push(c);
+    }
     if (typeof m.update === "function") stationModuleUpdates.push(m.update);
+    // A bright fill light per zone so the interior detail is actually visible (the
+    // modules' own emissive accents read dark without general lighting up here).
+    const zoneLight = new THREE.PointLight(0xdce8ff, 90, 64, 1.4);
+    zoneLight.position.set(mox, stationFloorY + 4.2, IZ);
+    group.add(zoneLight);
     mox += 38; // contiguous 38 m-wide decks: 320, 358, ... , 662
+  }
+  // Fill lights over the airlock / corridor / control room (the existing interior
+  // near IX) so the entry isn't a dark tunnel either.
+  for (const lx of [IX - 30, IX - 8, IX + 14]) {
+    const eL = new THREE.PointLight(0xdce8ff, 80, 60, 1.4);
+    eL.position.set(lx, stationFloorY + 4.2, IZ);
+    group.add(eL);
   }
   // Outer hull around the whole run (x≈301..681, z = IZ±19): long side walls + an
   // east end cap, as colliders so you can't step off the deck into space; the west
