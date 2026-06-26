@@ -1156,6 +1156,201 @@ export function buildCoffeeshop(scene) {
   fairyLights(-halfW + 1.5, -2.5, halfW - 1.5, -2.5, 12); // across the back lounge
   fairyLights(-9.5, -halfD + 1.0, -2.5, -halfD + 1.0, 8);  // along the back-left
 
+  // ========================================================================
+  // SITTABLE BENCHES — slatted seat + reclined back on end legs. Each is
+  // registered as a plain SEAT (no table/gameTable) so Space-to-sit just RESTS
+  // there (no game opens). A tight collider hugs the bench BODY (backrest + legs)
+  // nudged BEHIND the seat along -forward, so you can always walk up to the front
+  // and sit, but can't walk through the bench from the back/sides.
+  // ========================================================================
+  function makeBench(width = 1.5) {
+    const g = new THREE.Group();
+    const slatMat = DECOR.shelfWood; // warm wood slats
+    const legMat = DECOR.couchLeg; // dark legs
+    // Slatted seat: four planks running the bench's length with gaps between.
+    const seatSlatGeo = new THREE.BoxGeometry(width, 0.05, 0.1);
+    for (const sz of [-0.18, -0.06, 0.06, 0.18]) {
+      const slat = new THREE.Mesh(seatSlatGeo, slatMat);
+      slat.position.set(0, 0.5, sz);
+      slat.castShadow = true;
+      slat.receiveShadow = true;
+      g.add(slat);
+    }
+    // Slatted back: three rails reclined a touch, mounted at the rear (-Z).
+    const backSlatGeo = new THREE.BoxGeometry(width, 0.08, 0.04);
+    for (let i = 0; i < 3; i++) {
+      const rail = new THREE.Mesh(backSlatGeo, slatMat);
+      rail.position.set(0, 0.64 + i * 0.15, -0.24 - i * 0.03);
+      rail.rotation.x = -0.12;
+      rail.castShadow = true;
+      g.add(rail);
+    }
+    // Two end legs (a single chunky strut at each end) under the seat.
+    const legGeo = new THREE.BoxGeometry(0.08, 0.5, 0.5);
+    const postGeo = new THREE.BoxGeometry(0.06, 0.46, 0.06);
+    for (const lx of [-width / 2 + 0.12, width / 2 - 0.12]) {
+      const leg = new THREE.Mesh(legGeo, legMat);
+      leg.position.set(lx, 0.25, -0.05);
+      leg.castShadow = true;
+      g.add(leg);
+      // Back upright tying the leg to the backrest.
+      const post = new THREE.Mesh(postGeo, legMat);
+      post.position.set(lx, 0.72, -0.24);
+      post.rotation.x = -0.12;
+      g.add(post);
+    }
+    g.userData.seatY = 0.5;
+    return g;
+  }
+
+  // [x, z, ry] — ry is the body facing when seated (forward = (sin ry, cos ry);
+  // the backrest is at -forward). Four hug the cafe walls / front windows; two sit
+  // just outside on the entrance approach, facing back toward the cafe.
+  const benchSpecs = [
+    [-7, 10.3, Math.PI],        // under the front-left window, facing the lounge
+    [7, 10.3, Math.PI],         // under the front-right window, facing the lounge
+    [-12.2, -6.5, Math.PI / 2], // along the left wall, facing in (+X)
+    [12.2, 1.5, -Math.PI / 2],  // along the right wall, facing in (-X)
+    [-4, 14.5, Math.PI],        // outside on the approach, facing the cafe
+    [4, 14.5, Math.PI],         // outside on the approach, facing the cafe
+  ];
+  for (const [bx, bz, bry] of benchSpecs) {
+    const bench = makeBench(1.5);
+    bench.position.set(bx, 0, bz);
+    bench.rotation.y = bry;
+    group.add(bench);
+    // Plain rest seat — NO table/gameTable, so sitting just relaxes (no game).
+    seats.push({ x: bx, z: bz, ry: bry, seatY: bench.userData.seatY });
+    // Tight body collider nudged behind the seat along -forward. The bodies are
+    // axis-aligned (cardinal ry), so map the box to the wall it backs onto.
+    const fwx = Math.sin(bry), fwz = Math.cos(bry);
+    const sideways = Math.abs(fwx) > 0.5; // facing +/-X → length runs along Z
+    addBox(
+      colliders,
+      bx - fwx * 0.28,
+      bz - fwz * 0.28,
+      sideways ? 0.34 : 1.6,
+      sideways ? 1.6 : 0.34
+    );
+  }
+
+  // ========================================================================
+  // WEAPON ARMORY — a wall-mounted rack displaying a pistol, a rocket launcher
+  // and a grenade launcher, on the clear back-left wall span. main.js shows a
+  // "grab a weapon" hint within ~2.5 m of `armory` and cycles weapons.equip on E
+  // so players discover the guns without knowing the number keys. The wall
+  // collider already keeps you ~0.5 m off the rack, so it needs no collider of
+  // its own (the front approach stays clear for the E grab).
+  // ========================================================================
+  function makeWeaponRack() {
+    const g = new THREE.Group();
+    const woodMat = new THREE.MeshStandardMaterial({ color: "#4a3322", roughness: 0.7 });
+    const trimMat = new THREE.MeshStandardMaterial({ color: "#2d1f14", roughness: 0.6 });
+    const steel = new THREE.MeshStandardMaterial({ color: "#2b2f34", roughness: 0.4, metalness: 0.85 });
+    const dark = new THREE.MeshStandardMaterial({ color: "#141619", roughness: 0.6, metalness: 0.5 });
+    const olive = new THREE.MeshStandardMaterial({ color: "#3c6e3a", roughness: 0.55, metalness: 0.35 });
+    const warn = new THREE.MeshStandardMaterial({ color: "#d0a32a", roughness: 0.5, metalness: 0.4 });
+    const wood2 = new THREE.MeshStandardMaterial({ color: "#6b4a2f", roughness: 0.7 });
+    const brass = new THREE.MeshStandardMaterial({ color: "#caa05a", roughness: 0.35, metalness: 0.8 });
+
+    // Backboard + raised frame so it reads as a mounted display (board normal +Z;
+    // the whole group is rotated to face the room when placed).
+    const board = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.3, 0.08), woodMat);
+    board.receiveShadow = true;
+    g.add(board);
+    const frameTop = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.08, 0.12), trimMat);
+    frameTop.position.set(0, 0.65, 0.03);
+    g.add(frameTop);
+    const frameBot = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.08, 0.12), trimMat);
+    frameBot.position.set(0, -0.65, 0.03);
+    g.add(frameBot);
+    for (const fx of [-0.85, 0.85]) {
+      const side = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.3, 0.12), trimMat);
+      side.position.set(fx, 0, 0.03);
+      g.add(side);
+    }
+    // Brass pegs each weapon rests on (two per row).
+    const pegGeo = new THREE.BoxGeometry(0.04, 0.04, 0.2);
+    function pegs(y) {
+      for (const px of [-0.42, 0.42]) {
+        const peg = new THREE.Mesh(pegGeo, brass);
+        peg.position.set(px, y - 0.07, 0.14);
+        g.add(peg);
+      }
+    }
+
+    // Row 1 (top): rocket launcher — olive tube along local X, warning band + grip.
+    const rocket = new THREE.Group();
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.82, 14), olive);
+    tube.rotation.z = Math.PI / 2;
+    rocket.add(tube);
+    const rMuzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.07, 0.1, 14, 1, true), dark);
+    rMuzzle.rotation.z = Math.PI / 2;
+    rMuzzle.position.x = 0.43;
+    rocket.add(rMuzzle);
+    const rBand = new THREE.Mesh(new THREE.CylinderGeometry(0.073, 0.073, 0.06, 14), warn);
+    rBand.rotation.z = Math.PI / 2;
+    rBand.position.x = 0.29;
+    rocket.add(rBand);
+    const rGrip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.05), dark);
+    rGrip.position.set(-0.05, -0.12, 0);
+    rocket.add(rGrip);
+    rocket.position.set(0, 0.4, 0.2);
+    g.add(rocket);
+    pegs(0.4);
+
+    // Row 2 (middle): grenade launcher — stubby fat barrel + wood stock.
+    const gren = new THREE.Group();
+    const gBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.34, 14), steel);
+    gBarrel.rotation.z = Math.PI / 2;
+    gBarrel.position.x = 0.12;
+    gren.add(gBarrel);
+    const gBore = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.05, 0.05, 14, 1, true), dark);
+    gBore.rotation.z = Math.PI / 2;
+    gBore.position.x = 0.31;
+    gren.add(gBore);
+    const gRecv = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.07), steel);
+    gRecv.position.x = -0.06;
+    gren.add(gRecv);
+    const gStock = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 0.05), wood2);
+    gStock.position.set(-0.22, -0.02, 0);
+    gren.add(gStock);
+    const gGrip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.11, 0.045), dark);
+    gGrip.position.set(-0.04, -0.11, 0);
+    gren.add(gGrip);
+    gren.position.set(-0.05, 0.0, 0.2);
+    g.add(gren);
+    pegs(0.0);
+
+    // Row 3 (bottom): pistol.
+    const pistol = new THREE.Group();
+    const pSlide = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.07, 0.06), steel);
+    pSlide.position.set(0.04, 0.02, 0);
+    pistol.add(pSlide);
+    const pBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.07, 10), dark);
+    pBarrel.rotation.z = Math.PI / 2;
+    pBarrel.position.set(0.18, 0.02, 0);
+    pistol.add(pBarrel);
+    const pGrip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.14, 0.05), dark);
+    pGrip.position.set(-0.04, -0.07, 0);
+    pGrip.rotation.z = 0.28;
+    pistol.add(pGrip);
+    pistol.position.set(-0.08, -0.42, 0.2);
+    g.add(pistol);
+    pegs(-0.42);
+
+    g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    return g;
+  }
+  const weaponRack = makeWeaponRack();
+  weaponRack.position.set(-halfW + 0.12, 1.45, -9.5); // back-left wall, faces +X
+  weaponRack.rotation.y = Math.PI / 2;
+  group.add(weaponRack);
+  // Where main.js centres the "grab a weapon" reach (a standing spot in front of
+  // the rack). The cafe interior has no ride/interactable in E-reach, so reading E
+  // here can't steal a ride's E.
+  const armory = { x: -halfW + 1.4, z: -9.5 };
+
   // --- Outside: the street block in front of the entrance ------------------
   const outside = buildOutside(scene);
   for (const c of outside.colliders) colliders.push(c);
@@ -1212,7 +1407,7 @@ export function buildCoffeeshop(scene) {
   // Weather hooks ride along the same way: getRain() (0..1 storm density, for the
   // rain audio bed) and getTornadoes() (live funnels, for the tornado-fling check).
   return {
-    group, colliders, lights, seats, bar, ground, spawn, tables, update,
+    group, colliders, lights, seats, bar, ground, spawn, tables, armory, update,
     getTraffic: city.getTraffic,
     getPedestrians: city.getPedestrians,
     getRain: city.getRain || (() => 0),

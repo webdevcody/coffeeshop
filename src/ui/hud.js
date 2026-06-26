@@ -110,6 +110,24 @@ export class HUD {
       </div>
       <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
+      <div class="help-panel hidden" id="help-panel">
+        <div class="help-title">⌨️ Controls <span class="help-toggle">press H to hide</span></div>
+        <div class="help-list">
+          <div class="help-row"><kbd>WASD</kbd><span>Move around</span></div>
+          <div class="help-row"><kbd>Space</kbd><span>Jump · Sit / Stand</span></div>
+          <div class="help-row"><kbd>E</kbd><span>Ride · Use · Grab weapon</span></div>
+          <div class="help-row"><kbd>Shift</kbd><span>Sprint / NOS (＋Ctrl = ultra)</span></div>
+          <div class="help-row"><kbd>F</kbd><span>Jetpack fly</span></div>
+          <div class="help-row"><kbd>1 2 3</kbd><span>Weapons (0 holster)</span></div>
+          <div class="help-row"><kbd>B</kbd><span>Fire weapon</span></div>
+          <div class="help-row"><kbd>P</kbd><span>Parachute</span></div>
+          <div class="help-row"><kbd>M</kbd><span>City map</span></div>
+          <div class="help-row"><kbd>V</kbd><span>Flashlight</span></div>
+          <div class="help-row"><kbd>R</kbd><span>Rob someone</span></div>
+          <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
+          <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
+        </div>
+      </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
         <canvas class="minimap-canvas" id="minimap-canvas" width="180" height="180"></canvas>
@@ -143,6 +161,7 @@ export class HUD {
     this.customizePanel = ui.querySelector("#customize-panel");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
+    this.helpPanel = ui.querySelector("#help-panel");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
@@ -401,6 +420,19 @@ export class HUD {
     } else {
       this.sitPrompt.classList.add("hidden");
     }
+  }
+
+  // --- Controls legend (H) -------------------------------------------------
+  // Show/hide the on-screen controls help panel. setHelpVisible drives it
+  // directly; toggleHelp flips whatever it's showing now.
+  setHelpVisible(on) {
+    if (!this.helpPanel) return;
+    this.helpPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleHelp() {
+    if (!this.helpPanel) return;
+    this.helpPanel.classList.toggle("hidden");
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're

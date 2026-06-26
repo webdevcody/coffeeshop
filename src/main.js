@@ -47,7 +47,7 @@ const postFX = createPostFX(renderer, scene, camera);
 // its own onResize (camera aspect + renderer/label sizes) to the resize event;
 // we add a second listener that resizes the composer with the same dimensions.
 window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
-const { colliders, seats, bar, ground, spawn, tables, getTraffic, getPedestrians, getRain, getTornadoes, update: updateWorld } = buildCoffeeshop(scene);
+const { colliders, seats, bar, ground, spawn, tables, armory, getTraffic, getPedestrians, getRain, getTornadoes, update: updateWorld } = buildCoffeeshop(scene);
 
 // OCEAN: wraps the whole city in a huge animated sea so the landmass reads as an
 // island — adds a beach apron, a main dock + drivable boat, and four little
@@ -205,6 +205,11 @@ const _shotDir = new THREE.Vector3();
 // fire, or simply walk into the muzzle mouth (WALKIN) to be launched hands-free.
 const CANNON_LOAD_R = 2.5;
 const CANNON_WALKIN_R = 1.3;
+// WEAPON ARMORY reach (XZ, metres): press E within this of the wall rack to CYCLE
+// gun → rocket → grenade → holster, so players discover the guns without the 1/2/3
+// keys. The rack sits deep in the cafe where no ride/interactable is ever in
+// E-reach, so reading E here (before rides.update) can't steal a ride's E.
+const ARMORY_R = 2.5;
 
 let local = null;
 let joined = false;
@@ -655,6 +660,10 @@ hud.onJoin = ({ name, color }) => {
   // Sync the customize panel to our resolved look (skin/hair default from name).
   hud.setAppearance(local.getAppearance());
   joined = true;
+  // Flash the controls legend on first join so newcomers see the keys (incl. H to
+  // bring it back), then tuck it away after a few seconds.
+  hud.setHelpVisible(true);
+  setTimeout(() => hud.setHelpVisible(false), 7000);
   network.connect();
   // Send our full resolved look (clothing + skin + hair) so others render us
   // identically, not a different per-id default.
@@ -774,6 +783,27 @@ function frame() {
     }
     // Re-arm the walk-in auto-open once you've stepped clear of the muzzle zone.
     if (muzzleD2 > CANNON_LOAD_R * CANNON_LOAD_R) _cannonLatch = false;
+
+    // --- WEAPON ARMORY (on-foot) ---------------------------------------------
+    // Within reach of the wall rack (and clear of the cannon spots), drain the E
+    // edge HERE — before rides.update swallows it — to CYCLE the held weapon:
+    // holster → gun → rocket → grenade → holster. This is safe to read because no
+    // ride/interactable sits in E-reach this deep inside the cafe, so it never
+    // steals a ride's E. The 1/2/3 number keys still work alongside this.
+    const _aDx = local.pos.x - armory.x;
+    const _aDz = local.pos.z - armory.z;
+    const nearArmory = !local.sitting && (_aDx * _aDx + _aDz * _aDz) <= ARMORY_R * ARMORY_R;
+    if (nearArmory && !nearDoor && !nearMuzzle && controls.consumeUse()) {
+      const cur = weapons.current();
+      const next = cur === null ? "gun" : cur === "gun" ? "rocket" : cur === "rocket" ? "grenade" : null;
+      equipWeapon(next);
+      audio.blip?.();
+      hud.toast(
+        next
+          ? `Grabbed the ${next === "gun" ? "pistol" : next === "rocket" ? "rocket launcher" : "grenade launcher"} — press B to fire`
+          : "Holstered your weapon"
+      );
+    }
 
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
@@ -897,6 +927,7 @@ function frame() {
         airHint ? airHint
         : nearMuzzle ? "💥 Press E to FIRE the cannon"
         : nearDoor ? (cannon.doorOpen ? "🚪 Press E to close the secret door" : "🚪 Press E to open the secret door")
+        : nearArmory ? "🔫 Press E to grab a weapon"
         : (ride.prompt || local.sitPromptText())
       );
       // Open the coffee-bar menu when standing in the order zone; reflect whatever
@@ -938,6 +969,10 @@ function frame() {
   voice.updateVolumes();
   voice.updateSpeaking(dt);
   screenShare.update(dt);
+
+  // CONTROLS LEGEND (H): toggle the on-screen help panel on the key edge. Cheap +
+  // safe to pump every frame; the panel lives in the game-ui (hidden before join).
+  if (controls.consumeHelp()) hud.toggleHelp();
 
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
   // SpotLight to the camera and aim it along the camera's forward so it lights
@@ -1052,18 +1087,25 @@ function maybeSendState() {
 // same projectile + explosion. Firing is suppressed while seated; controls.js
 // already gates both edges to null/false while a game overlay holds the lock.
 // Allocation-free: origin/aim reuse the _shot* scratch vectors.
+// Equip (or holster, kind=null) a weapon and keep the held group parented to the
+// player's hand. Shared by the number-key path (updateWeapons) and the ARMORY
+// E-cycle (frame), so both swap weapons identically.
+function equipWeapon(kind) {
+  weapons.equip(kind);
+  if (kind) {
+    if (weapons.group.parent !== local.character.handAnchor) {
+      local.character.handAnchor.add(weapons.group);
+    }
+  } else if (weapons.group.parent) {
+    weapons.group.parent.remove(weapons.group); // holster: drop it out of the hand
+  }
+}
+
 function updateWeapons() {
   const slot = controls.consumeWeaponSlot();
   if (slot != null) {
     const kind = slot === 1 ? "gun" : slot === 2 ? "rocket" : slot === 3 ? "grenade" : null;
-    weapons.equip(kind);
-    if (kind) {
-      if (weapons.group.parent !== local.character.handAnchor) {
-        local.character.handAnchor.add(weapons.group);
-      }
-    } else if (weapons.group.parent) {
-      weapons.group.parent.remove(weapons.group); // holster: drop it out of the hand
-    }
+    equipWeapon(kind);
   }
   // consumeFire() is called first so the B edge always drains, even when holstered.
   if (controls.consumeFire() && weapons.current() && !local.sitting) {

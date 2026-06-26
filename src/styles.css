@@ -321,6 +321,73 @@ body {
   display: none;
 }
 
+/* ---------- Controls legend (toggled with H) ---------- */
+.help-panel {
+  position: fixed;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(80vw, 248px);
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 6;
+}
+.help-panel.hidden {
+  display: none;
+}
+.help-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 0 1px 9px;
+}
+.help-toggle {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a98e72;
+}
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.help-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.help-row span {
+  color: #efe2cf;
+}
+.help-row kbd {
+  flex: none;
+  min-width: 46px;
+  text-align: center;
+  font: 700 11px "Segoe UI", system-ui, sans-serif;
+  color: #2b1b0e;
+  background: linear-gradient(180deg, #f6e6cc, #e0c89e);
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 3px 7px;
+  letter-spacing: 0.5px;
+}
+
 /* ---------- Sprint stamina bar (centered, just under the sit prompt) ---------- */
 .stamina-bar {
   position: fixed;

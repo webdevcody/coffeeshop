@@ -32,6 +32,7 @@ export function createControls(domElement) {
   let mapPressed = false; // edge-triggered M, drained by consumeMap() (open the city map)
   let robPressed = false; // edge-triggered R, drained by consumeRob() (rob a nearby pedestrian)
   let parachutePressed = false; // edge-triggered P, drained by consumeParachute() (deploy the chute mid-air)
+  let helpPressed = false; // edge-triggered H, drained by consumeHelp() (toggle the controls legend)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -82,6 +83,9 @@ export function createControls(domElement) {
     // P deploys the PARACHUTE while airborne (a FREE key). Edge-triggered; drained
     // by consumeParachute() in main.js on the on-foot path.
     if (e.code === "KeyP" && !keys.has("KeyP")) parachutePressed = true;
+    // H toggles the on-screen CONTROLS LEGEND (a FREE key). Edge-triggered; drained
+    // by consumeHelp() in main.js and cleared in setLocked like the other edges.
+    if (e.code === "KeyH" && !keys.has("KeyH")) helpPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -330,6 +334,15 @@ export function createControls(domElement) {
     return locked ? false : pressed;
   }
 
+  // True once per H press (toggle the controls legend), then resets. Not gated by
+  // `locked` (the legend is a harmless info overlay), but it IS cleared in
+  // setLocked so an edge can't carry across into a game overlay.
+  function consumeHelp() {
+    const pressed = helpPressed;
+    helpPressed = false;
+    return pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -403,10 +416,11 @@ export function createControls(domElement) {
       mapPressed = false;
       robPressed = false;
       parachutePressed = false;
+      helpPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, consumeRob, consumeParachute, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, consumeRob, consumeParachute, consumeHelp, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {
