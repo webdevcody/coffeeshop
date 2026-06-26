@@ -159,9 +159,17 @@ export function buildStationGalley(opts = {}) {
   const wallZpos = box(2 * HX + 0.8, WALL_H, WALL_T, wallMat, false, true);
   wallZpos.position.set(0, WALL_H / 2, HZ + WALL_T / 2);
   group.add(wallZpos);
-  const wallXneg = box(WALL_T, WALL_H, 2 * HZ + 0.8, wallMat, false, true);
-  wallXneg.position.set(-HX - WALL_T / 2, WALL_H / 2, 0);
-  group.add(wallXneg);
+  // LEFT (-X) END — OPENED. Instead of one solid divider wall sealing this zone
+  // off from the neighbour, leave a WIDE centred full-height doorway (11 m) so you
+  // walk straight through along the east-west axis. Two short corner stubs keep the
+  // room's structure and still back the chalkboard menu / corner plant.
+  const XDOOR_HALF = 5.5;                       // half-width of the open doorway (→ 11 m gap)
+  const xStubLen = (HZ + 0.4) - XDOOR_HALF;     // each corner stub fills from the gap to the ±Z corner
+  for (const sz of [-1, 1]) {
+    const stub = box(WALL_T, WALL_H, xStubLen, wallMat, false, true);
+    stub.position.set(-HX - WALL_T / 2, WALL_H / 2, sz * (XDOOR_HALF + xStubLen / 2));
+    group.add(stub);
+  }
   // Warm wood dado strip wrapping the three solid walls (cozy contrast band).
   for (const w of [
     [0, -HZ + 0.05, 2 * HX, 0.06], [0, HZ - 0.05, 2 * HX, 0.06],
@@ -170,9 +178,13 @@ export function buildStationGalley(opts = {}) {
     dado.position.set(w[0], 0.5, w[1]);
     group.add(dado);
   }
-  const dadoX = box(0.06, 1.0, 2 * HZ, wainscotMat, false, false);
-  dadoX.position.set(-HX + 0.05, 0.5, 0);
-  group.add(dadoX);
+  // Warm wood dado on the two -X corner stubs (split to match the new doorway gap).
+  const dadoXLen = HZ - XDOOR_HALF;             // 10.5 each side
+  for (const sz of [-1, 1]) {
+    const dadoX = box(0.06, 1.0, dadoXLen, wainscotMat, false, false);
+    dadoX.position.set(-HX + 0.05, 0.5, sz * (XDOOR_HALF + dadoXLen / 2));
+    group.add(dadoX);
+  }
   // Structural ribs up the back (-Z) wall.
   for (const rx of [-14, -7, 0, 7, 14]) {
     const rib = box(0.3, WALL_H, 0.45, ribMat, false, false);
@@ -392,9 +404,11 @@ export function buildStationGalley(opts = {}) {
     }
   }
 
-  // ── 6) CHALKBOARD MENU on the -X wall ────────────────────────────────────────
+  // ── 6) CHALKBOARD MENU on the -X corner STUB ─────────────────────────────────
+  // Re-anchored from the old (now removed) full -X wall onto the -Z corner stub so
+  // it still hangs flush against solid structure, clear of the new doorway gap.
   {
-    const cz = -6, by = 2.5;
+    const cz = -11, by = 2.5;
     const fr = box(0.06, 2.3, 3.9, boardFrameMat, false, false);
     fr.position.set(-HX + 0.12, by, cz);
     group.add(fr);
@@ -415,18 +429,29 @@ export function buildStationGalley(opts = {}) {
     }
   }
 
-  // ── 7) BIG VIEWPORT on the +X wall, Earth drifting beyond ─────────────────────
+  // ── 7) BIG VIEWPORT on the +X END, Earth drifting beyond — OPENED ─────────────
+  // The +X glazing is split into two side lights with a WIDE centred full-height
+  // doorway (11 m) so you walk straight out this end of the zone. The header stays
+  // full-width as the doorway LINTEL; the sill, glass and central mullions are cut
+  // away across the opening. Earth + frame are kept.
   {
     const fx = HX + WALL_T / 2;
-    // Framed glazing: header, sill, side jambs, mullions, glass.
+    const xdoor = XDOOR_HALF;                 // same 11 m centred doorway as the -X end
+    // Header acts as the doorway lintel (kept full-width, overhead).
     const header = box(WALL_T, 1.0, 2 * HZ, frameMat, false, false);
     header.position.set(fx, WALL_H - 0.5, 0); group.add(header);
-    const sill = box(WALL_T, 0.9, 2 * HZ, frameMat, false, false);
-    sill.position.set(fx, 0.45, 0); group.add(sill);
     const openH = WALL_H - 1.9, openCY = 0.9 + openH / 2;
-    const glass = box(0.12, openH, 2 * HZ - 0.6, glassMat, false, false);
-    glass.position.set(fx, openCY, 0); group.add(glass);
-    for (const mz of [-10, -5, 0, 5, 10]) {
+    // Sill + glazing as two side lights, leaving the central doorway clear.
+    const sillLen = HZ - xdoor;               // 10.5 each side
+    const glassLen = (HZ - 0.3) - xdoor;      // 10.2 each side (matches old 2*HZ-0.6 glazing)
+    for (const sz of [-1, 1]) {
+      const sill = box(WALL_T, 0.9, sillLen, frameMat, false, false);
+      sill.position.set(fx, 0.45, sz * (xdoor + sillLen / 2)); group.add(sill);
+      const glass = box(0.12, openH, glassLen, glassMat, false, false);
+      glass.position.set(fx, openCY, sz * (xdoor + glassLen / 2)); group.add(glass);
+    }
+    // Outer mullions only (central -5/0/5 mullions removed for the doorway).
+    for (const mz of [-10, 10]) {
       const mull = box(0.22, openH, 0.2, frameMat, false, false);
       mull.position.set(fx, openCY, mz); group.add(mull);
     }

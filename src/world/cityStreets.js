@@ -280,20 +280,16 @@ export function buildStreets() {
   group.add(pools);
 
   // --- A few REAL cast lights (hero PointLights) where players actually are. ---
-  // Hard-capped to <= 8 warm, modest-range/decay lights so the streets near the
-  // spawn approach and the two busiest main-avenue intersections get GENUINE cast
-  // light at night. NOT one-per-lamp (that would be hundreds of lights = GPU
-  // death) — the cheap additive pools above carry the rest of the street. Each
-  // sits at lamp-head height so it pools down onto the road like a real bulb.
+  // Hard-capped to just 4 warm, modest-range/decay lights at the busiest spots:
+  // the spawn approach + the main x=95 cross-street junctions. NOT one-per-lamp
+  // (hundreds of lights = GPU death), and trimmed from 8 → 4 to cut the per-pixel
+  // light loop — the cheap additive pools + emissive lamp heads above carry the
+  // rest of the street. Each sits at lamp-head height so it pools onto the road.
   const HERO_SPOTS = [
     [0, NEAR + 6],     // spawn approach (centre avenue, just past the cafe)
-    [0, NEAR + 24],    // a little further up the spawn avenue
     [0, 95],           // centre avenue × main cross street (busy junction)
-    [0, 155],          // centre avenue × next main cross street
     [-60, 95],         // left avenue × main cross
     [60, 95],          // right avenue × main cross
-    [-60, 155],        // left avenue × next cross
-    [60, 155],         // right avenue × next cross
   ];
   for (const [hx, hz] of HERO_SPOTS) {
     const pl = new THREE.PointLight(0xffe0a0, 32, 36, 1.7); // warm, brighter, range 36 m

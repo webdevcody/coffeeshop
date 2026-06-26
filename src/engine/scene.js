@@ -274,10 +274,11 @@ function addLights(scene, sunDir) {
   const CITY_CENTER = new THREE.Vector3(0, 0, 90);
   sun.position.copy(sunDir).multiplyScalar(160).add(CITY_CENTER);
   sun.castShadow = true;
-  // 4k map over the large frustum keeps texel density high enough that the soft
-  // PCF falloff stays clean instead of blocky across the city. Still one map, so
-  // perf cost is a single extra shadow pass — fine for a static directional sun.
-  sun.shadow.mapSize.set(4096, 4096);
+  // 2k map over the large frustum keeps texel density reasonable while halving the
+  // shadow-pass fill cost of the old 4k map (the biggest GPU win here). Shadows stay
+  // ENABLED + PCFSoft; PCF + the small blur below keep the softer edges readable.
+  // Still one map, so perf cost is a single extra shadow pass — fine for a static sun.
+  sun.shadow.mapSize.set(2048, 2048);
   // Frustum sized to wrap the cafe approach + the populated near city. Wide
   // enough that nothing near the player pops out of shadow, tight enough that the
   // 4k texels stay dense so the cafe interior and street furniture read crisp.
@@ -290,7 +291,7 @@ function addLights(scene, sunDir) {
   // Softer shadow edges: a small blur radius on top of PCFSoft gives the gentle
   // golden-hour penumbra falloff without the cost of a real area light.
   sun.shadow.radius = 3.0;
-  sun.shadow.blurSamples = 12;
+  sun.shadow.blurSamples = 4;
   // Bias tuned for the wider/4k frustum: a touch of depth bias kills acne on the
   // near-coplanar ground layers, and a healthy normalBias hides peter-panning on
   // the long raking shadows without detaching contact shadows at building bases.

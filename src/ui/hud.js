@@ -16,6 +16,9 @@ export class HUD {
     this.onToggleShare = null; // toggle screen sharing
     this.onBuy = null; // (itemId) => void — buy an item at the coffee bar
     this.onCustomize = null; // ({ color?, skin?, hair? }) — a swatch was picked
+    this.onMusicToggle = null; // () => void — play/pause the lofi music
+    this.onMusicNext = null; // () => void — skip to a fresh lofi track
+    this.onMusicVolume = null; // (vol 0..1) => void — ride the music bus volume
     this.appearance = { color: null, skin: null, hair: null };
     this.joined = false;
     this._buildJoin();
@@ -90,6 +93,7 @@ export class HUD {
         </div>
       </div>
       <div class="money-hud hidden" id="money-hud">$0</div>
+      <div class="fps-hud hidden" id="fps-hud">– fps</div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -119,14 +123,34 @@ export class HUD {
           <div class="help-row"><kbd>Shift</kbd><span>Sprint / NOS (＋Ctrl = ultra)</span></div>
           <div class="help-row"><kbd>F</kbd><span>Jetpack fly</span></div>
           <div class="help-row"><kbd>1 2 3</kbd><span>Weapons (0 holster)</span></div>
-          <div class="help-row"><kbd>B</kbd><span>Fire weapon</span></div>
+          <div class="help-row"><kbd>B / Click</kbd><span>Fire weapon (hold to auto-fire)</span></div>
           <div class="help-row"><kbd>P</kbd><span>Parachute</span></div>
           <div class="help-row"><kbd>M</kbd><span>City map</span></div>
           <div class="help-row"><kbd>V</kbd><span>Flashlight</span></div>
           <div class="help-row"><kbd>R</kbd><span>Rob someone</span></div>
           <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
+          <div class="help-row"><kbd>J</kbd><span>Sound mixer</span></div>
+          <div class="help-row"><kbd>N</kbd><span>Lofi music</span></div>
+          <div class="help-row"><kbd>L</kbd><span>Leaderboard</span></div>
           <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
         </div>
+      </div>
+      <div class="mixer-panel hidden" id="mixer-panel">
+        <div class="mixer-title">🎚️ Sound mixer <span class="mixer-hint">press J to hide</span></div>
+        <div class="mixer-list" id="mixer-list"></div>
+      </div>
+      <div class="music-panel hidden" id="music-panel">
+        <div class="music-title">🎵 Lofi music <span class="music-hint">press N to hide</span></div>
+        <div class="music-track" id="music-track">—</div>
+        <div class="music-controls">
+          <button class="music-btn" id="music-play" aria-label="Play or pause music">▶</button>
+          <button class="music-btn" id="music-next" aria-label="Next track">⏭</button>
+          <input type="range" class="music-vol" id="music-vol" min="0" max="100" step="1" value="100" aria-label="Music volume" />
+        </div>
+      </div>
+      <div class="leaderboard hidden" id="leaderboard">
+        <div class="lb-title">🏆 Leaderboard <span class="lb-hint">press L to hide</span></div>
+        <div class="lb-list" id="lb-list"></div>
       </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
@@ -162,12 +186,22 @@ export class HUD {
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
     this.helpPanel = ui.querySelector("#help-panel");
+    this.mixerPanel = ui.querySelector("#mixer-panel");
+    this.mixerList = ui.querySelector("#mixer-list");
+    this.musicPanel = ui.querySelector("#music-panel");
+    this.musicTrack = ui.querySelector("#music-track");
+    this.musicPlayBtn = ui.querySelector("#music-play");
+    this.musicNextBtn = ui.querySelector("#music-next");
+    this.musicVol = ui.querySelector("#music-vol");
+    this.leaderboardPanel = ui.querySelector("#leaderboard");
+    this.lbList = ui.querySelector("#lb-list");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
     this.shopList = ui.querySelector("#shop-list");
     this.heldEl = ui.querySelector("#held-item");
     this.moneyHud = ui.querySelector("#money-hud");
+    this.fpsHud = ui.querySelector("#fps-hud");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
@@ -211,6 +245,13 @@ export class HUD {
     this.micBtn.addEventListener("click", () => this.onToggleMic?.());
     this.deafenBtn.addEventListener("click", () => this.onToggleDeafen?.());
     this.shareBtn.addEventListener("click", () => this.onToggleShare?.());
+
+    // Lofi music player widget (toggled with N). The buttons + slider just surface
+    // their intent through callbacks; main.js drives the actual music manager and
+    // calls back into setMusicPlaying / setMusicTrack to reflect the live state.
+    this.musicPlayBtn.addEventListener("click", () => this.onMusicToggle?.());
+    this.musicNextBtn.addEventListener("click", () => this.onMusicNext?.());
+    this.musicVol.addEventListener("input", () => this.onMusicVolume?.((+this.musicVol.value) / 100));
 
     // Enter focuses chat when not already typing; Escape blurs.
     window.addEventListener("keydown", (e) => {
@@ -280,6 +321,17 @@ export class HUD {
     this.moneyHud.classList.remove("hidden");
     const txt = `$${n | 0}`;
     if (this.moneyHud.textContent !== txt) this.moneyHud.textContent = txt;
+  }
+
+  // FPS counter (top-left, under the money pill). Shown only once joined; called by
+  // main.js with a smoothed frame rate (throttled there). Allocation-free — writes
+  // text only when the integer value changes.
+  setFps(n) {
+    if (!this.fpsHud) return;
+    if (!this.joined) { this.fpsHud.classList.add("hidden"); return; }
+    this.fpsHud.classList.remove("hidden");
+    const txt = `${n | 0} fps`;
+    if (this.fpsHud.textContent !== txt) this.fpsHud.textContent = txt;
   }
 
   // Brief, self-dismissing message centered near the top (e.g. "table full").
@@ -433,6 +485,158 @@ export class HUD {
   toggleHelp() {
     if (!this.helpPanel) return;
     this.helpPanel.classList.toggle("hidden");
+  }
+
+  // --- Sound mixer (J) -----------------------------------------------------
+  // Build the mixer panel once: a Master row plus one row per audio bus, each a
+  // labelled 0-100% slider + a mute toggle. `buses` is [{ name, label }] from
+  // audio.getBuses(); `getVol(name)` reads the current 0..1 level; `onChange(name,
+  // vol)` is called live as a slider drags; `getMuted(name)`/`onMute(name, muted)`
+  // drive the per-row mute toggle (both optional). The Master row is injected at
+  // the top under the reserved name "master" so the caller wires it the same way.
+  // Idempotent — a second call is a no-op, so main.js can call it on every open.
+  buildMixer(buses, getVol, onChange, getMuted, onMute) {
+    if (!this.mixerList || this._mixerBuilt) return;
+    this._mixerBuilt = true;
+    const rows = [{ name: "master", label: "Master" }, ...(buses || [])];
+    for (const b of rows) {
+      const row = document.createElement("div");
+      row.className = "mixer-row" + (b.name === "master" ? " master" : "");
+
+      const label = document.createElement("span");
+      label.className = "mixer-label";
+      label.textContent = b.label;
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.className = "mixer-slider";
+      slider.min = "0";
+      slider.max = "100";
+      slider.step = "1";
+      const v0 = getVol ? getVol(b.name) : 1;
+      slider.value = String(Math.round((v0 == null ? 1 : v0) * 100));
+      slider.setAttribute("aria-label", b.label + " volume");
+
+      const pct = document.createElement("span");
+      pct.className = "mixer-pct";
+      pct.textContent = slider.value + "%";
+
+      // Live drag → push the 0..1 level to audio.setBusVolume / setMasterVolume.
+      slider.addEventListener("input", () => {
+        pct.textContent = slider.value + "%";
+        onChange?.(b.name, (+slider.value) / 100);
+      });
+
+      const mute = document.createElement("button");
+      mute.type = "button";
+      mute.className = "mixer-mute";
+      const muted0 = getMuted ? !!getMuted(b.name) : false;
+      mute.classList.toggle("muted", muted0);
+      mute.textContent = muted0 ? "🔇" : "🔊";
+      mute.setAttribute("aria-label", "Mute " + b.label);
+      mute.addEventListener("click", () => {
+        const on = !mute.classList.contains("muted");
+        mute.classList.toggle("muted", on);
+        mute.textContent = on ? "🔇" : "🔊";
+        onMute?.(b.name, on);
+      });
+
+      row.append(label, slider, pct, mute);
+      this.mixerList.appendChild(row);
+    }
+  }
+
+  setMixerVisible(on) {
+    if (!this.mixerPanel) return;
+    this.mixerPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleMixer() {
+    if (!this.mixerPanel) return;
+    this.mixerPanel.classList.toggle("hidden");
+  }
+
+  // --- Lofi music player (N) -----------------------------------------------
+  // Show/hide + toggle the music widget (matches the help/mixer overlays).
+  setMusicVisible(on) {
+    if (!this.musicPanel) return;
+    this.musicPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleMusic() {
+    if (!this.musicPanel) return;
+    this.musicPanel.classList.toggle("hidden");
+  }
+
+  // Reflect the play/pause state on the button (▶ when paused, ⏸ when playing).
+  setMusicPlaying(on) {
+    if (!this.musicPlayBtn) return;
+    this.musicPlayBtn.textContent = on ? "⏸" : "▶";
+    this.musicPlayBtn.classList.toggle("active", !!on);
+    this.musicPlayBtn.setAttribute("aria-label", on ? "Pause music" : "Play music");
+  }
+
+  // Show the current track name (procedural progression/key).
+  setMusicTrack(name) {
+    if (!this.musicTrack) return;
+    const txt = name || "—";
+    if (this.musicTrack.textContent !== txt) this.musicTrack.textContent = txt;
+  }
+
+  // Sync the volume slider to the live music-bus level (0..1). Skipped while the
+  // slider is focused so syncing on open can't fight an in-progress drag.
+  setMusicVolume(v) {
+    if (!this.musicVol || document.activeElement === this.musicVol) return;
+    this.musicVol.value = String(Math.round(Math.max(0, Math.min(1, v || 0)) * 100));
+  }
+
+  // --- Money leaderboard (L) -----------------------------------------------
+  // Show/hide + toggle the standings panel (matches the help/mixer/music overlays).
+  setLeaderboardVisible(on) {
+    if (!this.leaderboardPanel) return;
+    this.leaderboardPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleLeaderboard() {
+    if (!this.leaderboardPanel) return;
+    this.leaderboardPanel.classList.toggle("hidden");
+  }
+
+  // Render the money standings, ranked high→low. `entries` is a pre-sorted
+  // [{ name, money, you }] (main.js owns the model + sort, so this only paints DOM
+  // and only when the model actually changed — never per frame). The local player's
+  // row is highlighted and tagged "(You)". An empty list shows a friendly hint.
+  setLeaderboard(entries) {
+    if (!this.lbList) return;
+    this.lbList.textContent = "";
+    if (!entries || !entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "lb-empty";
+      empty.textContent = "No earnings yet — rob someone (R) to get on the board.";
+      this.lbList.appendChild(empty);
+      return;
+    }
+    let rank = 0;
+    for (const e of entries) {
+      rank++;
+      const row = document.createElement("div");
+      row.className = "lb-row" + (e.you ? " you" : "");
+
+      const rk = document.createElement("span");
+      rk.className = "lb-rank";
+      rk.textContent = "#" + rank;
+
+      const name = document.createElement("span");
+      name.className = "lb-name";
+      name.textContent = (e.name || "Guest") + (e.you ? " (You)" : "");
+
+      const amt = document.createElement("span");
+      amt.className = "lb-amount";
+      amt.textContent = "$" + (e.money | 0);
+
+      row.append(rk, name, amt);
+      this.lbList.appendChild(row);
+    }
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're

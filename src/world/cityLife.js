@@ -28,6 +28,15 @@ const HALFR = 6;                      // half the ~12m road width
 const LANE = 2.6;                     // distance from centre line to a lane centre
 const ROAD_Y = 0.03;                  // road surface height
 
+// Stage-2 distance cull: traffic cars + pedestrians whose XZ is beyond this
+// radius from the player stop DRAWING (group.visible=false) and skip their
+// per-entity limb/wheel/beacon animation. Their route POSITIONS still advance
+// every frame so they're correct the instant you come back into range, and the
+// getTraffic()/getPedestrians() lists stay fully live — the cull is render-only,
+// so steal-car (E) + rob (R) keep working on far entities. If no player is
+// supplied (pre-join) nothing is culled, matching the original behaviour.
+const CULL_R = 140, CULL_R2 = CULL_R * CULL_R;
+
 // "Hot" crowd zones (plaza + market sit around z≈65): pedestrians slow and bunch
 // when their position falls inside one of these Z bands on the adjacent avenues.
 const CROWD_Z_LO = 40, CROWD_Z_HI = 92; // the z≈65 row, between cross streets 35 & 95
@@ -607,9 +616,16 @@ export function buildCityLife() {
 
   // -------------------- UPDATE (no allocation) -------------------------------
   let t = 0;
-  function update(dt) {
+  function update(dt, player) {
     if (!dt) dt = 0;
     t += dt;
+
+    // Player XZ drives the distance cull. When absent (pre-join) haveP is false,
+    // so `near` is always true below and everything renders + animates as before.
+    // Plain scalars — no per-frame allocation.
+    const haveP = !!player;
+    const plx = haveP ? player.x : 0;
+    const plz = haveP ? player.z : 0;
 
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
@@ -620,6 +636,16 @@ export function buildCityLife() {
       else if (c.pos < c.lo) c.pos = c.hi - (c.lo - c.pos);
       if (c.axis === "z") c.group.position.z = c.pos;
       else c.group.position.x = c.pos;
+
+      // Distance cull (render-only): far cars stop drawing and skip the wheel /
+      // cyclist-leg / beacon work below. Position was already advanced above, so
+      // the car is in the right place when you return — and getTraffic() still
+      // hands it out for hijacking regardless of visibility.
+      const cdx = c.group.position.x - plx, cdz = c.group.position.z - plz;
+      const near = !haveP || (cdx * cdx + cdz * cdz) <= CULL_R2;
+      if (c.group.visible !== near) c.group.visible = near;
+      if (!near) continue;
+
       // Spin wheels: angular = linear / radius. Same for all wheels on a vehicle.
       const spin = c.speed * dt / c.wheelR * c.dir;
       const w0 = c.wheels[0].rotation.x + spin;
@@ -646,6 +672,15 @@ export function buildCityLife() {
       const reacting = p.react > 0;
       if (reacting) { p.react -= dt; p.pauseTimer = 0; }
 
+      // Distance cull (render-only): use the ped's current XZ. Far peds (and their
+      // dog) stop drawing and skip all limb/bob/swivel animation, but their route
+      // position is still advanced below so they're correct when you approach.
+      // getPedestrians() still lists them for robbing regardless of visibility.
+      const pdx = p.group.position.x - plx, pdz = p.group.position.z - plz;
+      const near = !haveP || (pdx * pdx + pdz * pdz) <= CULL_R2;
+      if (p.group.visible !== near) p.group.visible = near;
+      if (p.dog && p.dog.group.visible !== near) p.dog.group.visible = near;
+
       if (p.speed > 0 || p.pauseTimer > 0) {
         // ----- Moving walkers/joggers (and ones currently paused) -----
         // Pause logic: when allowed, near a crossing, and off cooldown, a walker
@@ -669,57 +704,63 @@ export function buildCityLife() {
           p.group.position.z = p.pos;
         }
 
-        // Leg/arm swing + bob. Joggers swing harder and bob higher; while paused
-        // the figure settles to a standing idle (tiny sway only).
-        const rate = p.mode === "jog" ? 11 : 7;
-        const amp = moving ? (p.mode === "jog" ? 0.9 : 0.5) : 0.0;
-        const s = Math.sin(t * rate + p.phase) * amp;
-        p.legs[0].rotation.x = s;
-        p.legs[1].rotation.x = -s;
-        if (p.arms) {
-          // arms counter-swing to the legs; joggers pump bent arms.
-          p.arms[0].rotation.x = -s * 0.8;
-          p.arms[1].rotation.x = s * 0.8;
+        // Leg/arm swing + bob (RENDER-only — skipped when far). Joggers swing
+        // harder and bob higher; while paused the figure settles to a standing
+        // idle (tiny sway only).
+        if (near) {
+          const rate = p.mode === "jog" ? 11 : 7;
+          const amp = moving ? (p.mode === "jog" ? 0.9 : 0.5) : 0.0;
+          const s = Math.sin(t * rate + p.phase) * amp;
+          p.legs[0].rotation.x = s;
+          p.legs[1].rotation.x = -s;
+          if (p.arms) {
+            // arms counter-swing to the legs; joggers pump bent arms.
+            p.arms[0].rotation.x = -s * 0.8;
+            p.arms[1].rotation.x = s * 0.8;
+          }
+          const bobAmp = moving ? (p.mode === "jog" ? 0.12 : 0.05) : 0.0;
+          p.group.position.y = Math.abs(Math.sin(t * rate + p.phase)) * bobAmp;
         }
-        const bobAmp = moving ? (p.mode === "jog" ? 0.12 : 0.05) : 0.0;
-        p.group.position.y = Math.abs(Math.sin(t * rate + p.phase)) * bobAmp;
 
-        // Keep this walker's dog trotting just ahead, legs pumping (and waiting
-        // alongside its owner when paused).
+        // Keep this walker's dog trotting just ahead (position stays in sync so it
+        // doesn't drift off its owner); its leg pumping is skipped when far.
         if (p.dog) {
           let dz = p.pos + p.dir * p.dog.ahead;
           if (dz > p.hi) dz = p.lo + (dz - p.hi);
           else if (dz < p.lo) dz = p.hi - (p.lo - dz);
           p.dog.group.position.z = dz;
-          const ds = (moving ? Math.sin(t * 11 + p.phase) : Math.sin(t * 3 + p.phase) * 0.2) * 0.6;
-          p.dog.legs[0].rotation.x = ds;  p.dog.legs[3].rotation.x = ds;
-          p.dog.legs[1].rotation.x = -ds; p.dog.legs[2].rotation.x = -ds;
+          if (near) {
+            const ds = (moving ? Math.sin(t * 11 + p.phase) : Math.sin(t * 3 + p.phase) * 0.2) * 0.6;
+            p.dog.legs[0].rotation.x = ds;  p.dog.legs[3].rotation.x = ds;
+            p.dog.legs[1].rotation.x = -ds; p.dog.legs[2].rotation.x = -ds;
+          }
         }
-      } else if (p.mode === "idle") {
+      } else if (near && p.mode === "idle") {
         // Standing and looking around: slow head swivel + a faint weight shift.
         if (p.head) p.head.rotation.y = Math.sin(t * 0.7 + p.phase) * 0.8;
         p.group.position.y = Math.abs(Math.sin(t * 1.3 + p.phase)) * 0.01;
         // occasional ankle shift so the body isn't dead-still
         const sway = Math.sin(t * 0.9 + p.phase) * 0.03;
         p.legs[0].rotation.x = sway; p.legs[1].rotation.x = -sway;
-      } else if (p.mode === "busk") {
+      } else if (near && p.mode === "busk") {
         // Street musician: gentle body sway + a strumming right arm.
         p.group.position.y = Math.abs(Math.sin(t * 1.6 + p.phase)) * 0.02;
         p.group.rotation.z = Math.sin(t * 1.2 + p.phase) * 0.04;
         if (p.arms) p.arms[1].rotation.x = Math.sin(t * 6 + p.phase) * 0.7; // strum hand
         if (p.head) p.head.rotation.y = Math.sin(t * 0.8) * 0.2;
-      } else if (p.mode === "watch") {
+      } else if (near && p.mode === "watch") {
         // Onlooker: tiny bob + occasional head turn, weight on one foot.
         p.group.position.y = Math.abs(Math.sin(t * 1.4 + p.phase)) * 0.012;
         if (p.head) p.head.rotation.y = Math.sin(t * 0.5 + p.phase) * 0.3;
-      } else if (p.seated) {
+      } else if (near && p.seated) {
         // Idle: a tiny breathing bob, legs stay folded.
         p.group.position.y = p.baseY + Math.sin(t * 2 + p.phase) * 0.015;
       }
 
       // ROBBERY pose override: regardless of the ped's usual behaviour, while the
       // reaction flag is hot both arms are thrown overhead with a fast scared bob.
-      if (reacting && p.arms) {
+      // (Only when visible — a just-robbed ped is by definition right next to you.)
+      if (near && reacting && p.arms) {
         p.arms[0].rotation.x = -2.7;
         p.arms[1].rotation.x = -2.7;
         const baseY = p.baseY || 0;

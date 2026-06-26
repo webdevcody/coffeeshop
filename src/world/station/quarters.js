@@ -151,36 +151,38 @@ export function buildStationQuarters(opts = {}) {
   wallNZ.position.set(0, ROOM_H / 2, -HZ + 0.15);
   group.add(wallNZ);
   solid(0, -HZ + 0.15, 2 * HX, 0.3);
-  // -X wall with a DOORWAY gap at z[-2.2, 2.2] (entry back toward the station core).
-  for (const [cz, d] of [[-9.1, 13.8], [9.1, 13.8]]) {
+  // -X wall — OPENED into one continuous hall. Only short corner stubs at the ±Z ends
+  // remain, leaving a ~19 m full-height central gap so you see straight into the next
+  // zone (was a narrow 4.4 m doorway; old header + jambs removed for a clean open span).
+  for (const [cz, d] of [[-12.75, 6.5], [12.75, 6.5]]) {
     const w = box(0.3, ROOM_H, d, wallMat, false, true);
     w.position.set(-HX + 0.15, ROOM_H / 2, cz);
     group.add(w);
     solid(-HX + 0.15, cz, 0.3, d);
   }
-  const doorHeader = box(0.3, 1.4, 4.4, wallTrimMat, false, false);
-  doorHeader.position.set(-HX + 0.15, ROOM_H - 0.7, 0);
-  group.add(doorHeader);
-  for (const dz of [-2.2, 2.2]) {
-    const jamb = box(0.34, ROOM_H - 1.4, 0.3, wallTrimMat, false, false);
-    jamb.position.set(-HX + 0.15, (ROOM_H - 1.4) / 2, dz);
-    group.add(jamb);
-  }
 
-  // +X wall built in 4 segments around the PORTHOLE opening (z[-1,1], y[1.4,3.4]).
+  // +X wall — OPENED to match. A plain corner stub at -Z and, at +Z, a PORTHOLE PILLAR
+  // that still carries the round porthole (re-anchored off the central walkway). Between
+  // them is a ~19 m full-height gap so you see straight into the next zone.
   const wxX = HX - 0.15;
-  const xWallSegs = [
-    { cy: 0.7, h: 1.4, cz: 0, d: 2 * HZ },
-    { cy: 3.9, h: 1.0, cz: 0, d: 2 * HZ },
-    { cy: 2.4, h: 2.0, cz: -8.5, d: 15 },
-    { cy: 2.4, h: 2.0, cz: 8.5, d: 15 },
+  const PORT_Z = 12.75;                          // porthole re-anchored onto the +Z pillar
+  const stubNZ = box(0.3, ROOM_H, 6.5, wallMat, false, true);
+  stubNZ.position.set(wxX, ROOM_H / 2, -12.75);  // -Z corner stub
+  group.add(stubNZ);
+  solid(wxX, -12.75, 0.3, 6.5);
+  // +Z PORTHOLE PILLAR in 4 pieces around the porthole hole (z±1 of PORT_Z, y[1.4,3.4]).
+  const pillarSegs = [
+    { cy: 0.7, h: 1.4, cz: PORT_Z,         d: 6.5 },  // sill strip below porthole
+    { cy: 3.9, h: 1.0, cz: PORT_Z,         d: 6.5 },  // header strip above porthole
+    { cy: 2.4, h: 2.0, cz: PORT_Z - 2.125, d: 2.25 }, // -Z jamb of porthole hole
+    { cy: 2.4, h: 2.0, cz: PORT_Z + 2.125, d: 2.25 }, // +Z jamb of porthole hole
   ];
-  for (const s of xWallSegs) {
+  for (const s of pillarSegs) {
     const w = box(0.3, s.h, s.d, wallMat, false, true);
     w.position.set(wxX, s.cy, s.cz);
     group.add(w);
   }
-  solid(wxX, 0, 0.3, 2 * HZ); // one tight AABB blocks the whole +X wall
+  solid(wxX, PORT_Z, 0.3, 6.5); // collider for the porthole pillar only
 
   // ── SLEEPING PODS — 4 columns x 2 tiers along the +Z wall, facing the aisle ──
   // Each bunk is recessed against the back wall with its open face toward -Z.
@@ -422,20 +424,20 @@ export function buildStationQuarters(opts = {}) {
     lounge.add(bush);
   }
 
-  // ── PORTHOLE on the +X wall + cushioned window bench ───────────────────────
+  // ── PORTHOLE on the +X porthole pillar (z = PORT_Z) + cushioned window bench ──
   // Outer trim ring + frame ring (room side) + tinted glass over the opening.
   const portRing = mesh(new THREE.TorusGeometry(1.05, 0.14, 12, 28), portholeOut, false, false);
   portRing.rotation.y = Math.PI / 2;
-  portRing.position.set(wxX - 0.18, 2.4, 0);
+  portRing.position.set(wxX - 0.18, 2.4, PORT_Z);
   group.add(portRing);
   const portGlass = mesh(new THREE.CircleGeometry(1.0, 28), winGlassMat, false, false);
   portGlass.rotation.y = -Math.PI / 2;
-  portGlass.position.set(wxX - 0.22, 2.4, 0);
+  portGlass.position.set(wxX - 0.22, 2.4, PORT_Z);
   group.add(portGlass);
   // Dark space backdrop just outside the opening.
   const backDisc = mesh(new THREE.CircleGeometry(1.05, 24), spaceBackMat, false, false);
   backDisc.rotation.y = -Math.PI / 2;
-  backDisc.position.set(wxX + 0.32, 2.4, 0);
+  backDisc.position.set(wxX + 0.32, 2.4, PORT_Z);
   group.add(backDisc);
 
   // Drifting STARS behind the porthole — a Points disc rotated slowly in update().
@@ -453,24 +455,24 @@ export function buildStationQuarters(opts = {}) {
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     const sMat = new THREE.PointsMaterial({ color: "#eaf2ff", size: 0.05, sizeAttenuation: true, transparent: true, opacity: 0.95 });
     starField = new THREE.Points(geo, sMat);
-    starField.position.set(wxX + 0.26, 2.4, 0);
+    starField.position.set(wxX + 0.26, 2.4, PORT_Z);
     group.add(starField);
   }
 
   // Cushioned window bench beneath the porthole (solid).
   const bench = box(1.1, 0.5, 2.8, tableMat, true, true);
-  bench.position.set(wxX - 0.9, 0.25, 0);
+  bench.position.set(wxX - 0.9, 0.25, PORT_Z);
   group.add(bench);
   const benchCush = box(1.0, 0.18, 2.6, couchCushMat, false, true);
-  benchCush.position.set(wxX - 0.9, 0.59, 0);
+  benchCush.position.set(wxX - 0.9, 0.59, PORT_Z);
   group.add(benchCush);
   for (const bz of [-0.8, 0.8]) {
     const bp = box(0.5, 0.5, 0.6, bz < 0 ? pillowMat : pillowAccMat, false, true);
-    bp.position.set(wxX - 0.9, 0.85, bz);
+    bp.position.set(wxX - 0.9, 0.85, PORT_Z + bz);
     bp.rotation.x = 0.2;
     group.add(bp);
   }
-  solid(wxX - 0.9, 0, 1.1, 2.8); // bench collider
+  solid(wxX - 0.9, PORT_Z, 1.1, 2.8); // bench collider
 
   // ── ANIMATION — allocation-free: breathe strips/reading lights, flicker the
   // screen, and slowly drift the porthole stars. Mutates cached scalars only. ──

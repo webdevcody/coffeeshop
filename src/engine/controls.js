@@ -29,10 +29,20 @@ export function createControls(domElement) {
   // consumeFire(). Both are cleared in setLocked so a game overlay swallows them.
   let weaponSlot = null;
   let firePressed = false;
+  // LEFT-MOUSE fire (mirrors the B key): clickFirePressed latches a single click
+  // (drained by consumeClickFire) and fireHeld stays true while the left button is
+  // down (read by isFireHeld for the gun's auto-fire). Both are armed only when a
+  // left-button mousedown lands on the bare game canvas (see pointerdown), and both
+  // are cleared in setLocked so a game overlay swallows them.
+  let clickFirePressed = false;
+  let fireHeld = false;
   let mapPressed = false; // edge-triggered M, drained by consumeMap() (open the city map)
   let robPressed = false; // edge-triggered R, drained by consumeRob() (rob a nearby pedestrian)
   let parachutePressed = false; // edge-triggered P, drained by consumeParachute() (deploy the chute mid-air)
   let helpPressed = false; // edge-triggered H, drained by consumeHelp() (toggle the controls legend)
+  let mixerPressed = false; // edge-triggered J, drained by consumeMixer() (toggle the sound mixer)
+  let musicPressed = false; // edge-triggered N, drained by consumeMusic() (toggle the lofi music widget)
+  let leaderboardPressed = false; // edge-triggered L, drained by consumeLeaderboard() (toggle the money leaderboard)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -63,10 +73,16 @@ export function createControls(domElement) {
     if (e.code === "KeyF" && !keys.has("KeyF")) jetpackPressed = true;
     // V toggles the FLASHLIGHT (a FREE key). Edge-triggered like F.
     if (e.code === "KeyV" && !keys.has("KeyV")) flashlightPressed = true;
-    // Skate trick keys (only consumed in skate mode): J ollie, K kickflip, L shuvit.
-    if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
+    // Skate trick keys (only consumed in skate mode): K kickflip, L shuvit. The
+    // ollie lives on Space (queued in the Space handler above); J is now free for
+    // the SOUND MIXER below, so it no longer doubles as an ollie.
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
-    if (e.code === "KeyL" && !keys.has("KeyL")) shuvPressed = true;
+    // L is the pop-shuvit while skating (drained by rides.js in skate mode only) AND
+    // the MONEY LEADERBOARD toggle the rest of the time. Each lives on its own edge
+    // flag, exactly like Space doubling as sit + ollie above, so the two never fight:
+    // consumeShuv() only reads shuvPressed while skating; consumeLeaderboard() reads
+    // leaderboardPressed each frame in main.js.
+    if (e.code === "KeyL" && !keys.has("KeyL")) { shuvPressed = true; leaderboardPressed = true; }
     // Weapon swap (1=gun, 2=rocket, 3=grenade, 0=holster) + B to fire. All FREE
     // keys, edge-triggered so a held key fires once. Drained by main.js.
     if (e.code === "Digit1" && !keys.has("Digit1")) weaponSlot = 1;
@@ -86,11 +102,21 @@ export function createControls(domElement) {
     // H toggles the on-screen CONTROLS LEGEND (a FREE key). Edge-triggered; drained
     // by consumeHelp() in main.js and cleared in setLocked like the other edges.
     if (e.code === "KeyH" && !keys.has("KeyH")) helpPressed = true;
+    // J toggles the SOUND MIXER panel (a FREE key). Edge-triggered; drained by
+    // consumeMixer() in main.js and cleared in setLocked like the other edges.
+    if (e.code === "KeyJ" && !keys.has("KeyJ")) mixerPressed = true;
+    // N toggles the LOFI MUSIC player widget (a FREE key). Edge-triggered; drained
+    // by consumeMusic() in main.js and cleared in setLocked like the other edges.
+    if (e.code === "KeyN" && !keys.has("KeyN")) musicPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
-  // If focus is lost (alt-tab), clear keys so the player doesn't run forever.
-  window.addEventListener("blur", () => keys.clear());
+  // If focus is lost (alt-tab), clear keys so the player doesn't run forever, and
+  // drop the held-fire flag so the gun doesn't keep auto-firing while unfocused.
+  window.addEventListener("blur", () => {
+    keys.clear();
+    fireHeld = false;
+  });
 
   // --- Pointer drag to orbit (mouse + touch on the right side) -----------
   let dragging = false;
@@ -104,6 +130,18 @@ export function createControls(domElement) {
 
   domElement.addEventListener("pointerdown", (e) => {
     if (e.button === 2) return;
+    // LEFT mouse on the bare game canvas fires the equipped weapon (in addition to
+    // the B key). This sets the fire signals and then falls through to start the
+    // camera drag below, so firing and free-look coexist. Guards: only the LEFT
+    // button (button 0) of a real MOUSE; only when the pointerdown landed directly
+    // on the canvas (e.target === domElement — interactive UI like the chat input,
+    // mixer sliders, HUD buttons or the map overlay sit above the canvas, so their
+    // clicks never reach here / aren't the canvas), and never while typing in chat
+    // or while a game overlay holds the lock. Right/middle clicks never get here.
+    if (e.button === 0 && e.pointerType === "mouse" && e.target === domElement && !locked && !typing()) {
+      clickFirePressed = true;
+      fireHeld = true;
+    }
     // Left portion of the screen on touch = movement joystick.
     const isTouch = e.pointerType === "touch";
     if (isTouch && e.clientX < window.innerWidth * 0.45 && joystick.id === null) {
@@ -154,6 +192,9 @@ export function createControls(domElement) {
       window.dispatchEvent(new CustomEvent("joystick", { detail: { ...joystick } }));
     }
     if (e.pointerId === joyId) dragging = false;
+    // Releasing the LEFT mouse button (or any pointer cancel) ends held auto-fire.
+    // pointercancel carries no meaningful button, so treat it as a release too.
+    if (e.button === 0 || e.button === -1 || e.type === "pointercancel") fireHeld = false;
   }
   window.addEventListener("pointerup", endPointer);
   window.addEventListener("pointercancel", endPointer);
@@ -307,6 +348,21 @@ export function createControls(domElement) {
     return locked ? false : pressed;
   }
 
+  // True once per LEFT-mouse click (fire the equipped weapon), then resets. Used
+  // for single-shot weapons; the gun's auto-fire reads isFireHeld() instead. Gated
+  // by `locked` like consumeFire so a game overlay swallows the click.
+  function consumeClickFire() {
+    const pressed = clickFirePressed;
+    clickFirePressed = false;
+    return locked ? false : pressed;
+  }
+
+  // True while the LEFT mouse button is held down (drives the gun's auto-fire).
+  // Gated by `locked` so holding the button can't keep firing under an overlay.
+  function isFireHeld() {
+    return locked ? false : fireHeld;
+  }
+
   // True once per M press (open the city map), then resets. Gated by `locked`
   // like consumeFire: while a game overlay — or the open map itself — holds the
   // lock the M edge is swallowed, so the same press that CLOSES the map (handled
@@ -340,6 +396,34 @@ export function createControls(domElement) {
   function consumeHelp() {
     const pressed = helpPressed;
     helpPressed = false;
+    return pressed;
+  }
+
+  // True once per J press (toggle the sound mixer), then resets. Not gated by
+  // `locked` (the mixer is a harmless settings overlay, like the help legend), but
+  // it IS cleared in setLocked so an edge can't carry across into a game overlay.
+  function consumeMixer() {
+    const pressed = mixerPressed;
+    mixerPressed = false;
+    return pressed;
+  }
+
+  // True once per N press (toggle the lofi music widget), then resets. Not gated by
+  // `locked` (the music player is a harmless HUD overlay, like the help legend and
+  // mixer), but it IS cleared in setLocked so an edge can't carry into a game overlay.
+  function consumeMusic() {
+    const pressed = musicPressed;
+    musicPressed = false;
+    return pressed;
+  }
+
+  // True once per L press (toggle the money leaderboard), then resets. Not gated by
+  // `locked` (the leaderboard is a harmless HUD overlay, like the help legend, mixer
+  // and music widget), but it IS cleared in setLocked so an edge can't carry into a
+  // game overlay.
+  function consumeLeaderboard() {
+    const pressed = leaderboardPressed;
+    leaderboardPressed = false;
     return pressed;
   }
 
@@ -413,14 +497,19 @@ export function createControls(domElement) {
       shuvPressed = false;
       weaponSlot = null;
       firePressed = false;
+      clickFirePressed = false;
+      fireHeld = false;
       mapPressed = false;
       robPressed = false;
       parachutePressed = false;
       helpPressed = false;
+      mixerPressed = false;
+      musicPressed = false;
+      leaderboardPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, consumeRob, consumeParachute, consumeHelp, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeClickFire, isFireHeld, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, consumeMusic, consumeLeaderboard, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

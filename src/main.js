@@ -8,6 +8,7 @@ import { createEngine } from "./engine/scene.js";
 import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { createAudio } from "./engine/audio.js";
+import { createLofiMusic } from "./engine/music.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
@@ -30,6 +31,7 @@ import { createGame as createFlipbookMenu } from "./games/inworld/menu.js";
 import { getGame, listGames } from "./games/registry.js";
 import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
+import { createPersistence } from "./persist.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, getTimeOfDay } = createEngine(canvas);
@@ -37,6 +39,17 @@ const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, ge
 // gesture) — until then every call is a safe no-op. Drives ambient birds/wind, a
 // vehicle engine hum, and one-shots (splash/whoosh/etc.).
 const audio = createAudio();
+// Procedural LOFI MUSIC manager: builds its own WebAudio graph (warm chords, a
+// laid-back kick/snare/hihat beat, a simple bass, + faint vinyl crackle) scheduled
+// ahead on the AudioContext clock, played into the mixer's "music" bus so the J
+// panel + master volume apply. The ctx + music bus only exist after resume() (the
+// join gesture), so we pass them as getters — every transport call is a guarded
+// no-op until then. Starts PAUSED; autostarted on join (a real user gesture) and
+// controlled by the N music widget below + the J mixer's Music slider.
+const music = createLofiMusic({
+  ctx: () => audio.getContext(),
+  destination: () => audio.getMusicBus(),
+});
 // Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
 // makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
 // glow. Built on the existing renderer/scene/camera; scene.js still owns tone
@@ -103,6 +116,24 @@ scene.add(cannon.group);
 const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground, cannon.ground);
 const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders, cannon.colliders);
 
+// STAGE 2 — VISIBILITY CULLING setup. Grab the 16 city DISTRICT groups once (city.js
+// stashes them on the "city" group's userData, since buildCity's return isn't threaded
+// up through coffeeshop.js) and precompute each group's world-XZ centre, so frame()
+// can toggle group.visible with cheap scalar squared-distance maths and zero per-frame
+// allocation. Culling only flips .visible — the districts' colliders + walkable ground
+// were merged into collidersAll/groundAll above, so gameplay is never affected.
+const _cityGroup = scene.getObjectByName("city");
+const _districtCull = [];
+if (_cityGroup && Array.isArray(_cityGroup.userData.districtGroups)) {
+  for (const g of _cityGroup.userData.districtGroups) {
+    _districtCull.push({ g, x: g.position.x, z: g.position.z });
+  }
+}
+// Keep a district rendered within ~190 m of the player (squared, to skip sqrt).
+const DISTRICT_CULL_R2 = 190 * 190;
+// Show the orbital STATION (space.group) within ~220 m of its launchpad footprint.
+const STATION_GATE_R2 = 220 * 220;
+
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
 // skateboard. Pushes the parked car's footprint into `colliders`; drives off the
@@ -117,6 +148,28 @@ const interactables = buildInteractables();
 scene.add(interactables.group);
 
 const isGroundFn = (x, z) => groundAll.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
+const network = new Network();
+// SHARED WORLD VEHICLES: the server owns the single drivable car's pose. We mirror
+// the latest authoritative pose per vehicle id here (keyed by id, e.g. "car-1");
+// rides.js seeds/reads it for the local car and remotePlayers.js positions a remote
+// driver's car proxy from it, so a car driven + parked by anyone shows at that exact
+// spot for everyone. Populated from the welcome roster + live "vehicle" relays.
+const sharedVehicles = new Map();
+function upsertVehicle(v) {
+  // Welcome-roster entries key on `id`; live relays key on `vehicleId`.
+  const key = v.vehicleId || v.id;
+  if (!key) return;
+  let e = sharedVehicles.get(key);
+  if (!e) { e = { id: key }; sharedVehicles.set(key, e); }
+  // Vehicle kind: live "vehicle" relays carry it as `kind` (the message's own `type`
+  // is the discriminator "vehicle"); the welcome roster entries carry it as `type`.
+  e.type = v.kind ?? v.type;
+  e.x = v.x;
+  e.z = v.z;
+  e.heading = v.heading;
+  e.driverId = v.driverId ?? null;
+}
+const getVehicle = (id) => sharedVehicles.get(id);
 const rides = createRides(scene, {
   colliders: collidersAll,
   isGround: isGroundFn,
@@ -126,10 +179,11 @@ const rides = createRides(scene, {
   ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
   space, // launchable rocket parks on space.rocketSpawn; jetpack fly mode (F) lives here too
   airport, // rideable plane parks at airport.planeSpawn, heli at airport.heliSpawn (handled in rides.js)
+  getVehicle, // read/seed the shared "car-1" pose (server-authoritative)
+  network, // push the shared car pose while driving + on exit
 });
-const remotes = new RemotePlayers(scene);
+const remotes = new RemotePlayers(scene, { getVehicle });
 const hud = new HUD();
-const network = new Network();
 const arcade = new Arcade();
 
 // WEAPONS (a cosmetic combat toy): 1/2/3 equip a pistol / rocket launcher /
@@ -201,6 +255,13 @@ const _flashTgt = new THREE.Vector3();
 // muzzle point (hand world position nudged forward), _shotDir the camera aim.
 const _shotOrigin = new THREE.Vector3();
 const _shotDir = new THREE.Vector3();
+// GUN auto-fire: while the left mouse button is HELD and the pistol is equipped we
+// re-fire every GUN_FIRE_INTERVAL seconds. _gunCooldown counts that interval down
+// each frame so a held trigger can't fire faster than this rate; rocket/grenade
+// ignore it (they are single-shot per click). The first click fires instantly
+// because the cooldown has already recovered to <= 0 by then.
+const GUN_FIRE_INTERVAL = 0.12;
+let _gunCooldown = 0;
 // SECRET CANNON reach radii (XZ, metres): press E within LOAD of the muzzle to
 // fire, or simply walk into the muzzle mouth (WALKIN) to be launched hands-free.
 const CANNON_LOAD_R = 2.5;
@@ -211,11 +272,58 @@ const CANNON_WALKIN_R = 1.3;
 // E-reach, so reading E here (before rides.update) can't steal a ride's E.
 const ARMORY_R = 2.5;
 
+// Cross-reload persistence of the local player's state (appearance / money / last
+// position / time-of-day) under localStorage key "coffee.player". All access is
+// try/catch-guarded inside, so blocked/private storage is a silent no-op. Loaded
+// on JOIN; written on money/appearance changes + a throttled positional save.
+const persist = createPersistence();
+
 let local = null;
 let joined = false;
 // GTA cash: grows when you rob a pedestrian (R near one). Shown in the top-left HUD
 // money counter each frame while joined.
 let money = 0;
+// The name we joined with — used as our own MONEY LEADERBOARD entry's label (the
+// server's roster carries it for everyone else; ours is purely local).
+let myName = "";
+// SHARED MONEY LEADERBOARD model: id -> { name, money } for every player (including
+// US, keyed by network.id). Seeded from the welcome roster + player-joined (each
+// carries a `money` field now), pruned on player-left, and updated live by the
+// "money" relay + our own local money changes. `_lbDirty` flags that the model
+// changed so the sorted standings are rebuilt only when needed (and on a light
+// throttle), never per frame — keeping the hot loop allocation-free.
+const leaderboard = new Map();
+let _lbDirty = false;
+let _lbThrottle = 0;
+// Insert/update one player's leaderboard entry (name and/or money). Marks the model
+// dirty so the next throttled rebuild repaints the panel.
+function lbUpsert(id, fields) {
+  if (id == null) return;
+  const key = String(id);
+  let e = leaderboard.get(key);
+  if (!e) { e = { name: "", money: 0 }; leaderboard.set(key, e); }
+  if (typeof fields.name === "string" && fields.name) e.name = fields.name;
+  if (typeof fields.money === "number" && Number.isFinite(fields.money)) e.money = fields.money;
+  _lbDirty = true;
+}
+function lbRemove(id) {
+  if (leaderboard.delete(String(id))) _lbDirty = true;
+}
+// Rebuild the sorted-desc standings and push them to the HUD. Allocates a fresh
+// array + row objects, so it is called ONLY from the dirty/throttled path below —
+// not every frame. Tags the local player's row and keeps remote names current from
+// the live roster (the remotes entry is the freshest source of a player's name).
+function pushLeaderboard() {
+  const meId = network.id != null ? String(network.id) : null;
+  const arr = [];
+  for (const [id, e] of leaderboard) {
+    const you = id === meId;
+    const name = you ? (myName || e.name) : (remotes.players.get(id)?.name || e.name);
+    arr.push({ name, money: e.money | 0, you });
+  }
+  arr.sort((a, b) => b.money - a.money);
+  hud.setLeaderboard(arr);
+}
 // SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
 // on the walk/fall → swim transition (entering the sea), not every frame afloat.
 let _wasSwimming = false;
@@ -232,6 +340,16 @@ let _stepT = 0;
 const STEP_INTERVAL = 0.3;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
+// Throttle the periodic positional save: persist {lastPos, timeOfDay} once every
+// PERSIST_SAVE_FRAMES frames (~0.5s at 60fps) so we never write localStorage (or
+// allocate the small state object) per frame.
+const PERSIST_SAVE_FRAMES = 30;
+let _saveTick = 0;
+
+// FPS counter state: an exponential moving average of the instantaneous frame rate,
+// plus a throttle accumulator so the HUD text only refreshes ~4x/sec.
+let _fpsEMA = 60;
+let _fpsThrottle = 0;
 
 // CITY MAP (M): a full-screen top-down overlay built from the fixed city layout.
 // ui/map.js draws it + owns its own Esc / ✕ / M-to-close; we own M-to-OPEN
@@ -408,15 +526,58 @@ function refreshPeople() {
 // --- Network wiring --------------------------------------------------------
 network.on("welcome", (m) => {
   for (const p of m.players) remotes.add(p);
+  // MONEY LEADERBOARD: welcome carries the FULL current roster, so rebuild the
+  // standings from scratch (clearing any stale entries — e.g. our own OLD id after a
+  // reconnect assigns a new one). Seed every player from the roster (each carries
+  // their `money` now), add OURSELVES (network.id was just set from this welcome),
+  // and PUBLISH our restored total so the server stores it and everyone else ranks
+  // us. Sending here (post-connect) populates our roster entry's money.
+  leaderboard.clear();
+  for (const p of m.players) lbUpsert(p.id, { name: p.name, money: p.money });
+  lbUpsert(network.id, { name: myName, money });
+  network.sendMoney(money);
+  // Seed the shared world vehicles (the drivable car) so rides.js can place the
+  // local car at the authoritative pose and remotes render it at the synced spot.
+  if (Array.isArray(m.vehicles)) for (const v of m.vehicles) upsertVehicle(v);
+  // SHARED SKY: the server owns an authoritative day/night clock, so snap our
+  // local cycle to its time-of-day on join — every player thus shares one sky.
+  // scene.js keeps advancing it at the same rate between the periodic "time"
+  // re-syncs. GUARD: an older server sends no timeOfDay; fall back to the prior
+  // behavior (restore the persisted value) so the cycle still starts somewhere.
+  if (typeof m.timeOfDay === "number" && Number.isFinite(m.timeOfDay)) {
+    setTimeOfDay(m.timeOfDay);
+  } else {
+    const saved = persist.load();
+    if (saved && saved.timeOfDay != null) setTimeOfDay(saved.timeOfDay);
+  }
   updateCount();
 });
+// SHARED SKY re-sync: the server re-broadcasts the authoritative time-of-day every
+// ~15s. Snap to it (a once-per-15s jump is imperceptible — scene.js advances the
+// cycle smoothly in between, so this only trims accumulated drift). Guarded so a
+// malformed payload is ignored.
+network.on("time", (m) => {
+  if (typeof m.timeOfDay === "number" && Number.isFinite(m.timeOfDay)) setTimeOfDay(m.timeOfDay);
+});
+// A shared vehicle moved/parked (someone else driving, or a driver released it).
+// Upsert the authoritative pose; rides.js + remotePlayers.js read it each frame.
+network.on("vehicle", (m) => upsertVehicle(m));
 network.on("player-joined", (m) => {
   remotes.add(m.player);
+  // MONEY LEADERBOARD: a newcomer joins with their current total in the roster.
+  lbUpsert(m.player.id, { name: m.player.name, money: m.player.money });
   updateCount();
 });
 network.on("player-left", (m) => {
   remotes.remove(m.id);
+  lbRemove(m.id); // drop them from the standings
   updateCount();
+});
+// MONEY LEADERBOARD: another player's cash total changed — update their standing.
+// The server relays this to OTHERS only, so we never receive our own echo (our own
+// entry is updated locally wherever `money` changes).
+network.on("money", (m) => {
+  lbUpsert(m.id, { money: m.money });
 });
 network.on("state", (m) => {
   remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held, m.y);
@@ -629,7 +790,21 @@ hud.onJoin = ({ name, color }) => {
   // NEVER block joining / building the player (a thrown audio call here once aborted
   // join before the avatar was created — "no character loads").
   try { audio.resume(); audio.setAmbient(true); } catch (e) { console.warn("[audio] init failed", e); }
-  local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
+  // Kick off the chill LOFI MUSIC bed. The join click is a real user gesture, so
+  // the ctx is now resumed and play() can start; it rides the "music" mixer bus,
+  // so a previously-muted/lowered Music slider is respected. Guarded so audio can
+  // NEVER block joining. Toggle/skip/volume live in the N music widget.
+  try { music.play(); } catch (e) { console.warn("[music] init failed", e); }
+  // Restore saved state from a previous visit (null on a first visit or blocked
+  // storage — every restore below then falls back to the live defaults). Build the
+  // avatar with the SAVED appearance so it comes back identical; on a first visit
+  // use the join-card colour.
+  // Remember our display name for our own MONEY LEADERBOARD entry (everyone else's
+  // name rides the server roster; ours is local).
+  myName = name;
+  const saved = persist.load();
+  const initialAppearance = saved?.appearance || { color };
+  local = new LocalPlayer(scene, controls, collidersAll, initialAppearance, name, seats, groundAll, spawn);
   // SWIM: give the player the ocean's open-water predicate + surface height so
   // jumping/falling into the sea floats instead of respawning (handled inside
   // localPlayer._updateVertical). The void respawn still runs anywhere there's no
@@ -643,6 +818,31 @@ hud.onJoin = ({ name, color }) => {
   _wasAirborne = false;
   _wasFlying = false;
   _stepT = 0;
+  // --- Restore the rest of the saved state -----------------------------------
+  // MONEY: reload the saved cash total (default 0) and reflect it in the HUD now
+  // so the counter isn't blank for a frame before the loop refreshes it.
+  money = saved?.money ?? 0;
+  hud.setMoney(money);
+  // TIME OF DAY: the day/night clock is now SERVER-AUTHORITATIVE — we snap to the
+  // server's shared timeOfDay on "welcome" (and re-sync on the periodic "time"
+  // broadcast), so we intentionally do NOT restore the persisted value here; letting
+  // it win would split the sky between players again. It's still saved harmlessly
+  // below and only consulted as a fallback in the welcome handler if the server
+  // (an older build) sends no timeOfDay.
+  // POSITION: drop back roughly where we left off — but only the on-foot XZ +
+  // facing. We never persist (and so never restore) an in-vehicle / flying /
+  // airborne state: y is forced to 0 and _updateVertical re-settles us onto the
+  // floor (incl. the lifted station deck). Guard against a wall/void by only
+  // restoring when the saved spot is on a walkable ground rect; else keep spawn.
+  const savedPos = saved?.lastPos;
+  if (savedPos && Number.isFinite(+savedPos.x) && Number.isFinite(+savedPos.z) && isGroundFn(+savedPos.x, +savedPos.z)) {
+    local.pos.x = +savedPos.x;
+    local.pos.z = +savedPos.z;
+    local.pos.y = 0;
+    if (Number.isFinite(+savedPos.facing)) local.facing = +savedPos.facing;
+    local.character.group.position.set(local.pos.x, 0, local.pos.z);
+    local.character.group.rotation.y = local.facing;
+  }
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -666,11 +866,13 @@ hud.onJoin = ({ name, color }) => {
   setTimeout(() => hud.setHelpVisible(false), 7000);
   network.connect();
   // Send our full resolved look (clothing + skin + hair) so others render us
-  // identically, not a different per-id default.
+  // identically, not a different per-id default. join() carries the appearance,
+  // and we sendAppearance() right after so a RESTORED look is broadcast to anyone
+  // already in the room (both deferred to socket-open so neither send is dropped).
   const appearance = local.getAppearance();
-  network.on("open", () => network.join(name, appearance));
+  network.on("open", () => { network.join(name, appearance); network.sendAppearance(appearance); });
   // If we connected before the handler was attached (fast localhost), join now.
-  if (network.connected) network.join(name, appearance);
+  if (network.connected) { network.join(name, appearance); network.sendAppearance(appearance); }
   updateCount();
 };
 
@@ -680,6 +882,8 @@ hud.onCustomize = (partial) => {
   local.setAppearance(partial);
   network.sendAppearance(local.getAppearance());
   refreshPeople();
+  // Persist the new look so the avatar comes back the same after a reload.
+  persist.update({ appearance: local.getAppearance() });
 };
 
 hud.onChat = (text) => network.sendChat(text);
@@ -700,6 +904,39 @@ hud.onToggleVoice = () => {
 };
 hud.onToggleMic = () => hud.setMicMuted(voice.toggleMicMute());
 hud.onToggleDeafen = () => hud.setDeafened(voice.toggleDeafen());
+
+// --- Sound mixer (J) -------------------------------------------------------
+// Map a mixer-panel row name to the audio API: the reserved "master" row drives
+// the master gain, every other name is one of audio.getBuses(). Defined once and
+// handed to hud.buildMixer the first time the panel opens, so the sliders + mute
+// toggles ride the live WebAudio levels (smoothed + persisted inside audio.js).
+function mixerGetVol(name) {
+  return name === "master" ? audio.getMasterVolume() : audio.getBusVolume(name);
+}
+function mixerOnChange(name, v) {
+  if (name === "master") audio.setMasterVolume(v);
+  else audio.setBusVolume(name, v);
+}
+function mixerGetMuted(name) {
+  return name === "master" ? audio.getMuted() : audio.getBusMuted(name);
+}
+function mixerOnMute(name, m) {
+  if (name === "master") audio.setMuted(m);
+  else audio.setBusMuted(name, m);
+}
+
+// --- Lofi music player (N) -------------------------------------------------
+// Wire the HUD music widget to the procedural lofi manager: play/pause + skip
+// route to the transport, the slider rides the "music" mixer bus, and after each
+// action we reflect the live state (button + track name) back into the widget.
+function syncMusicWidget() {
+  hud.setMusicPlaying(music.isPlaying());
+  hud.setMusicTrack(music.trackName());
+  hud.setMusicVolume(audio.getBusVolume("music"));
+}
+hud.onMusicToggle = () => { music.toggle(); syncMusicWidget(); };
+hud.onMusicNext = () => { music.next(); syncMusicWidget(); };
+hud.onMusicVolume = (v) => audio.setBusVolume("music", v);
 
 // --- Game loop -------------------------------------------------------------
 const clock = new THREE.Clock();
@@ -733,10 +970,18 @@ function syncSeatedCamera() {
 }
 
 function frame() {
-  const dt = Math.min(0.05, clock.getDelta());
+  const rawDt = clock.getDelta();
+  const dt = Math.min(0.05, rawDt);
+  // FPS counter — smoothed (EMA) from the RAW delta (not the gameplay-clamped dt, which
+  // would cap the reading at 20). DOM text updated ~4x/sec so it's readable + cheap.
+  if (rawDt > 0) _fpsEMA += (1 / rawDt - _fpsEMA) * 0.12;
+  _fpsThrottle += rawDt;
+  if (_fpsThrottle >= 0.25) { _fpsThrottle = 0; hud.setFps(_fpsEMA); }
   controls.update();
   updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
-  updateWorld?.(dt); // animate the street: cars driving by, birds overhead
+  // Pass the local player's XZ so the city can distance-cull far traffic/peds and
+  // centre the rain on the camera. null before join → systems keep whole-map behaviour.
+  updateWorld?.(dt, (joined && local) ? local.pos : null); // animate the street: cars driving by, birds overhead
   interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
   ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle
@@ -909,6 +1154,12 @@ function frame() {
             money += cash;
             audio.blip();
             hud.toast(`Robbed $${cash}!`);
+            persist.update({ money }); // persist the new cash total on every change
+            // MONEY LEADERBOARD: publish our new total so the server stores it and
+            // everyone else re-ranks us, and refresh our own standings entry locally
+            // (the server relays "money" to OTHERS only, so we never echo back).
+            network.sendMoney(money);
+            lbUpsert(network.id, { money });
           }
         }
       }
@@ -946,8 +1197,48 @@ function frame() {
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();
     maybeSendState();
-    updateWeapons();
+    // PERSIST: a throttled save of the lightweight, reload-safe slice of state
+    // (on-foot XZ + facing + time-of-day) ~every 30 frames (~0.5s). The small
+    // state object is built ONLY on the save tick, so the loop stays
+    // allocation-free between saves; money + appearance persist on their own
+    // change events. y / vehicle / flying state are deliberately NOT saved — we
+    // always reload on foot at ground level.
+    if (++_saveTick >= PERSIST_SAVE_FRAMES) {
+      _saveTick = 0;
+      persist.update({
+        lastPos: { x: local.pos.x, z: local.pos.z, facing: local.facing },
+        timeOfDay: getTimeOfDay ? getTimeOfDay() : null,
+      });
+    }
+    updateWeapons(dt);
     updateMap();
+
+    // --- STAGE 2: VISIBILITY CULLING -----------------------------------------
+    // Stop off-screen / far geometry from rendering (a GPU win; gameplay is
+    // untouched because the relevant colliders + walkable ground were merged into
+    // collidersAll/groundAll, which are independent of these groups' .visible
+    // flags). Run AFTER updateMap() so gameMap.isOpen is final for THIS frame: the
+    // bird-eye MAP renders the whole scene straight down from 500 m, so while it's
+    // open we force every district + the station visible; otherwise we cull by a
+    // cheap squared-distance test to the player. (space.update(dt) already ran this
+    // frame — it's cheap — so only the heavy render cost vanishes when hidden.)
+    const _mapOpen = gameMap.isOpen;
+    // STATION INTERIOR GATE: only the HEAVY interior sub-group (control room + 10
+    // detailed modules + hull + fill lights + Earth, ~400 m east at y≈260) is gated.
+    // The launchpad / rocket / orbital shell (space.group) stay visible so you can
+    // always find the rocket near spawn. Show the interior when up high (flying / in
+    // the rocket / on the deck, y>100) or within range of the module-run centre.
+    if (space.stationInterior) {
+      const sdx = local.pos.x - space.stationRenderCenter.x;
+      const sdz = local.pos.z - space.stationRenderCenter.z;
+      space.stationInterior.visible = _mapOpen || local.pos.y > 100 || (sdx * sdx + sdz * sdz) <= STATION_GATE_R2;
+    }
+    // DISTRICT DISTANCE CULL: toggle each of the 16 district groups by proximity.
+    for (let i = 0; i < _districtCull.length; i++) {
+      const d = _districtCull[i];
+      const ddx = d.x - local.pos.x, ddz = d.z - local.pos.z;
+      d.g.visible = _mapOpen || (ddx * ddx + ddz * ddz) <= DISTRICT_CULL_R2;
+    }
   } else {
     // Gentle interior orbit of the room while the join card is up.
     previewAngle += dt * 0.12;
@@ -973,6 +1264,41 @@ function frame() {
   // CONTROLS LEGEND (H): toggle the on-screen help panel on the key edge. Cheap +
   // safe to pump every frame; the panel lives in the game-ui (hidden before join).
   if (controls.consumeHelp()) hud.toggleHelp();
+
+  // SOUND MIXER (J): toggle the live audio mixer on the key edge. The panel is
+  // built ONCE from audio.getBuses() (buildMixer is idempotent, so calling it on
+  // every open is a no-op after the first) and wired to the live bus/master gains.
+  // Like the help legend it's a non-locking HUD overlay — it stays open while you
+  // move; controls.js already ignores keydown while a slider <input> is focused,
+  // so dragging a slider can't leak WASD into the game.
+  if (controls.consumeMixer()) {
+    hud.buildMixer(audio.getBuses(), mixerGetVol, mixerOnChange, mixerGetMuted, mixerOnMute);
+    hud.toggleMixer();
+  }
+
+  // LOFI MUSIC (N): toggle the music player widget on the key edge. Like the help
+  // legend + mixer it's a non-locking HUD overlay. Sync its button/track/volume to
+  // the live music state on every toggle so it always reflects reality (the join
+  // autostart, a J-panel Music slider change, etc.). controls.js ignores keydown
+  // while a slider <input> is focused, so dragging the volume can't leak into the game.
+  if (controls.consumeMusic()) {
+    syncMusicWidget();
+    hud.toggleMusic();
+  }
+
+  // MONEY LEADERBOARD (L): toggle the standings panel on the key edge. Like the
+  // help legend / mixer / music widget it's a non-locking HUD overlay; the model is
+  // kept current by the network handlers + rob path, so it's ready whenever opened.
+  if (controls.consumeLeaderboard()) hud.toggleLeaderboard();
+  // Rebuild + repaint the standings ONLY when the model changed (a local rob, a
+  // relayed "money", or a join/leave) and at most ~4x/sec, so the per-frame loop
+  // never sorts/allocates while nothing is changing.
+  _lbThrottle += rawDt;
+  if (_lbDirty && _lbThrottle >= 0.25) {
+    _lbThrottle = 0;
+    _lbDirty = false;
+    pushLeaderboard();
+  }
 
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
   // SpotLight to the camera and aim it along the camera's forward so it lights
@@ -1101,20 +1427,46 @@ function equipWeapon(kind) {
   }
 }
 
-function updateWeapons() {
+// Fire `kind` from the hand along the camera aim, drawn locally AND relayed so
+// every other client replays the same projectile + blast. Reuses the _shot*
+// scratch vectors, so this allocates nothing and is safe to call every frame on
+// the held auto-fire path. Callers gate on weapons.current()/sitting/lock first.
+function fireCurrentWeapon(kind) {
+  camera.getWorldDirection(_shotDir); // aim along the camera forward
+  local.character.handAnchor.getWorldPosition(_shotOrigin); // muzzle at the hand
+  _shotOrigin.addScaledVector(_shotDir, 0.3); // nudge forward past the body
+  weapons.fire(_shotOrigin, _shotDir, kind);
+  network.sendShot(kind, _shotOrigin, _shotDir); // make it multiplayer-visible
+}
+
+function updateWeapons(dt) {
   const slot = controls.consumeWeaponSlot();
   if (slot != null) {
     const kind = slot === 1 ? "gun" : slot === 2 ? "rocket" : slot === 3 ? "grenade" : null;
     equipWeapon(kind);
   }
-  // consumeFire() is called first so the B edge always drains, even when holstered.
-  if (controls.consumeFire() && weapons.current() && !local.sitting) {
-    const kind = weapons.current();
-    camera.getWorldDirection(_shotDir); // aim along the camera forward
-    local.character.handAnchor.getWorldPosition(_shotOrigin); // muzzle at the hand
-    _shotOrigin.addScaledVector(_shotDir, 0.3); // nudge forward past the body
-    weapons.fire(_shotOrigin, _shotDir, kind);
-    network.sendShot(kind, _shotOrigin, _shotDir); // make it multiplayer-visible
+  const cur = weapons.current();
+  // B KEY: single shot per press. consumeFire() is called first so the B edge
+  // always drains, even when holstered; it's gated by `locked` in controls.js.
+  if (controls.consumeFire() && cur && !local.sitting) {
+    fireCurrentWeapon(cur);
+  }
+  // LEFT MOUSE: a click fires once; HOLDING the button auto-fires the GUN at its
+  // fire-rate, while rocket/grenade stay single-shot per click. Always drain the
+  // click edge so it can't accumulate. The gun is driven by the held flag (not the
+  // click edge), so a held trigger and the drained click never double-fire.
+  const clicked = controls.consumeClickFire();
+  const held = controls.isFireHeld();
+  if (cur && !local.sitting) {
+    if (cur === "gun") {
+      if (_gunCooldown > 0) _gunCooldown -= dt; // recover toward a ready trigger
+      if (held && _gunCooldown <= 0) {
+        fireCurrentWeapon("gun");
+        _gunCooldown = GUN_FIRE_INTERVAL; // rate-limit sustained auto-fire
+      }
+    } else if (clicked) {
+      fireCurrentWeapon(cur); // rocket / grenade: one blast per click
+    }
   }
 }
 
@@ -1157,5 +1509,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, topCam, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, music, gameMap, topCam, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

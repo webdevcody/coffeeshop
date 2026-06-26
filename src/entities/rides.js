@@ -96,6 +96,12 @@ export function createRides(scene, opts) {
   // beside the parked drivable car) yoinks it — vanish the traffic car + teleport our
   // drivable car onto its spot/heading + drop straight into drive. null when unwired.
   const getTraffic = opts.getTraffic || null;
+  // SHARED CAR (server-authoritative): getVehicle(id) returns the latest shared pose
+  // for a world vehicle (we only use "car-1"); network.sendVehicle pushes our pose
+  // while WE drive + once on exit. Both are null in a no-network context (the car
+  // then behaves exactly as the old local-only car).
+  const getVehicle = opts.getVehicle || null;
+  const network = opts.network || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -200,6 +206,97 @@ export function createRides(scene, opts) {
   function parkCollider(on) {
     if (on) Object.assign(carCollider, car.footprint());
     else Object.assign(carCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // --- SHARED VEHICLES sync (server-authoritative) --------------------------
+  // Generalized from the single car to EVERY drivable shared ride (car / boat /
+  // plane / heli). Each is a shared world object with its own id ("car-1" /
+  // "boat-1" / "plane-1" / "heli-1"). While WE pilot one we PUSH its pose to the
+  // server (throttled to every PUSH_EVERY frames) and keep our LOCAL copy of the
+  // shared pose in lock-step so that, the instant we park and exit, the non-piloting
+  // mirror agrees with where we left it (we never receive our OWN relay back, so
+  // without this the mirror would snap the vehicle to a stale pose). When we're NOT
+  // piloting a ride, mirrorSharedPose() drops the local vehicle onto whatever pose
+  // the server last sent (someone else piloting it, or parked). Flyers (plane/heli)
+  // share only x/z/heading — altitude rides along on the player's y — so a parked
+  // plane/heli keeps its local spawn height here.
+  const PUSH_EVERY = 6; // frames between outbound pose sends while piloting (~10/s)
+
+  // Per-ride descriptor registry, KEYED BY THE LOCAL PILOT MODE ("drive"/"boat"/
+  // "plane"/"heli"). Only rides that actually exist in this world are present (the
+  // boat needs an ocean; the plane/heli need an airport). `park` toggles the
+  // vehicle's world footprint collider (null for the boat, which floats in water
+  // with no collider). `tick` counts pilot frames per ride (reset to 0 on board so
+  // the first pose ships at once). Built ONCE — the sync loop only mutates scalars.
+  const sharedRides = {
+    drive: { id: "car-1", kind: "car", vehicle: car, park: parkCollider, tick: 0 },
+  };
+  if (boat) sharedRides.boat = { id: "boat-1", kind: "boat", vehicle: boat, park: null, tick: 0 };
+  if (plane) sharedRides.plane = { id: "plane-1", kind: "plane", vehicle: plane, park: parkPlaneCollider, tick: 0 };
+  if (heli) sharedRides.heli = { id: "heli-1", kind: "heli", vehicle: heli, park: parkHeliCollider, tick: 0 };
+
+  // Latest shared pose object for a ride id (the live entry main.js mutates), or null
+  // before any welcome/relay (single-player / pre-connect → the local vehicle is
+  // authoritative and every shared helper below no-ops).
+  function sharedPose(id) {
+    return getVehicle ? getVehicle(id) : null;
+  }
+
+  // True when vehicle `id` has a driver who isn't us — you can't board a craft another
+  // player is currently piloting (that would put two drivers on one vehicle).
+  function pilotedByOther(id) {
+    const v = sharedPose(id);
+    return !!(v && v.driverId && (!network || v.driverId !== network.id));
+  }
+
+  // Copy the local vehicle's pose into our local shared-pose entry so our mirror
+  // matches what we just sent. Scalars only — no allocation. No-op until the entry
+  // exists. driverId claims (our id) or releases (null) the ride.
+  function writeSharedPose(r, driverId) {
+    const v = sharedPose(r.id);
+    if (!v) return;
+    v.x = r.vehicle.state.x;
+    v.z = r.vehicle.state.z;
+    v.heading = r.vehicle.state.heading;
+    v.driverId = driverId;
+  }
+
+  // Mirror the shared (server-authoritative) pose onto a local vehicle we are NOT
+  // piloting: place the group + (for grounded rides) keep the parked footprint
+  // collider following it, so a vehicle someone else moved/parked shows here at the
+  // synced spot (and still blocks you where they left it). Only x/z/heading are
+  // synced — a flyer keeps its local (spawn) altitude. Scalars only.
+  function mirrorSharedPose(r) {
+    const v = sharedPose(r.id);
+    if (!v) return;
+    r.vehicle.state.x = v.x;
+    r.vehicle.state.z = v.z;
+    r.vehicle.state.heading = v.heading;
+    r.vehicle.syncGroup();
+    // Hide our local copy while ANOTHER player is piloting it — their remote proxy
+    // renders the craft at the true position (incl. flight altitude), so this avoids a
+    // flyer "ground ghost" sitting at spawn height and a grounded-vehicle double-render.
+    // When it's parked (driverId null) it's shown at the synced spot.
+    r.vehicle.group.visible = !(v.driverId && (!network || v.driverId !== network.id));
+    if (r.park) r.park(true); // footprint follows the parked vehicle to its synced spot
+  }
+
+  // While we pilot ride `r`: keep our local shared copy in lock-step every frame (so
+  // the mirror agrees the instant we exit) and PUSH it to the server on the throttle
+  // (driverId = our network id claims the controls).
+  function pushSharedPose(r) {
+    r.vehicle.group.visible = true; // we're piloting it — always show (undo any mirror-hide)
+    writeSharedPose(r, network ? network.id : null);
+    if (network && (r.tick++ % PUSH_EVERY) === 0) {
+      network.sendVehicle(r.id, r.kind, r.vehicle.state.x, r.vehicle.state.z, r.vehicle.state.heading, network.id);
+    }
+  }
+
+  // On exit: release the ride for everyone — drop our local claim and send one final
+  // PARKED pose (driverId=null) so it stays exactly here, claimable by the next pilot.
+  function releaseSharedPose(r) {
+    writeSharedPose(r, null);
+    if (network) network.sendVehicle(r.id, r.kind, r.vehicle.state.x, r.vehicle.state.z, r.vehicle.state.heading, null);
   }
 
   // Same trick for the rocket: a tight footprint while parked, pushed far away
@@ -330,15 +427,24 @@ export function createRides(scene, opts) {
   // overrideWalk true means main.js should NOT run the normal walk update (driving
   // owns the avatar + camera this frame).
   function update(dt, camera, controls, local) {
+    // SHARED VEHICLES: unless WE are piloting a given ride this frame, keep its local
+    // vehicle glued to the server-authoritative pose (someone else piloting it, or it
+    // parked where it was left). The ride we pilot owns its pose instead (it PUSHES
+    // below), so we skip mirroring that one to avoid fighting our own updates. The
+    // registry is keyed by pilot mode, so `m === mode` is exactly "the ride we pilot".
+    for (const m in sharedRides) {
+      if (m === mode) continue;
+      mirrorSharedPose(sharedRides[m]);
+    }
     const useE = controls.consumeUse ? controls.consumeUse() : false;
     // Drain the F edge every frame (in any mode) so it can't carry over stale;
     // only the walk + fly branches act on it (toggle the jetpack on / land).
     const useJetpack = controls.consumeJetpack ? controls.consumeJetpack() : false;
     const outdoors = local.pos.z > 11.5; // only offer rides outside the cafe
-    const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH;
+    const nearCar = car.distanceTo(local.pos.x, local.pos.z) < CAR_REACH && !pilotedByOther("car-1");
     // The boat floats in the water at a dock tip, so this is only ever true when
     // you're standing on a dock right next to it (you can't reach it across water).
-    const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH : false;
+    const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH && !pilotedByOther("boat-1") : false;
     // The rocket sits at pad centre (or, while docked, just outside the airlock), so
     // this is only true on the launchpad apron or beside the docked rocket. Docking
     // parks it past the airlock bulkhead, so re-boarding gets the wider reach.
@@ -346,8 +452,8 @@ export function createRides(scene, opts) {
     const nearRocket = rocket ? rocket.distanceTo(local.pos.x, local.pos.z) < rocketReach : false;
     // The plane sits at the west runway threshold; the heli on a south helipad —
     // both on the offshore airfield, reached on foot via the causeway.
-    const nearPlane = plane ? plane.distanceTo(local.pos.x, local.pos.z) < PLANE_REACH : false;
-    const nearHeli = heli ? heli.distanceTo(local.pos.x, local.pos.z) < HELI_REACH : false;
+    const nearPlane = plane ? plane.distanceTo(local.pos.x, local.pos.z) < PLANE_REACH && !pilotedByOther("plane-1") : false;
+    const nearHeli = heli ? heli.distanceTo(local.pos.x, local.pos.z) < HELI_REACH && !pilotedByOther("heli-1") : false;
 
     if (mode === "boat") {
       const { throttle, steer } = controls.driveAxis();
@@ -361,6 +467,10 @@ export function createRides(scene, opts) {
       local.pos.x = boat.state.x;
       local.pos.z = boat.state.z;
       local.facing = boat.state.heading;
+      // SHARED BOAT: we own the helm — keep our local shared pose in lock-step every
+      // frame and PUSH it (throttled) so everyone else sees the boat sail where we
+      // steer it. driverId = network.id claims us as the pilot.
+      pushSharedPose(sharedRides.boat);
       if (useE) {
         const s = boat.exitSpot(ocean.docks);
         local.pos.x = s.x;
@@ -370,6 +480,9 @@ export function createRides(scene, opts) {
         local.character.group.position.set(s.x, 0, s.z);
         local.character.group.rotation.y = s.facing;
         mode = "walk";
+        // SHARED BOAT: send one final PARKED pose (driverId=null) so it's released +
+        // left exactly here for everyone, claimable by the next pilot.
+        releaseSharedPose(sharedRides.boat);
         return { mode, prompt: "🚤 Press E to sail", overrideWalk: false };
       }
       return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
@@ -388,6 +501,11 @@ export function createRides(scene, opts) {
       local.pos.x = car.state.x;
       local.pos.z = car.state.z;
       local.facing = car.state.heading;
+      // SHARED CAR: we own the wheel — keep our local shared pose in lock-step every
+      // frame (so the mirror agrees the instant we exit) and PUSH it to the server on
+      // a throttle so everyone else sees the car move where we drive it. driverId =
+      // network.id claims us as the driver.
+      pushSharedPose(sharedRides.drive);
       if (useE) {
         const s = car.exitSpot();
         local.pos.x = s.x;
@@ -397,6 +515,10 @@ export function createRides(scene, opts) {
         local.character.group.rotation.y = s.facing;
         parkCollider(true);
         mode = "walk";
+        // SHARED CAR: send one final PARKED pose with driverId=null so the car is
+        // released + left exactly here for everyone (and is claimable by the next
+        // driver). Keep our local copy released too so the mirror doesn't re-claim it.
+        releaseSharedPose(sharedRides.drive);
         return { mode, prompt: "🚗 Press E to drive", overrideWalk: false };
       }
       return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
@@ -470,6 +592,9 @@ export function createRides(scene, opts) {
       local.pos.z = plane.state.z;
       local.pos.y = plane.state.altitude;
       local.facing = plane.state.heading;
+      // SHARED PLANE: we own the cockpit — push the shared x/z/heading (throttled) so
+      // everyone sees the plane fly where we steer it; altitude rides on the player y.
+      pushSharedPose(sharedRides.plane);
       if (useE) {
         const s = plane.exitSpot();
         local.pos.x = s.x;
@@ -481,6 +606,8 @@ export function createRides(scene, opts) {
         local.character.group.rotation.y = s.facing;
         parkPlaneCollider(true);
         mode = "walk";
+        // SHARED PLANE: final PARKED pose (driverId=null) releases it for everyone.
+        releaseSharedPose(sharedRides.plane);
         return { mode, prompt: "✈️ Press E to fly", overrideWalk: false };
       }
       return { mode, prompt: "✈️ Throttle: W speed up · A/D yaw · E exit", overrideWalk: true };
@@ -503,6 +630,9 @@ export function createRides(scene, opts) {
       local.pos.z = heli.state.z;
       local.pos.y = heli.state.altitude;
       local.facing = heli.state.heading;
+      // SHARED HELI: we own the controls — push the shared x/z/heading (throttled) so
+      // everyone sees the heli fly where we steer it; altitude rides on the player y.
+      pushSharedPose(sharedRides.heli);
       if (useE) {
         const s = heli.exitSpot();
         local.pos.x = s.x;
@@ -514,6 +644,8 @@ export function createRides(scene, opts) {
         local.character.group.rotation.y = s.facing;
         parkHeliCollider(true);
         mode = "walk";
+        // SHARED HELI: final PARKED pose (driverId=null) releases it for everyone.
+        releaseSharedPose(sharedRides.heli);
         return { mode, prompt: "🚁 Press E to fly", overrideWalk: false };
       }
       return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
@@ -572,6 +704,7 @@ export function createRides(scene, opts) {
       if (nearCar) {
         parkCollider(false);
         car.resetCamera();
+        sharedRides.drive.tick = 0; // claim the wheel on the next drive frame (send immediately)
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
@@ -591,6 +724,7 @@ export function createRides(scene, opts) {
           car.syncGroup();                // shove our drivable car onto its spot
           parkCollider(false);
           car.resetCamera();
+          sharedRides.drive.tick = 0; // claim the wheel on the next drive frame (send immediately)
           mode = "drive";
           return { mode, prompt: "🚗 Car jacked! WASD to drive · E to exit", overrideWalk: true };
         }
@@ -599,6 +733,7 @@ export function createRides(scene, opts) {
       // the car and the interactables in the E-priority order.
       if (nearBoat) {
         boat.resetCamera();
+        sharedRides.boat.tick = 0; // claim the helm on the next sail frame (send immediately)
         mode = "boat";
         return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
       }
@@ -619,12 +754,14 @@ export function createRides(scene, opts) {
       if (nearPlane) {
         parkPlaneCollider(false);
         plane.resetCamera();
+        sharedRides.plane.tick = 0; // claim the cockpit on the next flight frame (send immediately)
         mode = "plane";
         return { mode, prompt: "✈️ Throttle: W speed up · A/D yaw · E exit", overrideWalk: true };
       }
       if (nearHeli) {
         parkHeliCollider(false);
         heli.resetCamera();
+        sharedRides.heli.tick = 0; // claim the controls on the next flight frame (send immediately)
         mode = "heli";
         return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
       }

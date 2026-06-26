@@ -97,7 +97,6 @@ export function buildStationGarden(opts = {}) {
   // ── Animated handles (collected at build → mutated allocation-free) ─────────
   const swayers  = []; // { obj, axis, base, amp, rate, phase }  gentle plant/vine sway
   const growMats = []; // { mat, baseI, amp, rate, phase }        grow-light pulse
-  const lights   = []; // { light, baseI, amp, rate, phase }      pulsing coloured cast
   const misters  = []; // { mesh, baseY, amp, rate, phase, baseScale }  drifting mist
 
   // Flowing nutrient-tube materials (phase-staggered → travelling glow).
@@ -226,32 +225,47 @@ export function buildStationGarden(opts = {}) {
   }
 
   // ── 2) MOSSY PLANTER BEDS along the +X / -X end walls ───────────────────────
+  // These planter beds ARE this zone's +X / -X END-WALL structures: 20 m runs
+  // along the z-depth that used to seal each X end into a full-depth divider.
+  // We now build each as TWO short STUB beds at the far +Z / -Z ends, leaving a
+  // WIDE (>= 10 m) CENTRED doorway across the middle, so players walk straight
+  // EAST-WEST through the zone and can see into the next module. All equipment
+  // (plants, inner-edge feed tube, breathing misters) is KEPT — re-anchored onto
+  // the two remaining stubs; only the central span + its collider are cut away.
   function makePlanterBed(cx) {
-    const L = 20;
-    const bed = box(1.5, 0.7, L, planterMat, true, true);
-    bed.position.set(cx, 0.35, 0);
-    group.add(bed);
-    const soil = box(1.2, 0.12, L - 0.3, soilMat, false, false);
-    soil.position.set(cx, 0.72, 0);
-    group.add(soil);
-    const moss = box(1.16, 0.08, L - 0.4, mossMat, false, false);
-    moss.position.set(cx, 0.79, 0);
-    group.add(moss);
+    const SEG = 4.0;   // length (in z) of each end-stub bed
+    const SEGC = 7.5;  // |z| centre of each stub → central gap spans z∈[-5.5,5.5] (11 m)
+    const feedX = cx + (cx < 0 ? 0.85 : -0.85); // inner-edge feed-tube x
+    const mistX = cx + (cx < 0 ? 1.1 : -1.1);   // mister x just inside the bed
+    const half = SEG / 2;
 
-    const bedRow = new THREE.Group();
-    bedRow.position.set(cx, 0.8, 0);
-    group.add(bedRow);
-    for (let pz = -9; pz <= 9; pz += 1.3) {
-      makePlant(bedRow, (Math.random() - 0.5) * 0.4, pz, 0.85 + Math.random() * 0.5);
+    for (const sgn of [-1, 1]) {
+      const cz = sgn * SEGC;
+      const bed = box(1.5, 0.7, SEG, planterMat, true, true);
+      bed.position.set(cx, 0.35, cz);
+      group.add(bed);
+      const soil = box(1.2, 0.12, SEG - 0.3, soilMat, false, false);
+      soil.position.set(cx, 0.72, cz);
+      group.add(soil);
+      const moss = box(1.16, 0.08, SEG - 0.4, mossMat, false, false);
+      moss.position.set(cx, 0.79, cz);
+      group.add(moss);
+
+      const bedRow = new THREE.Group();
+      bedRow.position.set(cx, 0.8, cz);
+      group.add(bedRow);
+      for (let pz = -(half - 0.4); pz <= half - 0.4; pz += 1.3) {
+        makePlant(bedRow, (Math.random() - 0.5) * 0.4, pz, 0.85 + Math.random() * 0.5);
+      }
+      swayers.push({ obj: bedRow, axis: "z", base: 0, amp: 0.05, rate: 0.6, phase: Math.random() * 6.28 });
+
+      // Inner-edge feed tube along this stub + a mister breathing over it.
+      tubeRun(group, "z", cz - (half - 0.3), cz + (half - 0.3), feedX, 0.95);
+      addMist(mistX, cz, 1.0, 0.9);
+
+      // TIGHT collider around THIS stub only — the central z-band stays CLEAR.
+      solid(cx, cz, 1.7, SEG + 0.4);
     }
-    swayers.push({ obj: bedRow, axis: "z", base: 0, amp: 0.05, rate: 0.6, phase: Math.random() * 6.28 });
-
-    // Inner-edge feed tube + a couple of misters breathing over the bed.
-    tubeRun(group, "z", -9.6, 9.6, cx + (cx < 0 ? 0.85 : -0.85), 0.95);
-    addMist(cx + (cx < 0 ? 1.1 : -1.1), -5, 1.0, 0.9);
-    addMist(cx + (cx < 0 ? 1.1 : -1.1), 5, 1.0, 0.9);
-
-    solid(cx, 0, 1.7, L + 0.4);
   }
 
   // ── 3) GROW-POD TOWERS in the corners — stacked transparent pods + seedlings ─
@@ -411,20 +425,11 @@ export function buildStationGarden(opts = {}) {
   growMats.push({ mat: growPurpleMat, baseI: 0.85, amp: 0.5, rate: 0.9, phase: 1.7 });
   growMats.push({ mat: growStripMat, baseI: 0.7, amp: 0.45, rate: 1.4, phase: 0.6 });
 
-  // ── 6) COLOURED GROW-LIGHT CASTS — a few cheap point lights that actually
-  // tint the foliage pink / purple / warm, pulsing softly in update(). ─────────
-  const Lpink = new THREE.PointLight(0xff5aa0, 9, 18, 2);
-  Lpink.position.set(-7, 4.4, 3);
-  group.add(Lpink);
-  lights.push({ light: Lpink, baseI: 9, amp: 2.4, rate: 1.1, phase: 0.0 });
-  const Lpurple = new THREE.PointLight(0x9a5cff, 9, 18, 2);
-  Lpurple.position.set(7, 4.4, -3);
-  group.add(Lpurple);
-  lights.push({ light: Lpurple, baseI: 9, amp: 2.4, rate: 0.9, phase: 1.7 });
-  const Lwarm = new THREE.PointLight(0xffd98a, 7, 14, 2);
-  Lwarm.position.set(0, 4.2, 0);
-  group.add(Lwarm);
-  lights.push({ light: Lwarm, baseI: 7, amp: 1.4, rate: 0.7, phase: 0.5 });
+  // ── 6) COLOURED GROW-LIGHT CASTS — removed for GPU cost. The pink/purple/warm
+  // real PointLights here added three more lights to the per-pixel loop; the
+  // pulsing grow-light PANELS, rack strips and emissive seedling/foliage materials
+  // (registered in growMats + tubeMats above) already carry the coloured glow, so
+  // the foliage still reads lit without the cast lights.
 
   // ── 7) DRIFTING SPORES — a slow haze rising through the garden volume. Built
   // once into a reusable buffer; update() only mutates the position array. ─────
@@ -476,11 +481,7 @@ export function buildStationGarden(opts = {}) {
       const u = tubeMats[i];
       u.mat.emissiveIntensity = u.baseI + Math.sin(t * u.rate + u.phase) * u.amp;
     }
-    // Pulsing coloured light casts.
-    for (let i = 0; i < lights.length; i++) {
-      const l = lights[i];
-      l.light.intensity = l.baseI + Math.sin(t * l.rate + l.phase) * l.amp;
-    }
+    // (Coloured light casts removed — only the emissive grow materials pulse now.)
     // Mist puffs bob + breathe; one shared opacity pulse.
     for (let i = 0; i < misters.length; i++) {
       const m = misters[i];

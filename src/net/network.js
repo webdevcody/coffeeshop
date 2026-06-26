@@ -89,6 +89,13 @@ export class Network {
     this._send({ type: "chat", text });
   }
 
+  // SHARED MONEY LEADERBOARD: push our running cash total so the server stores it
+  // (and carries it in the roster for newcomers) and relays it to the OTHER clients
+  // for ranking. The amount travels as `money`; `type` stays the discriminator.
+  sendMoney(n) {
+    this._send({ type: "money", money: n });
+  }
+
   // Relay a (purely cosmetic) weapon shot so everyone sees the same tracer /
   // rocket / grenade + explosion. `origin` and `dir` are world-space vectors
   // (anything with x/y/z); the server validates the kind + 6 finite numbers and
@@ -104,6 +111,18 @@ export class Network {
 
   signal(to, data) {
     this._send({ type: "signal", to, data });
+  }
+
+  // Push the shared world VEHICLE's authoritative pose. The driver sends it while
+  // driving (throttled) with driverId = this.id to claim the wheel, and once on
+  // EXIT with driverId = null to release + park it. The server stores it and
+  // relays to the OTHER clients, which mirror the car at that pose.
+  sendVehicle(vehicleId, kind, x, z, heading, driverId) {
+    // NOTE: the vehicle KIND travels as `kind`, NOT `type`. `type` is the message
+    // discriminator ("vehicle") that the server switch + client on() route on; a
+    // second `type` key here would overwrite it (last key wins) and the message
+    // would mis-route as {type:"car"}, silently breaking the whole shared-car sync.
+    this._send({ type: "vehicle", vehicleId, kind, x, z, heading, driverId });
   }
 
   // Tell the server about your current listening state so it can warn the people

@@ -35,11 +35,21 @@ const SPAN_X = RIGHT - LEFT;                // 244
 const SPAN_Z = FAR - NEAR;                  // 264
 
 // --- Rain volume --------------------------------------------------------------
-const RAIN_COUNT = 600;
+// Perf pass #2: the curtain used to blanket the WHOLE 244x264 map with 600
+// streaks, almost all of them falling far from the camera. We cut the pool ~45%
+// (600 -> 330) AND concentrate it in a moving footprint centred on the player
+// (RAIN_SPAN below) so the streaks that remain are the ones you can actually see.
+// Density per square metre is HIGHER than before inside that footprint, so the
+// rain reads as believable (often heavier) up close while costing far less.
+const RAIN_COUNT = 330;
 const RAIN_TOP = 70;                        // streaks spawn at this height
 const RAIN_BOTTOM = 0;                      // recycle once they fall past ground
 const RAIN_FALL = 58;                       // base fall speed (m/s)
 const STREAK_LEN = 1.6;                     // half-length of a unit streak (geo is 1m tall, scaled)
+// Footprint the falling rain is scattered across, centred on the player (or on
+// the map centre pre-join). A ~160m box comfortably covers the visible range
+// while keeping all 330 streaks near the camera.
+const RAIN_SPAN_X = 160, RAIN_SPAN_Z = 160;
 
 // --- Cloud layer --------------------------------------------------------------
 const CLOUD_COUNT = 14;
@@ -351,11 +361,16 @@ export function buildCityWeather(opts = {}) {
 
   let t = 0;
 
-  function update(dt) {
+  function update(dt, player) {
     if (!dt) dt = 0;
     // Clamp dt so a tab-switch hitch can't teleport rain or skip a whole phase.
     if (dt > 0.1) dt = 0.1;
     t += dt;
+
+    // Centre the (smaller) rain footprint on the player so the streaks fall where
+    // they're visible. Falls back to the map centre pre-join. Plain scalars.
+    const rcx = player ? player.x : CENTER_X;
+    const rcz = player ? player.z : CENTER_Z;
 
     // ----- advance the weather phase -----
     phaseT += dt;
@@ -423,17 +438,19 @@ export function buildCityWeather(opts = {}) {
         s.x += slantX * dt;
         s.z += slantZ * dt;
         // Recycle: once a streak passes the ground, send it back to the top at a
-        // fresh scattered X/Z so the finite pool keeps blanketing the whole map.
+        // fresh scattered X/Z inside the player-centred footprint, so the finite
+        // pool keeps a believable curtain right where the camera is.
         if (s.y < RAIN_BOTTOM) {
           s.y = RAIN_TOP - (RAIN_BOTTOM - s.y);     // carry the overshoot upward
-          s.x = CENTER_X + (Math.random() - 0.5) * SPAN_X;
-          s.z = CENTER_Z + (Math.random() - 0.5) * SPAN_Z;
+          s.x = rcx + (Math.random() - 0.5) * RAIN_SPAN_X;
+          s.z = rcz + (Math.random() - 0.5) * RAIN_SPAN_Z;
         }
-        // Keep streaks from drifting off the volume edges over time (wrap X/Z).
-        if (s.x > CENTER_X + SPAN_X / 2) s.x -= SPAN_X;
-        else if (s.x < CENTER_X - SPAN_X / 2) s.x += SPAN_X;
-        if (s.z > CENTER_Z + SPAN_Z / 2) s.z -= SPAN_Z;
-        else if (s.z < CENTER_Z - SPAN_Z / 2) s.z += SPAN_Z;
+        // Keep streaks within the footprint as the player moves (wrap X/Z around
+        // the moving centre so streaks left behind re-enter ahead).
+        if (s.x > rcx + RAIN_SPAN_X / 2) s.x -= RAIN_SPAN_X;
+        else if (s.x < rcx - RAIN_SPAN_X / 2) s.x += RAIN_SPAN_X;
+        if (s.z > rcz + RAIN_SPAN_Z / 2) s.z -= RAIN_SPAN_Z;
+        else if (s.z < rcz - RAIN_SPAN_Z / 2) s.z += RAIN_SPAN_Z;
 
         _pos.set(s.x, s.y, s.z);
         _scl.set(1, s.len, 1);

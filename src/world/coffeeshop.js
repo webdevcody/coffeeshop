@@ -1368,9 +1368,12 @@ export function buildCoffeeshop(scene) {
   ];
   const spawn = { x: 0, z: 4 };
 
-  const update = (dt) => {
+  const update = (dt, player) => {
     outside.update?.(dt);
-    city.update?.(dt);
+    // Thread the player XZ into the city so cityLife/cityWeather can distance-cull
+    // far traffic + pedestrians and centre the rain on the camera. Optional —
+    // city.update falls back to whole-map behaviour when player is undefined.
+    city.update?.(dt, player);
     // Espresso steam: each puff rises ~0.5 m over a 2 s loop while swelling and
     // fading out. Pure mutation of cached meshes/materials — no allocation.
     if (steamPuffs.length) {

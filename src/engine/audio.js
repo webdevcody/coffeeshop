@@ -38,10 +38,32 @@ export function createAudio() {
   let master = null; // master GainNode → destination
   let noiseBuffer = null; // the one shared white-noise buffer
 
-  let masterVolume = 0.8; // 0..1, user-facing level
-  let muted = false;
+  let masterVolume = 0.8; // 0..1, user-facing master level
+  let muted = false; // master mute (folds into the master gain)
   let voices = 0; // live one-shot voice count (capped)
   const MAX_VOICES = 14; // hard ceiling on concurrent one-shots
+
+  // ── Mixer buses ────────────────────────────────────────────────────────────
+  // Named GainNodes sit between every sound and the master so the player can ride
+  // individual groups live (e.g. lower the wind without touching the music). Each
+  // bus → master → destination. Built in resume() once the context exists; before
+  // that the desired levels live in busVolume/busMuted and are applied on unlock.
+  // The list (and order) the mixer panel renders:
+  const BUS_DEFS = [
+    { name: "ambient", label: "Ambience" }, // city/nature/space bed + birdsong
+    { name: "wind", label: "Wind" },        // flight / altitude wind rush
+    { name: "engine", label: "Engine" },    // vehicle hum (car/boat/rocket/…)
+    { name: "weather", label: "Rain" },     // rain bed
+    { name: "sfx", label: "Effects" },      // one-shots: blip/whoosh/splash/…
+    { name: "music", label: "Music" },      // procedural lofi music bed (engine/music.js)
+  ];
+  let buses = null; // { ambient, wind, engine, weather, sfx, music } GainNodes (post-resume)
+  // Per-bus level (0..1) + mute, defaulting to unity so default behaviour/levels
+  // are byte-identical to before the mixer existed. Overwritten by any saved state.
+  const busVolume = { ambient: 1, wind: 1, engine: 1, weather: 1, sfx: 1, music: 1 };
+  const busMuted = { ambient: false, wind: false, engine: false, weather: false, sfx: false, music: false };
+  // Persisted mixer state (master + buses) so levels survive reloads.
+  const STORE_KEY = "coffee.mixer";
 
   // Desired state, remembered so beds requested BEFORE resume() (e.g. weather
   // calling setRain) take effect the moment the context unlocks.
@@ -76,6 +98,54 @@ export function createAudio() {
     }
   };
   const rnd = (a, b) => a + Math.random() * (b - a);
+  const clamp01 = (v) => Math.max(0, Math.min(1, v || 0));
+
+  // ── Mixer persistence (guarded — storage can be blocked or corrupt) ─────────
+  // Restore saved master + bus levels into the in-memory state. Called once at
+  // construction (before any context), so the values are already live when
+  // resume() seeds the bus GainNodes on the first user gesture.
+  function loadMixer() {
+    let raw = null;
+    try {
+      raw = typeof localStorage !== "undefined" && localStorage.getItem(STORE_KEY);
+    } catch (_) {
+      return; // storage blocked (private mode / sandbox) — keep defaults
+    }
+    if (!raw) return;
+    try {
+      const s = JSON.parse(raw);
+      if (typeof s.master === "number") masterVolume = clamp01(s.master);
+      if (typeof s.muted === "boolean") muted = s.muted;
+      if (s.buses) for (const k in busVolume) if (typeof s.buses[k] === "number") busVolume[k] = clamp01(s.buses[k]);
+      if (s.busMuted) for (const k in busMuted) if (typeof s.busMuted[k] === "boolean") busMuted[k] = s.busMuted[k];
+    } catch (_) {
+      /* corrupt JSON — keep defaults */
+    }
+  }
+  // Write the live master + bus levels back to localStorage. Cheap; called on
+  // every change (slider drag fires many, but each is a tiny JSON string).
+  function saveMixer() {
+    try {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(STORE_KEY, JSON.stringify({ master: masterVolume, muted, buses: busVolume, busMuted }));
+    } catch (_) {
+      /* storage blocked — non-fatal */
+    }
+  }
+  loadMixer();
+
+  // The GainNode a sound should connect into: its bus once resume() built them,
+  // else the master (so a one-shot fired in the unlikely pre-bus window still
+  // sounds). Post-resume every sound routes through its bus → master → out.
+  function busNode(name) {
+    return (buses && buses[name]) || master;
+  }
+  // Push a bus's effective level (muted → 0) to its GainNode, smoothed with
+  // setTargetAtTime so moving a slider never clicks. No-op before the buses exist.
+  function applyBus(name) {
+    if (!buses || !buses[name]) return;
+    ramp(buses[name].gain, busMuted[name] ? 0 : busVolume[name], 0.05);
+  }
 
   // Build (once) a 2-second white-noise buffer shared by every noise voice.
   function getNoise() {
@@ -108,7 +178,7 @@ export function createAudio() {
     if (ambient) return ambient;
     const gain = ctx.createGain();
     gain.gain.value = 0;
-    gain.connect(master);
+    gain.connect(busNode("ambient"));
 
     const src = noiseSource();
     const lp = ctx.createBiquadFilter();
@@ -152,7 +222,7 @@ export function createAudio() {
     g.gain.setValueAtTime(0, t0);
     g.gain.linearRampToValueAtTime(0.18, t0 + 0.012);
     g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
-    osc.connect(bp).connect(g).connect(ambient ? ambient.gain : master);
+    osc.connect(bp).connect(g).connect(ambient ? ambient.gain : busNode("ambient"));
     track(osc, t0, 0.16);
     osc.start(t0);
     osc.stop(t0 + 0.16);
@@ -188,7 +258,7 @@ export function createAudio() {
     if (rain) return rain;
     const gain = ctx.createGain();
     gain.gain.value = 0;
-    gain.connect(master);
+    gain.connect(busNode("weather"));
 
     const src = noiseSource();
     const bp = ctx.createBiquadFilter();
@@ -224,7 +294,7 @@ export function createAudio() {
     if (engine) return engine;
     const gain = ctx.createGain();
     gain.gain.value = 0;
-    gain.connect(master);
+    gain.connect(busNode("engine"));
 
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
@@ -274,7 +344,7 @@ export function createAudio() {
     if (wind) return wind;
     const gain = ctx.createGain();
     gain.gain.value = 0;
-    gain.connect(master);
+    gain.connect(busNode("wind"));
 
     const src = noiseSource();
     const bp = ctx.createBiquadFilter();
@@ -340,7 +410,7 @@ export function createAudio() {
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
-    osc.connect(g).connect(master);
+    osc.connect(g).connect(busNode("sfx"));
     track(osc, t0, 0.14);
     osc.start(t0);
     osc.stop(t0 + 0.14);
@@ -361,7 +431,7 @@ export function createAudio() {
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.exponentialRampToValueAtTime(0.4, t0 + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.34);
-    src.connect(lp).connect(g).connect(master);
+    src.connect(lp).connect(g).connect(busNode("sfx"));
     track(src, t0, 0.36);
     src.start(t0);
     src.stop(t0 + 0.36);
@@ -374,7 +444,7 @@ export function createAudio() {
     bg.gain.setValueAtTime(0.0001, t0);
     bg.gain.exponentialRampToValueAtTime(0.22, t0 + 0.01);
     bg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
-    bloop.connect(bg).connect(master);
+    bloop.connect(bg).connect(busNode("sfx"));
     track(bloop, t0, 0.22);
     bloop.start(t0);
     bloop.stop(t0 + 0.22);
@@ -396,7 +466,7 @@ export function createAudio() {
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.linearRampToValueAtTime(0.3, t0 + 0.08);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.34);
-    src.connect(bp).connect(g).connect(master);
+    src.connect(bp).connect(g).connect(busNode("sfx"));
     track(src, t0, 0.36);
     src.start(t0);
     src.stop(t0 + 0.36);
@@ -414,7 +484,7 @@ export function createAudio() {
     const cg = ctx.createGain();
     cg.gain.setValueAtTime(0.5, t0);
     cg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
-    crack.connect(cg).connect(master);
+    crack.connect(cg).connect(busNode("sfx"));
     track(crack, t0, 0.2);
     crack.start(t0);
     crack.stop(t0 + 0.2);
@@ -427,7 +497,7 @@ export function createAudio() {
     const bg = ctx.createGain();
     bg.gain.setValueAtTime(0.6, t0);
     bg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-    boom.connect(bg).connect(master);
+    boom.connect(bg).connect(busNode("sfx"));
     track(boom, t0, 0.5);
     boom.start(t0);
     boom.stop(t0 + 0.5);
@@ -443,7 +513,7 @@ export function createAudio() {
     tg.gain.setValueAtTime(0.0001, t0);
     tg.gain.linearRampToValueAtTime(0.3, t0 + 0.05);
     tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.0);
-    tail.connect(lp).connect(tg).connect(master);
+    tail.connect(lp).connect(tg).connect(busNode("sfx"));
     track(tail, t0, 1.0);
     tail.start(t0);
     tail.stop(t0 + 1.0);
@@ -462,7 +532,7 @@ export function createAudio() {
     g.gain.linearRampToValueAtTime(0.22, t0 + 0.02);
     g.gain.setValueAtTime(0.22, t0 + 0.45);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.6);
-    lp.connect(g).connect(master);
+    lp.connect(g).connect(busNode("sfx"));
     const freqs = [277, 370]; // a minor-thirdish honk
     const oscs = freqs.map((f) => {
       const o = ctx.createOscillator();
@@ -489,7 +559,7 @@ export function createAudio() {
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.exponentialRampToValueAtTime(rnd(0.1, 0.18), t0 + 0.006);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.08);
-    src.connect(lp).connect(g).connect(master);
+    src.connect(lp).connect(g).connect(busNode("sfx"));
     track(src, t0, 0.1);
     src.start(t0);
     src.stop(t0 + 0.1);
@@ -508,6 +578,15 @@ export function createAudio() {
       master = ctx.createGain();
       master.gain.value = muted ? 0 : masterVolume;
       master.connect(ctx.destination);
+      // Build the mixer buses (each → master) and seed them with the restored
+      // levels, so every bed/one-shot below routes through its bus from the start.
+      buses = {};
+      for (const def of BUS_DEFS) {
+        const g = ctx.createGain();
+        g.gain.value = busMuted[def.name] ? 0 : busVolume[def.name];
+        g.connect(master);
+        buses[def.name] = g;
+      }
     }
     if (ctx.state === "suspended") ctx.resume();
     // Flush any state set before we had a context.
@@ -518,13 +597,65 @@ export function createAudio() {
   }
 
   function setMasterVolume(v) {
-    masterVolume = Math.max(0, Math.min(1, v));
+    masterVolume = clamp01(v);
     applyMaster();
+    saveMixer();
+  }
+  function getMasterVolume() {
+    return masterVolume;
   }
 
   function setMuted(b) {
     muted = !!b;
     applyMaster();
+    saveMixer();
+  }
+  function getMuted() {
+    return muted;
+  }
+
+  // ── Mixer bus controls (live, smoothed, persisted) ──────────────────────────
+  // The {name,label} list the mixer panel renders one row per (master is its own
+  // row, handled via get/setMasterVolume + get/setMuted).
+  function getBuses() {
+    return BUS_DEFS.map((b) => ({ name: b.name, label: b.label }));
+  }
+  function setBusVolume(name, v) {
+    if (!(name in busVolume)) return;
+    busVolume[name] = clamp01(v);
+    applyBus(name);
+    saveMixer();
+  }
+  function getBusVolume(name) {
+    return name in busVolume ? busVolume[name] : 1;
+  }
+  function setBusMuted(name, b) {
+    if (!(name in busMuted)) return;
+    busMuted[name] = !!b;
+    applyBus(name);
+    saveMixer();
+  }
+  function getBusMuted(name) {
+    return name in busMuted ? busMuted[name] : false;
+  }
+
+  // ── Music bus plumbing (for engine/music.js) ────────────────────────────────
+  // The lofi music manager builds its own WebAudio graph and feeds it into the
+  // "music" mixer bus, so the J panel + master + persistence all apply. These
+  // expose the live AudioContext (null until the first resume()) and the music bus
+  // node (the bus once resume() built it, else master as a harmless fallback). Both
+  // are getters because the ctx/buses only exist after the first user gesture — the
+  // music manager resolves them lazily on its first play().
+  function getContext() {
+    return ctx;
+  }
+  function getMusicBus() {
+    return ctx ? busNode("music") : null;
+  }
+  // Convenience: connect a source node straight into the music bus.
+  function connectMusic(node) {
+    if (node && typeof node.connect === "function") node.connect(busNode("music"));
+    return node;
   }
 
   function setAmbient(on) {
@@ -563,6 +694,7 @@ export function createAudio() {
     }
     ctx = null;
     master = null;
+    buses = null;
     noiseBuffer = null;
     ambient = rain = engine = wind = null;
     voices = 0;
@@ -571,7 +703,17 @@ export function createAudio() {
   return {
     resume,
     setMasterVolume,
+    getMasterVolume,
     setMuted,
+    getMuted,
+    getBuses,
+    setBusVolume,
+    getBusVolume,
+    setBusMuted,
+    getBusMuted,
+    getContext,
+    getMusicBus,
+    connectMusic,
     setAmbient,
     setRain,
     setEngine,

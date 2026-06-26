@@ -514,9 +514,16 @@ export function buildSpace(opts = {}) {
   const stationFloorY = stationY;    // 260 — interior deck sits at station altitude
   const WALL_H = 5, WALL_T = 0.4;
 
+  // The HEAVY station interior (control room + 10 detailed modules + hull + fill
+  // lights + Earth) lives in its OWN sub-group so main.js can hide it while you're
+  // down in the city — it's ~400 m away at y=260 and invisible from the city anyway
+  // — WITHOUT hiding the launchpad / rocket / orbital shell, which stay in `group`.
+  const stationInterior = new THREE.Group();
+  group.add(stationInterior);
+
   const interior = new THREE.Group();
   interior.position.set(IX, stationFloorY, IZ);
-  group.add(interior);
+  stationInterior.add(interior);
 
   // Deck slab + walkable rect (world coords). Top face at interior-local y=0.
   function addDeck(minX, maxX, minZ, maxZ) {
@@ -648,7 +655,7 @@ export function buildSpace(opts = {}) {
   // EARTH framed in the viewport — a big blue marble hanging off the +X windows.
   const earth = mesh(new THREE.SphereGeometry(160, 30, 22), earthMat, false, false);
   earth.position.set(IX + 430, stationFloorY - 120, IZ + 30);
-  group.add(earth);
+  stationInterior.add(earth);
   for (const [ea, eb, es] of [[0.5, 0.3, 60], [-0.6, 0.9, 44], [1.8, -0.4, 52], [2.6, 0.5, 38]]) {
     const land = mesh(new THREE.SphereGeometry(es, 14, 10), earthLandMat, false, false);
     const nx = Math.cos(ea) * Math.cos(eb), ny = Math.sin(eb), nz = Math.sin(ea) * Math.cos(eb);
@@ -740,31 +747,37 @@ export function buildSpace(opts = {}) {
   let mox = 320;
   for (const buildMod of STATION_MODULES) {
     const m = buildMod({ ox: mox, oz: IZ, floorY: stationFloorY });
-    group.add(m.group);
+    stationInterior.add(m.group);
     if (Array.isArray(m.ground)) for (const g of m.ground) stationGround.push(g);
-    // Keep each module's walls/furniture SOLID (no more "false walls" you pass
-    // through) EXCEPT any collider that crosses the central walking corridor
-    // (z within ±3.5 of the spine) — those are the inter-zone divider walls, left
-    // OPEN so you can still walk the whole station end to end. Side/perimeter walls
-    // and off-corridor furniture stay solid.
-    if (Array.isArray(m.colliders)) for (const c of m.colliders) {
-      if (c.maxZ > IZ - 3.6 && c.minZ < IZ + 3.6) continue; // crosses the corridor → leave open
-      stationColliders.push(c);
-    }
+    // DROP each module's own colliders so you can walk FREELY through the entire
+    // station and explore every zone — keeping them solid turned the 10 chained
+    // sealed-room modules into a maze of blocking walls. The outer hull (below) is
+    // the only solid boundary, so you can't fall off the sides. (A separate pass
+    // also strips the modules' interior divider walls so they don't even look like
+    // false walls.)
     if (typeof m.update === "function") stationModuleUpdates.push(m.update);
-    // A bright fill light per zone so the interior detail is actually visible (the
-    // modules' own emissive accents read dark without general lighting up here).
-    const zoneLight = new THREE.PointLight(0xdce8ff, 90, 64, 1.4);
-    zoneLight.position.set(mox, stationFloorY + 4.2, IZ);
-    group.add(zoneLight);
+    // (Per-zone fill PointLights removed for GPU cost — the whole module run is now
+    // lit by a few wide-range spanning lights added AFTER the loop, so the per-pixel
+    // light loop stays cheap. The modules' emissive surfaces carry the close detail.)
     mox += 38; // contiguous 38 m-wide decks: 320, 358, ... , 662
   }
-  // Fill lights over the airlock / corridor / control room (the existing interior
-  // near IX) so the entry isn't a dark tunnel either.
-  for (const lx of [IX - 30, IX - 8, IX + 14]) {
-    const eL = new THREE.PointLight(0xdce8ff, 80, 60, 1.4);
-    eL.position.set(lx, stationFloorY + 4.2, IZ);
-    group.add(eL);
+  // A few WIDE-RANGE fill lights spanning the whole interior run instead of one
+  // per zone (was 10 zone + 3 entry = 13 PointLights; now ~4). Three big lights
+  // cover the module deck (x≈301..681) and one entry light keeps the airlock /
+  // corridor / control room near IX from going dark.
+  // Even fill down the whole run. These live in `stationInterior`, which is hidden
+  // (group.visible=false) whenever you're not at the station, so Three.js skips them
+  // entirely — they cost ZERO when you're in the city and only light the deck when
+  // you're actually up here. So we can afford generous, evenly-spaced coverage.
+  for (const sx of [330, 385, 440, 495, 550, 605, 660]) {
+    const runLight = new THREE.PointLight(0xdce8ff, 34, 72, 1.7);
+    runLight.position.set(sx, stationFloorY + 4.4, IZ);
+    stationInterior.add(runLight);
+  }
+  {
+    const entryLight = new THREE.PointLight(0xdce8ff, 36, 56, 1.7);
+    entryLight.position.set(IX - 8, stationFloorY + 4.4, IZ); // near the control room
+    stationInterior.add(entryLight);
   }
   // Outer hull around the whole run (x≈301..681, z = IZ±19): long side walls + an
   // east end cap, as colliders so you can't step off the deck into space; the west
@@ -775,12 +788,12 @@ export function buildSpace(opts = {}) {
       addAABB(stationColliders, midX, IZ + sz, runLen, WALL_T);
       const wl = box(runLen, WALL_H, WALL_T, wallMat, false, true);
       wl.position.set(midX, stationFloorY + WALL_H / 2, IZ + sz);
-      group.add(wl);
+      stationInterior.add(wl);
     }
     addAABB(stationColliders, runMaxX, IZ, WALL_T, 40);
     const cap = box(WALL_T, WALL_H, 40, wallMat, false, true);
     cap.position.set(runMaxX, stationFloorY + WALL_H / 2, IZ);
-    group.add(cap);
+    stationInterior.add(cap);
   }
 
   return {
@@ -800,5 +813,7 @@ export function buildSpace(opts = {}) {
     dockSpot,                            // { x, z, heading } rocket parks outside the airlock
     exitSpot,                            // { x, z } player stands here, inside the airlock
     stationInteriorCenter: { x: IX, z: IZ }, // interior footprint centre (300, 130)
+    stationInterior,                          // heavy interior sub-group (gated by distance/altitude in main.js)
+    stationRenderCenter: { x: 472, z: IZ },   // middle of the module run (x301..681) — gate distance reference
   };
 }

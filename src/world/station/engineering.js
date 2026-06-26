@@ -149,14 +149,23 @@ export function buildStationEngineering(opts = {}) {
     k.position.set(lx, 0.25, lz); group.add(k);
   }
 
-  // Walls on three sides (front +Z left open toward the station corridor).
+  // Walls (front +Z left open toward the station corridor). The ±X SIDE walls that
+  // face the neighbouring zones are OPENED with a wide, full-height central doorway so
+  // players walk straight down the station along the east-west axis; only short corner
+  // stubs remain for structure — no full-width blank divider across the X ends.
   const mkWall = (w, lx, lz, ry) => {
     const wl = box(w, WALL_H, 0.4, M.wall, false, false);
     wl.position.set(lx, WALL_H / 2, lz); wl.rotation.y = ry; group.add(wl);
     return wl;
   };
-  mkWall(HW_Z * 2, -HW_X, 0, Math.PI / 2); // left  (-X)
-  mkWall(HW_Z * 2, HW_X, 0, Math.PI / 2);  // right (+X)
+  const DOOR_GAP = 12;                       // centered full-height opening (>= 10 m)
+  const STUB = (HW_Z * 2 - DOOR_GAP) / 2;    // length of each remaining corner stub (10 m)
+  const STUB_CZ = DOOR_GAP / 2 + STUB / 2;   // |local z| centre of each corner stub
+  const mkSideWall = (lx) => {               // two corner stubs with a doorway gap between
+    for (const sz of [-STUB_CZ, STUB_CZ]) mkWall(STUB, lx, sz, Math.PI / 2);
+  };
+  mkSideWall(-HW_X); // left  (-X) — wide central doorway opens through into the next zone
+  mkSideWall(HW_X);  // right (+X) — wide central doorway opens through into the next zone
   mkWall(HW_X * 2, 0, -HW_Z, 0);           // back  (-Z)
   // wall ribs + a couple of ceiling trusses framing the open core shaft.
   for (const rx of [-12, -6, 6, 12]) {
@@ -214,11 +223,9 @@ export function buildStationEngineering(opts = {}) {
   capGlow.position.y = colBaseY + colH + 1.3; reactor.add(capGlow);
   core.capGlow = capGlow;
 
-  // pulsing point light at the core's heart
-  const coreLight = new THREE.PointLight("#5af2ff", 2.4, 34, 2.0);
-  coreLight.position.set(0, colMidY, 0);
-  reactor.add(coreLight);
-  core.light = coreLight;
+  // (Pulsing core PointLight removed for GPU cost — the glowing core column, inner
+  // column, cap glow and orbiting ring/node emissive materials all pulse in update()
+  // and carry the reactor's lit read without adding to the per-pixel light loop.)
 
   // ENERGY RINGS orbiting the core — tilted torii on pivots, each with glowing nodes
   const ringSpecs = [
@@ -447,7 +454,7 @@ export function buildStationEngineering(opts = {}) {
     const s = 1 + pulse * 0.06;
     core.innerMesh.scale.set(s, 1, s);
     core.capGlow.scale.setScalar(0.85 + pulse * 0.3);
-    core.light.intensity = 1.8 + pulse * 1.8;
+    // (core.light removed — emissive pulse above carries the brightness change.)
 
     // orbiting energy rings
     for (let i = 0; i < ringPivots.length; i++) {

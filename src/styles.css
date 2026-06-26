@@ -388,6 +388,339 @@ body {
   letter-spacing: 0.5px;
 }
 
+/* ---------- Sound mixer (toggled with J) ---------- */
+.mixer-panel {
+  position: fixed;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(86vw, 268px);
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 6;
+}
+.mixer-panel.hidden {
+  display: none;
+}
+.mixer-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 0 1px 10px;
+}
+.mixer-hint {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a98e72;
+}
+.mixer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.mixer-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* The Master row sits apart with a divider so it reads as the global control. */
+.mixer-row.master {
+  padding-bottom: 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 234, 200, 0.16);
+}
+.mixer-row.master .mixer-label {
+  color: #ffe0a8;
+}
+.mixer-label {
+  flex: 0 0 58px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #efe2cf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mixer-slider {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 234, 200, 0.16);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+.mixer-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.mixer-slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.mixer-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 234, 200, 0.16);
+}
+.mixer-pct {
+  flex: 0 0 34px;
+  text-align: right;
+  font: 600 11px system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: #c9b49a;
+}
+.mixer-mute {
+  flex: none;
+  cursor: pointer;
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  background: rgba(255, 253, 248, 0.1);
+  border-radius: 8px;
+  padding: 3px 6px;
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mixer-mute:hover {
+  background: rgba(255, 253, 248, 0.2);
+}
+.mixer-mute.muted {
+  background: rgba(239, 71, 111, 0.85);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* ---------- Lofi music player (toggled with N) ---------- */
+.music-panel {
+  position: fixed;
+  left: 14px;
+  bottom: 16px;
+  width: min(78vw, 236px);
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 11px 13px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 6;
+}
+.music-panel.hidden {
+  display: none;
+}
+.music-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 0 1px 8px;
+}
+.music-hint {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a98e72;
+}
+.music-track {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffe0a8;
+  margin: 0 1px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.music-controls {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.music-btn {
+  flex: none;
+  cursor: pointer;
+  width: 32px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 234, 200, 0.22);
+  background: rgba(255, 253, 248, 0.1);
+  border-radius: 9px;
+  color: var(--cream);
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.15s, border-color 0.15s;
+}
+.music-btn:hover {
+  background: rgba(255, 253, 248, 0.2);
+}
+.music-btn.active {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #2b1b0e;
+}
+.music-vol {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 234, 200, 0.16);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+.music-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.music-vol::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.music-vol::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 234, 200, 0.16);
+}
+
+/* ---------- Money leaderboard (toggled with L) ---------- */
+.leaderboard {
+  position: fixed;
+  right: 14px;
+  top: 56px;
+  width: min(82vw, 244px);
+  max-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 6;
+}
+.leaderboard.hidden {
+  display: none;
+}
+.lb-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 0 1px 9px;
+}
+.lb-hint {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a98e72;
+}
+.lb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+.lb-empty {
+  font-size: 13px;
+  color: #b89c80;
+  padding: 6px 2px;
+}
+.lb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+/* The local player's row is tinted green like the money counter so you spot
+   yourself at a glance. */
+.lb-row.you {
+  background: rgba(125, 240, 138, 0.12);
+  border: 1px solid rgba(125, 240, 138, 0.3);
+  padding: 3px 5px;
+}
+.lb-rank {
+  flex: 0 0 26px;
+  font-weight: 700;
+  color: #d9b89a;
+  font-variant-numeric: tabular-nums;
+}
+.lb-name {
+  flex: 1;
+  font-weight: 600;
+  color: #efe2cf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lb-row.you .lb-name {
+  color: #7df08a;
+}
+.lb-amount {
+  flex: none;
+  font-weight: 800;
+  color: #7df08a;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Sprint stamina bar (centered, just under the sit prompt) ---------- */
 .stamina-bar {
   position: fixed;
@@ -707,6 +1040,29 @@ body {
   z-index: 5;
 }
 .money-hud.hidden {
+  display: none;
+}
+
+/* FPS counter — sits just under the money pill, cyan to read as a debug/perf chip. */
+.fps-hud {
+  position: fixed;
+  top: 96px;
+  left: 14px;
+  pointer-events: none;
+  background: rgba(16, 24, 30, 0.78);
+  color: #8fd8ff;
+  border: 1px solid rgba(143, 216, 255, 0.35);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.4px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  z-index: 5;
+}
+.fps-hud.hidden {
   display: none;
 }
 
