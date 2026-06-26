@@ -35,4 +35,7 @@ jobs:
           cache: npm
 
       # Pinned for reproducible deploys — bump when you publish a new CLI version.
-      - run: npx --yes @agentsystemlabs/launch-pad@0.1.1 deploy --yes
+      # --cluster pins the isolated cluster (never the shared `default`); the --no-*
+      # flags make this a deploy-only run that never provisions/repairs nodes, so the
+      # CI role needs zero EC2/IAM permissions (provisioning is a local operator action).
+      - run: npx --yes @agentsystemlabs/launch-pad@0.1.1 deploy --cluster coffee-shop --no-create --no-repair --no-recreate --yes

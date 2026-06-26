@@ -1,6 +1,10 @@
 node_modules
 dist
-.git
+# Keep .git/HEAD + .git/refs in the build context so vite.config.js can stamp the
+# commit SHA into the bundle (HUD version badge). Drop only the heavy bits — the
+# 25MB object store and the reflogs — which the SHA lookup never reads.
+.git/objects
+.git/logs
 scripts
 .DS_Store
 *.log
