@@ -93,6 +93,7 @@ export class HUD {
         </div>
       </div>
       <div class="money-hud hidden" id="money-hud">$0</div>
+      <div class="fps-hud hidden" id="fps-hud">– fps</div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -193,6 +194,7 @@ export class HUD {
     this.shopList = ui.querySelector("#shop-list");
     this.heldEl = ui.querySelector("#held-item");
     this.moneyHud = ui.querySelector("#money-hud");
+    this.fpsHud = ui.querySelector("#fps-hud");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
@@ -312,6 +314,17 @@ export class HUD {
     this.moneyHud.classList.remove("hidden");
     const txt = `$${n | 0}`;
     if (this.moneyHud.textContent !== txt) this.moneyHud.textContent = txt;
+  }
+
+  // FPS counter (top-left, under the money pill). Shown only once joined; called by
+  // main.js with a smoothed frame rate (throttled there). Allocation-free — writes
+  // text only when the integer value changes.
+  setFps(n) {
+    if (!this.fpsHud) return;
+    if (!this.joined) { this.fpsHud.classList.add("hidden"); return; }
+    this.fpsHud.classList.remove("hidden");
+    const txt = `${n | 0} fps`;
+    if (this.fpsHud.textContent !== txt) this.fpsHud.textContent = txt;
   }
 
   // Brief, self-dismissing message centered near the top (e.g. "table full").

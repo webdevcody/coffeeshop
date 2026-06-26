@@ -305,6 +305,11 @@ let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false,
 const PERSIST_SAVE_FRAMES = 30;
 let _saveTick = 0;
 
+// FPS counter state: an exponential moving average of the instantaneous frame rate,
+// plus a throttle accumulator so the HUD text only refreshes ~4x/sec.
+let _fpsEMA = 60;
+let _fpsThrottle = 0;
+
 // CITY MAP (M): a full-screen top-down overlay built from the fixed city layout.
 // ui/map.js draws it + owns its own Esc / ✕ / M-to-close; we own M-to-OPEN
 // (controls.consumeMap), freeze movement under it (setLocked), and feed it the live
@@ -902,7 +907,13 @@ function syncSeatedCamera() {
 }
 
 function frame() {
-  const dt = Math.min(0.05, clock.getDelta());
+  const rawDt = clock.getDelta();
+  const dt = Math.min(0.05, rawDt);
+  // FPS counter — smoothed (EMA) from the RAW delta (not the gameplay-clamped dt, which
+  // would cap the reading at 20). DOM text updated ~4x/sec so it's readable + cheap.
+  if (rawDt > 0) _fpsEMA += (1 / rawDt - _fpsEMA) * 0.12;
+  _fpsThrottle += rawDt;
+  if (_fpsThrottle >= 0.25) { _fpsThrottle = 0; hud.setFps(_fpsEMA); }
   controls.update();
   updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
   // Pass the local player's XZ so the city can distance-cull far traffic/peds and
