@@ -543,19 +543,10 @@ export function buildStationObservation(opts = {}) {
   buildConsole(-17.6, -9, Math.PI / 2);
   buildConsole(17.6, -9, -Math.PI / 2);
 
-  // ── LIGHTS — warm rim + cool earthshine (non-shadow, distance-limited) ───────
-  const warmA = new THREE.PointLight("#ffcaa0", 0.9, 34, 2.0);
-  warmA.position.set(-10, H - 1.0, -8);
-  group.add(warmA);
-  const warmB = new THREE.PointLight("#ffd6b0", 0.9, 34, 2.0);
-  warmB.position.set(10, H - 1.0, -8);
-  group.add(warmB);
-  const earthShine = new THREE.PointLight("#88b6ff", 1.1, 40, 2.0);
-  earthShine.position.set(0, 4, 13);
-  group.add(earthShine);
-  const fill = new THREE.PointLight("#ffe8cc", 0.5, 30, 2.0);
-  fill.position.set(0, H - 1, 4);
-  group.add(fill);
+  // ── LIGHTS — removed for GPU cost. The four warm-rim / cool-earthshine / fill
+  // PointLights here each added to the per-pixel light loop; the warm cove strips,
+  // cool door glow, star-chart glow and emissive screens (all breathed in update)
+  // plus the station's wide fill lights already carry the lounge's lit read.
 
   // ── ANIMATION — allocation-free (cached refs + component writes only) ────────
   let t = 0;

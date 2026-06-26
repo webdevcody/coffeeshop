@@ -223,11 +223,9 @@ export function buildStationEngineering(opts = {}) {
   capGlow.position.y = colBaseY + colH + 1.3; reactor.add(capGlow);
   core.capGlow = capGlow;
 
-  // pulsing point light at the core's heart
-  const coreLight = new THREE.PointLight("#5af2ff", 2.4, 34, 2.0);
-  coreLight.position.set(0, colMidY, 0);
-  reactor.add(coreLight);
-  core.light = coreLight;
+  // (Pulsing core PointLight removed for GPU cost — the glowing core column, inner
+  // column, cap glow and orbiting ring/node emissive materials all pulse in update()
+  // and carry the reactor's lit read without adding to the per-pixel light loop.)
 
   // ENERGY RINGS orbiting the core — tilted torii on pivots, each with glowing nodes
   const ringSpecs = [
@@ -456,7 +454,7 @@ export function buildStationEngineering(opts = {}) {
     const s = 1 + pulse * 0.06;
     core.innerMesh.scale.set(s, 1, s);
     core.capGlow.scale.setScalar(0.85 + pulse * 0.3);
-    core.light.intensity = 1.8 + pulse * 1.8;
+    // (core.light removed — emissive pulse above carries the brightness change.)
 
     // orbiting energy rings
     for (let i = 0; i < ringPivots.length; i++) {

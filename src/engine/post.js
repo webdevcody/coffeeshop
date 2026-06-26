@@ -30,13 +30,14 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 
 // Bloom tuning — deliberately restrained so daylight stays crisp.
-//   threshold: only pixels brighter than this bloom (0.85 → daytime surfaces
-//              mostly excluded; emissive neon/lamps/sun and HDR highlights pass).
+//   threshold: only pixels brighter than this bloom (0.9 → even more of the daytime
+//              surfaces excluded; emissive neon/lamps/sun and HDR highlights pass).
 //   strength : glow intensity (0.6 reads clearly at night without smearing day).
-//   radius   : bloom spread (0.5 → soft, tight halo rather than a foggy wash).
-const BLOOM_THRESHOLD = 0.85;
+//   radius   : bloom spread (0.3 → tighter halo = fewer/cheaper blur taps than 0.5,
+//              still soft, just less per-pixel work for the GPU-bound budget).
+const BLOOM_THRESHOLD = 0.9;
 const BLOOM_STRENGTH = 0.6;
-const BLOOM_RADIUS = 0.5;
+const BLOOM_RADIUS = 0.3;
 
 // Cinematic color-grade tuning — deliberately gentle. This runs LAST, on the
 // already-tone-mapped + sRGB-resolved OutputPass result, so it only *grades*

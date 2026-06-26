@@ -97,7 +97,6 @@ export function buildStationGarden(opts = {}) {
   // ── Animated handles (collected at build → mutated allocation-free) ─────────
   const swayers  = []; // { obj, axis, base, amp, rate, phase }  gentle plant/vine sway
   const growMats = []; // { mat, baseI, amp, rate, phase }        grow-light pulse
-  const lights   = []; // { light, baseI, amp, rate, phase }      pulsing coloured cast
   const misters  = []; // { mesh, baseY, amp, rate, phase, baseScale }  drifting mist
 
   // Flowing nutrient-tube materials (phase-staggered → travelling glow).
@@ -426,20 +425,11 @@ export function buildStationGarden(opts = {}) {
   growMats.push({ mat: growPurpleMat, baseI: 0.85, amp: 0.5, rate: 0.9, phase: 1.7 });
   growMats.push({ mat: growStripMat, baseI: 0.7, amp: 0.45, rate: 1.4, phase: 0.6 });
 
-  // ── 6) COLOURED GROW-LIGHT CASTS — a few cheap point lights that actually
-  // tint the foliage pink / purple / warm, pulsing softly in update(). ─────────
-  const Lpink = new THREE.PointLight(0xff5aa0, 9, 18, 2);
-  Lpink.position.set(-7, 4.4, 3);
-  group.add(Lpink);
-  lights.push({ light: Lpink, baseI: 9, amp: 2.4, rate: 1.1, phase: 0.0 });
-  const Lpurple = new THREE.PointLight(0x9a5cff, 9, 18, 2);
-  Lpurple.position.set(7, 4.4, -3);
-  group.add(Lpurple);
-  lights.push({ light: Lpurple, baseI: 9, amp: 2.4, rate: 0.9, phase: 1.7 });
-  const Lwarm = new THREE.PointLight(0xffd98a, 7, 14, 2);
-  Lwarm.position.set(0, 4.2, 0);
-  group.add(Lwarm);
-  lights.push({ light: Lwarm, baseI: 7, amp: 1.4, rate: 0.7, phase: 0.5 });
+  // ── 6) COLOURED GROW-LIGHT CASTS — removed for GPU cost. The pink/purple/warm
+  // real PointLights here added three more lights to the per-pixel loop; the
+  // pulsing grow-light PANELS, rack strips and emissive seedling/foliage materials
+  // (registered in growMats + tubeMats above) already carry the coloured glow, so
+  // the foliage still reads lit without the cast lights.
 
   // ── 7) DRIFTING SPORES — a slow haze rising through the garden volume. Built
   // once into a reusable buffer; update() only mutates the position array. ─────
@@ -491,11 +481,7 @@ export function buildStationGarden(opts = {}) {
       const u = tubeMats[i];
       u.mat.emissiveIntensity = u.baseI + Math.sin(t * u.rate + u.phase) * u.amp;
     }
-    // Pulsing coloured light casts.
-    for (let i = 0; i < lights.length; i++) {
-      const l = lights[i];
-      l.light.intensity = l.baseI + Math.sin(t * l.rate + l.phase) * l.amp;
-    }
+    // (Coloured light casts removed — only the emissive grow materials pulse now.)
     // Mist puffs bob + breathe; one shared opacity pulse.
     for (let i = 0; i < misters.length; i++) {
       const m = misters[i];

@@ -61,6 +61,11 @@ export function buildCity(scene) {
   const colliders = [];
   const ground = [];
   const updates = [];
+  // The 16 placed district groups, collected for the Stage-2 distance cull. Each
+  // group sits at its world tile centre (tile.ox, 0, tile.oz); main.js toggles
+  // their .visible by proximity. Colliders/ground are merged separately, so the
+  // cull only affects rendering, never gameplay.
+  const districtGroups = [];
 
   // Unified pavement base + asphalt road grid carving the districts into blocks
   // (visual only — drivable/walkable; the ground rects already exist beneath it).
@@ -119,6 +124,7 @@ export function buildCity(scene) {
     if (!d || !d.group) continue;
     d.group.position.set(tile.ox, 0, tile.oz);
     group.add(d.group);
+    districtGroups.push(d.group); // Stage-2 distance cull (visibility only)
     for (const c of d.colliders || []) colliders.push(offsetRect(c, tile.ox, tile.oz));
     for (const g of d.ground || []) ground.push(offsetRect(g, tile.ox, tile.oz));
     if (typeof d.update === "function") updates.push(d.update);
@@ -129,6 +135,10 @@ export function buildCity(scene) {
   // the road, and into any district without falling.
   ground.push({ minX: -120, maxX: 120, minZ: 10, maxZ: 35 });
 
+  // Surface the district groups on the city group's userData too, so main.js can
+  // reach them through the scene graph (buildCity's return isn't threaded past
+  // coffeeshop.js) for the Stage-2 distance cull.
+  group.userData.districtGroups = districtGroups;
   scene.add(group);
 
   const update = (dt) => {
@@ -137,5 +147,5 @@ export function buildCity(scene) {
     }
   };
 
-  return { group, colliders, ground, update, getTraffic, getPedestrians, getRain, getTornadoes };
+  return { group, colliders, ground, update, getTraffic, getPedestrians, getRain, getTornadoes, districtGroups };
 }

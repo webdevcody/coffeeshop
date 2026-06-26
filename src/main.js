@@ -103,6 +103,24 @@ scene.add(cannon.group);
 const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground, cannon.ground);
 const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders, cannon.colliders);
 
+// STAGE 2 — VISIBILITY CULLING setup. Grab the 16 city DISTRICT groups once (city.js
+// stashes them on the "city" group's userData, since buildCity's return isn't threaded
+// up through coffeeshop.js) and precompute each group's world-XZ centre, so frame()
+// can toggle group.visible with cheap scalar squared-distance maths and zero per-frame
+// allocation. Culling only flips .visible — the districts' colliders + walkable ground
+// were merged into collidersAll/groundAll above, so gameplay is never affected.
+const _cityGroup = scene.getObjectByName("city");
+const _districtCull = [];
+if (_cityGroup && Array.isArray(_cityGroup.userData.districtGroups)) {
+  for (const g of _cityGroup.userData.districtGroups) {
+    _districtCull.push({ g, x: g.position.x, z: g.position.z });
+  }
+}
+// Keep a district rendered within ~190 m of the player (squared, to skip sqrt).
+const DISTRICT_CULL_R2 = 190 * 190;
+// Show the orbital STATION (space.group) within ~220 m of its launchpad footprint.
+const STATION_GATE_R2 = 220 * 220;
+
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
 // skateboard. Pushes the parked car's footprint into `colliders`; drives off the
@@ -968,6 +986,33 @@ function frame() {
     maybeSendState();
     updateWeapons();
     updateMap();
+
+    // --- STAGE 2: VISIBILITY CULLING -----------------------------------------
+    // Stop off-screen / far geometry from rendering (a GPU win; gameplay is
+    // untouched because the relevant colliders + walkable ground were merged into
+    // collidersAll/groundAll, which are independent of these groups' .visible
+    // flags). Run AFTER updateMap() so gameMap.isOpen is final for THIS frame: the
+    // bird-eye MAP renders the whole scene straight down from 500 m, so while it's
+    // open we force every district + the station visible; otherwise we cull by a
+    // cheap squared-distance test to the player. (space.update(dt) already ran this
+    // frame — it's cheap — so only the heavy render cost vanishes when hidden.)
+    const _mapOpen = gameMap.isOpen;
+    // STATION INTERIOR GATE: only the HEAVY interior sub-group (control room + 10
+    // detailed modules + hull + fill lights + Earth, ~400 m east at y≈260) is gated.
+    // The launchpad / rocket / orbital shell (space.group) stay visible so you can
+    // always find the rocket near spawn. Show the interior when up high (flying / in
+    // the rocket / on the deck, y>100) or within range of the module-run centre.
+    if (space.stationInterior) {
+      const sdx = local.pos.x - space.stationRenderCenter.x;
+      const sdz = local.pos.z - space.stationRenderCenter.z;
+      space.stationInterior.visible = _mapOpen || local.pos.y > 100 || (sdx * sdx + sdz * sdz) <= STATION_GATE_R2;
+    }
+    // DISTRICT DISTANCE CULL: toggle each of the 16 district groups by proximity.
+    for (let i = 0; i < _districtCull.length; i++) {
+      const d = _districtCull[i];
+      const ddx = d.x - local.pos.x, ddz = d.z - local.pos.z;
+      d.g.visible = _mapOpen || (ddx * ddx + ddz * ddz) <= DISTRICT_CULL_R2;
+    }
   } else {
     // Gentle interior orbit of the room while the join card is up.
     previewAngle += dt * 0.12;
