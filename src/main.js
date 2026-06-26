@@ -219,6 +219,13 @@ const _flashTgt = new THREE.Vector3();
 // muzzle point (hand world position nudged forward), _shotDir the camera aim.
 const _shotOrigin = new THREE.Vector3();
 const _shotDir = new THREE.Vector3();
+// GUN auto-fire: while the left mouse button is HELD and the pistol is equipped we
+// re-fire every GUN_FIRE_INTERVAL seconds. _gunCooldown counts that interval down
+// each frame so a held trigger can't fire faster than this rate; rocket/grenade
+// ignore it (they are single-shot per click). The first click fires instantly
+// because the cooldown has already recovered to <= 0 by then.
+const GUN_FIRE_INTERVAL = 0.12;
+let _gunCooldown = 0;
 // SECRET CANNON reach radii (XZ, metres): press E within LOAD of the muzzle to
 // fire, or simply walk into the muzzle mouth (WALKIN) to be launched hands-free.
 const CANNON_LOAD_R = 2.5;
@@ -984,7 +991,7 @@ function frame() {
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();
     maybeSendState();
-    updateWeapons();
+    updateWeapons(dt);
     updateMap();
 
     // --- STAGE 2: VISIBILITY CULLING -----------------------------------------
@@ -1177,20 +1184,46 @@ function equipWeapon(kind) {
   }
 }
 
-function updateWeapons() {
+// Fire `kind` from the hand along the camera aim, drawn locally AND relayed so
+// every other client replays the same projectile + blast. Reuses the _shot*
+// scratch vectors, so this allocates nothing and is safe to call every frame on
+// the held auto-fire path. Callers gate on weapons.current()/sitting/lock first.
+function fireCurrentWeapon(kind) {
+  camera.getWorldDirection(_shotDir); // aim along the camera forward
+  local.character.handAnchor.getWorldPosition(_shotOrigin); // muzzle at the hand
+  _shotOrigin.addScaledVector(_shotDir, 0.3); // nudge forward past the body
+  weapons.fire(_shotOrigin, _shotDir, kind);
+  network.sendShot(kind, _shotOrigin, _shotDir); // make it multiplayer-visible
+}
+
+function updateWeapons(dt) {
   const slot = controls.consumeWeaponSlot();
   if (slot != null) {
     const kind = slot === 1 ? "gun" : slot === 2 ? "rocket" : slot === 3 ? "grenade" : null;
     equipWeapon(kind);
   }
-  // consumeFire() is called first so the B edge always drains, even when holstered.
-  if (controls.consumeFire() && weapons.current() && !local.sitting) {
-    const kind = weapons.current();
-    camera.getWorldDirection(_shotDir); // aim along the camera forward
-    local.character.handAnchor.getWorldPosition(_shotOrigin); // muzzle at the hand
-    _shotOrigin.addScaledVector(_shotDir, 0.3); // nudge forward past the body
-    weapons.fire(_shotOrigin, _shotDir, kind);
-    network.sendShot(kind, _shotOrigin, _shotDir); // make it multiplayer-visible
+  const cur = weapons.current();
+  // B KEY: single shot per press. consumeFire() is called first so the B edge
+  // always drains, even when holstered; it's gated by `locked` in controls.js.
+  if (controls.consumeFire() && cur && !local.sitting) {
+    fireCurrentWeapon(cur);
+  }
+  // LEFT MOUSE: a click fires once; HOLDING the button auto-fires the GUN at its
+  // fire-rate, while rocket/grenade stay single-shot per click. Always drain the
+  // click edge so it can't accumulate. The gun is driven by the held flag (not the
+  // click edge), so a held trigger and the drained click never double-fire.
+  const clicked = controls.consumeClickFire();
+  const held = controls.isFireHeld();
+  if (cur && !local.sitting) {
+    if (cur === "gun") {
+      if (_gunCooldown > 0) _gunCooldown -= dt; // recover toward a ready trigger
+      if (held && _gunCooldown <= 0) {
+        fireCurrentWeapon("gun");
+        _gunCooldown = GUN_FIRE_INTERVAL; // rate-limit sustained auto-fire
+      }
+    } else if (clicked) {
+      fireCurrentWeapon(cur); // rocket / grenade: one blast per click
+    }
   }
 }
 
