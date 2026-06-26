@@ -87,8 +87,9 @@ scene.add(airport.group);
 // doorway threshold as walkable `ground`, the brick walls / carriage / wheels /
 // crates + the sliding secret door as solid `colliders`) is merged below. A
 // sliding door in the cafe-facing wall (opened from the cafe via cannon.doorTrigger)
-// reveals the room; standing under the muzzle fires the player in a high arc over
-// the city (cannon.launch() → local.launchSelf()). Pumped each frame in frame().
+// reveals the room; standing under the muzzle now opens the bird-eye map in
+// "cannon" select mode (gameMap.open("cannon")) so you pick WHERE to be launched,
+// then arcs the player there (local.launchToward). Pumped each frame in frame().
 const cannon = buildCannon({ landBounds });
 scene.add(cannon.group);
 // Merged world surfaces: beaches/docks/island tops + the launchpad apron become
@@ -221,16 +222,77 @@ let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false,
 // (controls.consumeMap), freeze movement under it (setLocked), and feed it the live
 // player arrow while open. Clicking the map fast-travels the local player there.
 let _mapLocked = false; // true while WE locked controls for the open map
+// Which mode the map is currently serving: "travel" (plain M-map fast-travel) or
+// "cannon" (the secret cannon opened it to pick a launch destination). Kept in
+// sync with the overlay and fed to it via the render payload so the hint + click
+// behaviour match. Reset to "travel" whenever the map closes.
+let mapMode = "travel";
+// Latches the cannon's WALK-IN auto-open so cancelling the cannon map doesn't
+// instantly reopen it while you're still standing in the muzzle mouth — you step
+// clear of the muzzle to re-arm. (An explicit E press at the muzzle ignores it.)
+let _cannonLatch = false;
+
+// REAL BIRD-EYE TOP-DOWN CAMERA. One OrthographicCamera looking straight DOWN
+// (-Y) from 500 m up, framing the whole world (city + ocean + 4 islands). When
+// the M-map is open we render the ACTUAL scene through this camera onto the main
+// canvas (fog off, no postFX/labels) — a true rendered bird's-eye view, not a
+// drawing. updateTopCam() fits its orthographic frustum to the live canvas aspect
+// and publishes the WORLD rectangle it covers in `_topBounds`, which ui/map.js
+// uses to map a screen click <-> world (x,z) with the SAME transform and to place
+// the player arrow. up = +Z keeps NORTH up on screen (a downward camera can't
+// mirror, so east ends up on the left; north-up matches the old map / minimap).
+const MAP_FRAME = { minX: -210, maxX: 210, minZ: -80, maxZ: 350 };
+const topCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 700);
+const _topBounds = { minX: -210, maxX: 210, minZ: -80, maxZ: 350 };
+function updateTopCam() {
+  const W = Math.max(1, window.innerWidth);
+  const H = Math.max(1, window.innerHeight);
+  const cx = (MAP_FRAME.minX + MAP_FRAME.maxX) / 2; // 0
+  const cz = (MAP_FRAME.minZ + MAP_FRAME.maxZ) / 2; // 135
+  const spanX = MAP_FRAME.maxX - MAP_FRAME.minX; // 420
+  const spanZ = MAP_FRAME.maxZ - MAP_FRAME.minZ; // 430
+  // Uniform world-units-per-pixel that fits BOTH spans (letterbox the smaller),
+  // so the render isn't stretched. fW/fH are the world extents the FULL canvas
+  // spans (each >= the requested span).
+  const s = Math.min(W / spanX, H / spanZ);
+  const fW = W / s;
+  const fH = H / s;
+  topCam.left = -fW / 2;
+  topCam.right = fW / 2;
+  topCam.top = fH / 2;
+  topCam.bottom = -fH / 2;
+  topCam.position.set(cx, 500, cz);
+  topCam.up.set(0, 0, 1); // +Z (north) up on screen
+  topCam.lookAt(cx, 0, cz); // straight down
+  topCam.updateProjectionMatrix();
+  _topBounds.minX = cx - fW / 2;
+  _topBounds.maxX = cx + fW / 2;
+  _topBounds.minZ = cz - fH / 2;
+  _topBounds.maxZ = cz + fH / 2;
+}
+updateTopCam();
+
 const gameMap = createMap({
-  onTravel: ({ x, z }) => {
-    // Fast travel: drop the local player onto the clicked world point. Vertical
-    // settle / off-edge respawn is left to localPlayer._updateVertical.
-    if (local) {
+  onTravel: ({ x, z, mode }) => {
+    if (!local) {
+      gameMap.close();
+      return;
+    }
+    if (mode === "cannon") {
+      // CANNON SELECT: close the map and arc the player to the chosen world point.
+      // launchToward reuses the cannon glide integrator; it resolves through the
+      // normal land / splash / void-respawn paths, so it can never wedge.
+      gameMap.close();
+      local.launchToward(x, z);
+      audio.whoosh?.();
+    } else {
+      // Fast travel: drop the local player onto the clicked world point. Vertical
+      // settle / off-edge respawn is left to localPlayer._updateVertical.
       local.pos.x = x;
       local.pos.z = z;
       local.pos.y = 0;
+      gameMap.close();
     }
-    gameMap.close();
   },
 });
 // STATIC render payload, built ONCE from the city-layout constants (all WORLD
@@ -253,13 +315,15 @@ for (let r = 0; r < MAP_ROWS.length; r++) {
     _mapDistricts.push({ name, x: MAP_COLS[c], z: MAP_ROWS[r], w: 46, d: 46, color });
   }
 }
-const _mapRoads = [];
-for (const x of [-60, 0, 60]) _mapRoads.push({ x1: x, z1: 13, x2: x, z2: 277 });        // 3 avenues
-for (const z of [35, 95, 155, 215]) _mapRoads.push({ x1: -122, z1: z, x2: 122, z2: z }); // 4 cross streets
+// Render payload for the TRANSPARENT overlay. The real city/roads/water now come
+// from the live 3D bird-eye render behind the overlay, so we only feed the bits
+// it draws on top: the live `bounds` (the topCam world-rect — a live reference,
+// mutated each frame by updateTopCam), the `mode`, the player arrow, and thin
+// district / island / POI labels for orientation + click targets.
 const mapPayload = {
+  bounds: _topBounds,
+  mode: "travel",
   districts: _mapDistricts,
-  roads: _mapRoads,
-  water: { minX: -220, maxX: 220, minZ: -90, maxZ: 360 }, // big bbox around the city
   islands: [
     { x: -184, z: 319, r: 13, name: "NW Shops" },
     { x: 177, z: 312, r: 13, name: "NE Shops" },
@@ -672,16 +736,26 @@ function frame() {
     const muzzleD2 = _mDx * _mDx + _mDz * _mDz;
     const nearMuzzle = !local.sitting && muzzleD2 <= CANNON_LOAD_R * CANNON_LOAD_R;
     const cannonE = (nearDoor || nearMuzzle) && controls.consumeUse ? controls.consumeUse() : false;
-    // FIRE the player: press E under the muzzle, OR just walk into the muzzle
-    // mouth. Guarded so we only fire on foot and never re-trigger mid-arc.
-    if (!local.airborne && !local.flying && !local.sitting &&
-        (muzzleD2 <= CANNON_WALKIN_R * CANNON_WALKIN_R || (nearMuzzle && cannonE))) {
-      local.launchSelf(cannon.launch());
-      audio.whoosh?.();
+    // CANNON → MAP-SELECT LAUNCH. Pressing E under the muzzle, OR just walking
+    // into the muzzle mouth, no longer fires a fixed arc — it OPENS the bird-eye
+    // map in "cannon" select mode so you pick WHERE to be launched; the map's
+    // onTravel cannon branch then arcs you there (local.launchToward). The walk-in
+    // auto-open is latched so cancelling the map doesn't instantly reopen it while
+    // you're still standing in the mouth — step clear to re-arm. Guarded so we
+    // only open on foot, never mid-arc, and never over an in-world game.
+    const inMuzzleMouth = !local.sitting && muzzleD2 <= CANNON_WALKIN_R * CANNON_WALKIN_R;
+    const canCannon = !local.airborne && !local.flying && !local.sitting && !inWorld.open;
+    if (canCannon && !gameMap.isOpen &&
+        ((nearMuzzle && cannonE) || (inMuzzleMouth && !_cannonLatch))) {
+      mapMode = "cannon";
+      gameMap.open("cannon");
+      _cannonLatch = true;
     } else if (nearDoor && cannonE) {
       // Reveal / hide the secret room by sliding the brick door.
       cannon.setDoorOpen(!cannon.doorOpen);
     }
+    // Re-arm the walk-in auto-open once you've stepped clear of the muzzle zone.
+    if (muzzleD2 > CANNON_LOAD_R * CANNON_LOAD_R) _cannonLatch = false;
 
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
@@ -814,8 +888,24 @@ function frame() {
     flashlight.target.position.copy(_flashTgt);
   }
 
-  postFX.render();
-  labelRenderer.render(scene, camera);
+  // RENDER. While the bird-eye MAP is open, render the REAL scene straight down
+  // through topCam onto the main canvas — fog OFF (restored right after) so the
+  // whole map is crisp from 500 m, and NO postFX/labels so the map view stays
+  // clean (the transparent ui/map.js overlay draws the arrow + labels on top, and
+  // its click→world maths inverts this exact topCam framing). Otherwise render
+  // normally: postFX (bloom + grade) then the CSS2D name labels.
+  if (gameMap.isOpen) {
+    if (labelRenderer.domElement.style.display !== "none") labelRenderer.domElement.style.display = "none";
+    updateTopCam();
+    const savedFog = scene.fog;
+    scene.fog = null;
+    renderer.render(scene, topCam);
+    scene.fog = savedFog;
+  } else {
+    if (labelRenderer.domElement.style.display === "none") labelRenderer.domElement.style.display = "";
+    postFX.render();
+    labelRenderer.render(scene, camera);
+  }
   requestAnimationFrame(frame);
 }
 
@@ -925,9 +1015,14 @@ function updateWeapons() {
 // `locked`, so the same M press that ui/map.js handles as a close can't bounce back
 // through here and reopen it.
 function updateMap() {
-  if (controls.consumeMap() && !inWorld.open) gameMap.toggle();
+  // M opens the PLAIN travel map (only when NOT mid-game). Tag the mode first so
+  // the overlay + onTravel treat the click as a fast-travel, not a cannon launch.
+  if (controls.consumeMap() && !inWorld.open) {
+    mapMode = "travel";
+    gameMap.toggle("travel");
+  }
   // Sync the movement lock to the map's REAL open state — it can self-close (Esc /
-  // ✕ / M / a fast-travel click) without telling us. Never fight a game's own lock.
+  // ✕ / M / a click) without telling us. Never fight a game's own lock.
   if (!inWorld.open && currentRole == null) {
     if (gameMap.isOpen && !_mapLocked) {
       controls.setLocked(true);
@@ -935,14 +1030,17 @@ function updateMap() {
     } else if (!gameMap.isOpen && _mapLocked) {
       controls.setLocked(false);
       _mapLocked = false;
+      mapMode = "travel"; // map closed → next M opens a plain travel map
     }
   }
-  // Track the live player arrow — only while open, mutating the cached payload in
-  // place so the per-frame redraw allocates nothing.
+  // Track the live player arrow + the topCam world-rect — only while open, mutating
+  // the cached payload in place so the per-frame redraw allocates nothing.
   if (gameMap.isOpen && local) {
+    updateTopCam(); // keep _topBounds (which mapPayload.bounds references) current
     mapPayload.player.x = local.pos.x;
     mapPayload.player.z = local.pos.z;
     mapPayload.player.heading = local.facing;
+    mapPayload.mode = mapMode;
     gameMap.render(mapPayload);
   }
 }
@@ -950,5 +1048,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, topCam, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

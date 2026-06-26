@@ -617,6 +617,31 @@ export class LocalPlayer {
     this._launchVZ = 0;
   }
 
+  // Fire the player out of the cannon toward a chosen world point (tx, tz) — used
+  // by the map-select cannon launch. Solves a simple ballistic arc that REUSES the
+  // existing launchSelf integrator (no duplicate physics): pick an up-speed `vy`
+  // (a 45°-ish launch, capped so far shots don't loft absurdly high), then the
+  // horizontal speed that covers the ground distance in that arc's airtime. The
+  // arc resolves through the normal land / splash / void-respawn paths, so it can
+  // never wedge; bad/NaN targets are ignored (launchSelf also guards). Close enough
+  // is fine — it's a cannon.
+  launchToward(tx, tz) {
+    const g = FALL.gravity;
+    const dx = (+tx) - this.pos.x;
+    const dz = (+tz) - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (!Number.isFinite(dist)) return;
+    // 45° launch (range = 2·vy²/g at vy = vh) up to a capped apex; past that reach
+    // keep the apex and just throw harder horizontally so it still lands near (tx,tz).
+    const VY_MAX = 40; // ~36 m apex, ~3.6 s airtime — a big, readable arc
+    const vy = Math.min(VY_MAX, Math.max(12, Math.sqrt((dist * g) / 2)));
+    const airtime = (2 * vy) / g; // time to rise and fall back to launch height
+    const vh = dist > 1e-3 ? dist / airtime : 0; // horizontal speed to cover `dist`
+    const ux = dist > 1e-3 ? dx / dist : 0;
+    const uz = dist > 1e-3 ? dz / dist : 0;
+    this.launchSelf({ vx: ux * vh, vy, vz: uz * vh });
+  }
+
   // Hint text for the HUD: prompt to sit when near a seat, to stand when seated.
   sitPromptText() {
     if (this.sitting) return "Press Space to stand";
