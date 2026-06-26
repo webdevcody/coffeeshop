@@ -321,6 +321,73 @@ body {
   display: none;
 }
 
+/* ---------- Controls legend (toggled with H) ---------- */
+.help-panel {
+  position: fixed;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(80vw, 248px);
+  background: rgba(34, 22, 14, 0.92);
+  border: 1px solid rgba(255, 234, 200, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--cream);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 6;
+}
+.help-panel.hidden {
+  display: none;
+}
+.help-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #d9b89a;
+  margin: 0 1px 9px;
+}
+.help-toggle {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a98e72;
+}
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.help-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.help-row span {
+  color: #efe2cf;
+}
+.help-row kbd {
+  flex: none;
+  min-width: 46px;
+  text-align: center;
+  font: 700 11px "Segoe UI", system-ui, sans-serif;
+  color: #2b1b0e;
+  background: linear-gradient(180deg, #f6e6cc, #e0c89e);
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 3px 7px;
+  letter-spacing: 0.5px;
+}
+
 /* ---------- Sprint stamina bar (centered, just under the sit prompt) ---------- */
 .stamina-bar {
   position: fixed;
@@ -618,6 +685,31 @@ body {
 .look-corner .pill {
   pointer-events: auto;
 }
+
+/* ---------- GTA money counter (top-left, under the Customize button) ---------- */
+.money-hud {
+  position: fixed;
+  top: 56px;
+  left: 14px;
+  pointer-events: none;
+  background: rgba(20, 32, 18, 0.82);
+  color: #7df08a;
+  border: 1px solid rgba(125, 240, 138, 0.4);
+  border-radius: 999px;
+  padding: 6px 15px;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  z-index: 5;
+}
+.money-hud.hidden {
+  display: none;
+}
+
 .customize-panel {
   width: min(86vw, 250px);
   background: rgba(34, 22, 14, 0.92);
@@ -1083,4 +1175,59 @@ body {
   font-weight: 600;
   white-space: nowrap;
   backdrop-filter: blur(8px);
+}
+
+/* NOS tank gauge — sits beside the speedo while driving/sailing. */
+.nos-gauge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-end;
+  background: rgba(20, 26, 34, 0.66);
+  border: 1px solid rgba(127, 223, 255, 0.25);
+  border-radius: 999px;
+  padding: 5px 12px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.nos-gauge.hidden { display: none; }
+.nos-label {
+  font: 800 11px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.12em;
+  color: #9fe9ff;
+}
+.nos-track {
+  position: relative;
+  width: 92px;
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.nos-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2a9bd6, #7fdfff);
+  transition: width 0.08s linear;
+}
+/* Firing NOS: tank glows hot. */
+.nos-gauge.boosting {
+  border-color: rgba(255, 150, 70, 0.7);
+  box-shadow: 0 0 14px rgba(255, 150, 70, 0.5);
+}
+.nos-gauge.boosting .nos-label { color: #ffd089; }
+.nos-gauge.boosting .nos-fill {
+  background: linear-gradient(90deg, #ff7a3c, #ffd089);
+}
+/* Drained tank flashes a warning red. */
+.nos-gauge.empty {
+  border-color: rgba(255, 90, 70, 0.7);
+  animation: nos-flash 0.7s ease-in-out infinite;
+}
+.nos-gauge.empty .nos-label { color: #ff8d7a; }
+@keyframes nos-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }

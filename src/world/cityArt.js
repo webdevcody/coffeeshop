@@ -1032,7 +1032,11 @@ export function artMaterial(style, opts = {}) {
     emissiveMap: tex,
     emissiveIntensity: opts.emissiveIntensity ?? 0.35,
   });
-  if (opts.file) {
+  // Optional PNG drop-in upgrade. OFF by default: those files don't ship, so
+  // attempting them spammed the console with hundreds of 404s. To use real PNG art
+  // later, drop files into public/img/city/ and set window.__cityArtImages = true
+  // before the city builds — then the procedural texture upgrades to the PNG.
+  if (opts.file && typeof window !== "undefined" && window.__cityArtImages) {
     new THREE.TextureLoader().load(
       `/img/city/${opts.file}`,
       (png) => {

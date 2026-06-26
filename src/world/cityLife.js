@@ -613,6 +613,7 @@ export function buildCityLife() {
 
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
+      if (c.stolen) continue; // hijacked away by the player — freeze it + keep it hidden
       c.pos += c.dir * c.speed * dt;
       // Wrap around the segment ends, re-entering from the far side.
       if (c.pos > c.hi) c.pos = c.lo + (c.pos - c.hi);
@@ -638,6 +639,13 @@ export function buildCityLife() {
     for (let i = 0; i < peds.length; i++) {
       const p = peds[i];
 
+      // ROBBERY reaction + payout-cooldown timers, both set by rob() below. They're
+      // plain scalars the rest of this loop reads; ticking them here (not allocating)
+      // keeps the hot path allocation-free. While reacting the ped bolts (never pauses).
+      if (p.robCooldown > 0) p.robCooldown -= dt;
+      const reacting = p.react > 0;
+      if (reacting) { p.react -= dt; p.pauseTimer = 0; }
+
       if (p.speed > 0 || p.pauseTimer > 0) {
         // ----- Moving walkers/joggers (and ones currently paused) -----
         // Pause logic: when allowed, near a crossing, and off cooldown, a walker
@@ -654,7 +662,8 @@ export function buildCityLife() {
 
         const moving = p.pauseTimer <= 0;
         if (moving) {
-          p.pos += p.dir * p.baseSpeed * dt;
+          // A panicking (just-robbed) ped sprints away — scale the stride for a flee.
+          p.pos += p.dir * p.baseSpeed * (reacting ? 2.7 : 1) * dt;
           if (p.pos > p.hi) p.pos = p.lo + (p.pos - p.hi);
           else if (p.pos < p.lo) p.pos = p.hi - (p.lo - p.pos);
           p.group.position.z = p.pos;
@@ -707,6 +716,15 @@ export function buildCityLife() {
         // Idle: a tiny breathing bob, legs stay folded.
         p.group.position.y = p.baseY + Math.sin(t * 2 + p.phase) * 0.015;
       }
+
+      // ROBBERY pose override: regardless of the ped's usual behaviour, while the
+      // reaction flag is hot both arms are thrown overhead with a fast scared bob.
+      if (reacting && p.arms) {
+        p.arms[0].rotation.x = -2.7;
+        p.arms[1].rotation.x = -2.7;
+        const baseY = p.baseY || 0;
+        p.group.position.y = baseY + Math.abs(Math.sin(t * 13 + p.phase)) * 0.06;
+      }
     }
 
     // Birds: orbit horizontally, banked, with a flapping wing scale on Y.
@@ -727,5 +745,49 @@ export function buildCityLife() {
     wildlife.update(dt);
   }
 
-  return { group, update };
+  // ---- STEAL / ROB hooks (GTA) ----------------------------------------------
+  // Gameplay (rides.js / main.js) reads these on a KEY PRESS only — never per
+  // frame — so building the small descriptor arrays here is fine (the hot path
+  // update() above stays allocation-free; rob() just sets per-ped scalars it reads).
+  //
+  // getTraffic(): the roaming CARS you can hijack, each { x, z, heading, hide() }.
+  //   hide() raises the `stolen` flag the update loop skips, so the car vanishes and
+  //   the player's drivable car is yoinked into its place. Bikes are excluded.
+  function getTraffic() {
+    const out = [];
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (c.stolen || c.isBike) continue; // already taken, or it's the cyclist (not a car)
+      out.push({
+        x: c.group.position.x,
+        z: c.group.position.z,
+        heading: c.group.rotation.y, // heading == rotation.y (forward = (sin h, cos h))
+        hide() { c.stolen = true; c.group.visible = false; },
+      });
+    }
+    return out;
+  }
+
+  // getPedestrians(): the people you can rob, each { x, z, rob() }. rob() flips a
+  //   per-ped hands-up/flee reaction the update reads, returns a one-off $5..$50, and
+  //   drops onto a cooldown so a single ped can't be farmed (returns 0 until it clears).
+  function getPedestrians() {
+    const out = [];
+    for (let i = 0; i < peds.length; i++) {
+      const p = peds[i];
+      out.push({
+        x: p.group.position.x,
+        z: p.group.position.z,
+        rob() {
+          if (p.robCooldown > 0) return 0;            // robbed too recently — no farming
+          p.robCooldown = 22;                         // seconds before this ped pays out again
+          p.react = 3.0;                              // seconds of hands-up + flee reaction
+          return 5 + Math.floor(Math.random() * 46);  // $5..$50 grab
+        },
+      });
+    }
+    return out;
+  }
+
+  return { group, update, getTraffic, getPedestrians };
 }

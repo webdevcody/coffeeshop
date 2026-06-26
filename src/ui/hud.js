@@ -89,6 +89,7 @@ export class HUD {
           <div class="custom-row"><span class="custom-label">Clothing</span><div class="swatch-row" id="cloth-swatches"></div></div>
         </div>
       </div>
+      <div class="money-hud hidden" id="money-hud">$0</div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -109,6 +110,24 @@ export class HUD {
       </div>
       <div class="held-item hidden" id="held-item"></div>
       <div class="sit-prompt hidden" id="sit-prompt"></div>
+      <div class="help-panel hidden" id="help-panel">
+        <div class="help-title">⌨️ Controls <span class="help-toggle">press H to hide</span></div>
+        <div class="help-list">
+          <div class="help-row"><kbd>WASD</kbd><span>Move around</span></div>
+          <div class="help-row"><kbd>Space</kbd><span>Jump · Sit / Stand</span></div>
+          <div class="help-row"><kbd>E</kbd><span>Ride · Use · Grab weapon</span></div>
+          <div class="help-row"><kbd>Shift</kbd><span>Sprint / NOS (＋Ctrl = ultra)</span></div>
+          <div class="help-row"><kbd>F</kbd><span>Jetpack fly</span></div>
+          <div class="help-row"><kbd>1 2 3</kbd><span>Weapons (0 holster)</span></div>
+          <div class="help-row"><kbd>B</kbd><span>Fire weapon</span></div>
+          <div class="help-row"><kbd>P</kbd><span>Parachute</span></div>
+          <div class="help-row"><kbd>M</kbd><span>City map</span></div>
+          <div class="help-row"><kbd>V</kbd><span>Flashlight</span></div>
+          <div class="help-row"><kbd>R</kbd><span>Rob someone</span></div>
+          <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
+          <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
+        </div>
+      </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
         <canvas class="minimap-canvas" id="minimap-canvas" width="180" height="180"></canvas>
@@ -120,6 +139,7 @@ export class HUD {
       </div>
       <div class="drive-hud hidden" id="drive-hud">
         <div class="speedo"><span class="speedo-num" id="speedo-num">0</span><span class="speedo-unit">km/h</span></div>
+        <div class="nos-gauge hidden" id="nos-gauge"><span class="nos-label">NOS</span><div class="nos-track"><div class="nos-fill" id="nos-fill"></div></div></div>
         <div class="drive-hint" id="drive-hint">WASD to drive · E to exit</div>
       </div>
       <form class="chat-bar" id="chat-bar" autocomplete="off">
@@ -141,11 +161,13 @@ export class HUD {
     this.customizePanel = ui.querySelector("#customize-panel");
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
+    this.helpPanel = ui.querySelector("#help-panel");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
     this.shopList = ui.querySelector("#shop-list");
     this.heldEl = ui.querySelector("#held-item");
+    this.moneyHud = ui.querySelector("#money-hud");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
@@ -155,6 +177,8 @@ export class HUD {
     this.driveHud = ui.querySelector("#drive-hud");
     this.speedoNum = ui.querySelector("#speedo-num");
     this.driveHint = ui.querySelector("#drive-hint");
+    this.nosGauge = ui.querySelector("#nos-gauge");
+    this.nosFill = ui.querySelector("#nos-fill");
     this.minimapCanvas = ui.querySelector("#minimap-canvas");
     this._initMinimap();
 
@@ -245,6 +269,17 @@ export class HUD {
 
   setCount(n) {
     this.countPill.textContent = `☕ ${n} here`;
+  }
+
+  // GTA cash counter (top-left). Shown only once joined; called each frame by
+  // main.js with the running total. Allocation-free (only writes text when it
+  // actually changes).
+  setMoney(n) {
+    if (!this.moneyHud) return;
+    if (!this.joined) { this.moneyHud.classList.add("hidden"); return; }
+    this.moneyHud.classList.remove("hidden");
+    const txt = `$${n | 0}`;
+    if (this.moneyHud.textContent !== txt) this.moneyHud.textContent = txt;
   }
 
   // Brief, self-dismissing message centered near the top (e.g. "table full").
@@ -385,6 +420,19 @@ export class HUD {
     } else {
       this.sitPrompt.classList.add("hidden");
     }
+  }
+
+  // --- Controls legend (H) -------------------------------------------------
+  // Show/hide the on-screen controls help panel. setHelpVisible drives it
+  // directly; toggleHelp flips whatever it's showing now.
+  setHelpVisible(on) {
+    if (!this.helpPanel) return;
+    this.helpPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleHelp() {
+    if (!this.helpPanel) return;
+    this.helpPanel.classList.toggle("hidden");
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're
@@ -695,14 +743,29 @@ export class HUD {
 
   // --- Driving HUD ---------------------------------------------------------
   // Show the speedometer + drive hint while driving (mode "drive"); hide it
-  // otherwise. `speed` is the car's signed m/s; we show absolute km/h.
-  setDriveHud(active, speed = 0) {
+  // otherwise. `speed` is the vehicle's signed m/s; we show absolute km/h.
+  // `nos` (0..1) drives the NOS tank gauge beside the speedo — pass null to hide it
+  // (the rocket has no tank). `boosting` tints the gauge while NOS is firing; an
+  // empty tank flashes. Extra params are optional so older callers still work.
+  setDriveHud(active, speed = 0, nos = null, boosting = false) {
     if (!this.driveHud) return;
     this.driveHud.classList.toggle("hidden", !active);
     if (!active) return;
     const kmh = Math.round(Math.abs(speed) * 3.6);
     const txt = String(kmh);
     if (this.speedoNum.textContent !== txt) this.speedoNum.textContent = txt;
+    // NOS gauge: only shown when a tank value is supplied (car/boat). Allocation-free.
+    if (this.nosGauge) {
+      if (nos == null) {
+        this.nosGauge.classList.add("hidden");
+      } else {
+        this.nosGauge.classList.remove("hidden");
+        const p = Math.max(0, Math.min(1, nos));
+        this.nosFill.style.width = (p * 100).toFixed(1) + "%";
+        this.nosGauge.classList.toggle("boosting", !!boosting);
+        this.nosGauge.classList.toggle("empty", p <= 0.02);
+      }
+    }
   }
 
   addChatLog(name, text, color) {

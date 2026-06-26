@@ -31,6 +31,22 @@ const BOAT = {
   camHeight: 4.4,
   camLook: 1.2,
   camEase: 3.2,
+  // Free-look chase orbit (GTA-style, mirrors the car). camBasePitch reproduces the
+  // old fixed framing when no `controls` is passed; pitch clamps to [camMinPitch,camMaxPitch].
+  camDist: 10.02,     // ≈ hypot(camBack, camHeight - camLook); orbit radius
+  camBasePitch: 0.32, // ≈ atan2(camHeight - camLook, camBack); resting chase pitch
+  camMinPitch: 0.1,
+  camMaxPitch: 1.05,
+};
+
+// NOS boost tuning (mirrors the car). Level 1 = Shift, level 2 = Shift+Ctrl.
+const NOS = {
+  mult1: 1.5,    // level-1 top-speed + accel multiplier
+  mult2: 2.1,    // level-2 (EXTREME) multiplier
+  drain1: 0.30,  // tank drain /s at level 1
+  drain2: 0.6,   // tank drain /s at level 2 (extreme burns faster)
+  regen: 0.15,   // tank refill /s when not boosting
+  rearm: 0.1,    // after the tank empties it must refill past this before NOS re-arms
 };
 
 function mat(color, opts = {}) {
@@ -183,10 +199,26 @@ function buildBoatGroup() {
     g.add(w);
   }
 
+  // --- NOS jet (stern): twin flame cones behind the outboard that flare out the
+  // back while boosting. Hidden at rest; drive() flickers their opacity/length +
+  // tints them (blue normal, orange EXTREME). One shared material, no per-frame alloc.
+  const nosMat = new THREE.MeshBasicMaterial({ color: "#7fdfff", transparent: true, opacity: 0, depthWrite: false });
+  const nosGeo = new THREE.ConeGeometry(0.16, 1.1, 12);
+  const nosFlames = [];
+  for (const nx of [-0.32, 0.32]) {
+    const fl = new THREE.Mesh(nosGeo, nosMat);
+    fl.rotation.x = -Math.PI / 2; // cone apex points astern (-Z)
+    fl.position.set(nx, -0.05, -2.75);
+    fl.visible = false;
+    g.add(fl);
+    nosFlames.push(fl);
+  }
+
   // Stash refs for drive() to mutate with zero per-frame allocation.
   g.userData.wake = { wakeL, wakeR, wakeMatL, wakeMatR };
   g.userData.prop = prop;
   g.userData.flag = flag;
+  g.userData.nos = { flames: nosFlames, mat: nosMat };
   return g;
 }
 
@@ -201,6 +233,8 @@ export function makeBoat(opts = {}) {
     heading: spawn.heading ?? 0,
     speed: 0,
     waterY,
+    nos: 1,          // NOS tank, 0..1 (full at spawn) — read by the HUD gauge
+    boosting: false, // true while NOS is actively firing — read by the HUD gauge
   };
   group.position.set(state.x, waterY, state.z);
   group.rotation.y = state.heading;
@@ -209,6 +243,9 @@ export function makeBoat(opts = {}) {
   const _camPos = new THREE.Vector3();
   const _camLook = new THREE.Vector3();
   let _camInit = false;
+  let _baseYaw = 0;      // orbit-yaw captured on (re)board so free-look starts behind the boat
+  let _nosEmpty = false; // latched true when the tank bottoms out; cleared once it refills past NOS.rearm
+  const _nos = group.userData.nos;
 
   // Idle bob/roll phase accumulator + a smoothed heel (bank into turns).
   let _bobT = Math.random() * Math.PI * 2; // desync multiple boats' bobbing
@@ -236,13 +273,33 @@ export function makeBoat(opts = {}) {
   //   isWater   (x,z) -> bool : true where the boat may float. A move whose target
   //             is NOT water is rejected (we try to slide along one axis, else stop)
   //             so you can never sail onto land, a dock, or an island.
-  function drive(dt, throttle, steer, isWater) {
+  function drive(dt, throttle, steer, isWater, boost) {
     throttle = throttle || 0;
     steer = steer || 0;
+    boost = boost || 0; // 0|1|2 NOS level (Shift / Shift+Ctrl while sailing)
+
+    // --- NOS boost (mirrors the car): Shift (1) / Shift+Ctrl (2) while throttling
+    // FORWARD burns the tank for extra top speed + thrust; otherwise it slowly
+    // refills. Never fires without throttle or with an empty tank, and once empty it
+    // must refill past NOS.rearm before it re-arms. ---
+    if (state.nos <= 0.001) _nosEmpty = true;
+    if (state.nos >= NOS.rearm) _nosEmpty = false;
+    const boosting = boost > 0 && throttle > 0 && !_nosEmpty && state.nos > 0;
+    state.boosting = boosting;
+    let maxSpeed = BOAT.maxSpeed;
+    let accel = BOAT.accel;
+    if (boosting) {
+      const mult = boost >= 2 ? NOS.mult2 : NOS.mult1;
+      maxSpeed *= mult;
+      accel *= mult;
+      state.nos = Math.max(0, state.nos - (boost >= 2 ? NOS.drain2 : NOS.drain1) * dt);
+    } else {
+      state.nos = Math.min(1, state.nos + NOS.regen * dt);
+    }
 
     // --- Longitudinal: thrust, astern, and a long gliding drag when coasting ---
     if (throttle > 0) {
-      state.speed += BOAT.accel * throttle * dt;
+      state.speed += accel * throttle * dt;
     } else if (throttle < 0) {
       if (state.speed > 0.1) {
         // Reversing throttle while still moving forward = engine brake-ish drag.
@@ -256,7 +313,7 @@ export function makeBoat(opts = {}) {
       if (state.speed > 0) state.speed = Math.max(0, state.speed - f);
       else if (state.speed < 0) state.speed = Math.min(0, state.speed + f);
     }
-    state.speed = Math.max(-BOAT.maxReverse, Math.min(BOAT.maxSpeed, state.speed));
+    state.speed = Math.max(-BOAT.maxReverse, Math.min(maxSpeed, state.speed));
 
     // --- Steering: lazy, and only effective with way on. Authority ramps up with
     // speed (you can't turn a stopped boat), and reverses going astern. ---
@@ -341,14 +398,48 @@ export function makeBoat(opts = {}) {
       _wake.wakeL.scale.set(wide, len, 1);
       _wake.wakeR.scale.set(wide, len, 1);
     }
+
+    // --- NOS flames: flicker + stretch the twin stern cones while boosting, tinted
+    // blue (level 1) or orange (EXTREME level 2). Mutates shared refs in place. ---
+    if (_nos) {
+      if (boosting) {
+        const flicker = 0.75 + Math.random() * 0.25;
+        _nos.mat.opacity = 0.85 * flicker;
+        _nos.mat.color.setHex(boost >= 2 ? 0xff7a3c : 0x7fdfff);
+        const flen = (boost >= 2 ? 1.7 : 1.1) * flicker;
+        for (const fl of _nos.flames) {
+          fl.visible = true;
+          fl.scale.set(1, flen, 1);
+        }
+      } else if (_nos.flames[0].visible) {
+        for (const fl of _nos.flames) fl.visible = false;
+      }
+    }
   }
 
   // Trailing chase camera behind the boat — same easing model as the car, just a
-  // higher/longer vantage and lazier ease for a calmer "on the water" feel.
-  function updateCamera(camera, dt) {
+  // higher/longer vantage and lazier ease for a calmer "on the water" feel. With
+  // free-look, controls.orbit.yaw swings the chase angle around the boat and
+  // controls.orbit.pitch raises/lowers it (offset HELD, no auto-recenter); when
+  // `controls` is absent it falls back to the old fixed behind-the-boat chase.
+  function updateCamera(camera, dt, controls) {
+    // Free-look offsets from the mouse-drag orbit (baseline captured on board so the
+    // view starts directly astern); pitch rides the orbit pitch (clamped in controls).
+    let yawOff = 0;
+    let pitch = BOAT.camBasePitch;
+    if (controls && controls.orbit) {
+      if (!_camInit) _baseYaw = controls.orbit.yaw;
+      yawOff = controls.orbit.yaw - _baseYaw;
+      pitch = Math.max(BOAT.camMinPitch, Math.min(BOAT.camMaxPitch, controls.orbit.pitch));
+    }
+    const ang = state.heading + yawOff;
+    const sa = Math.sin(ang);
+    const ca = Math.cos(ang);
+    const horiz = BOAT.camDist * Math.cos(pitch);
+    const vert = BOAT.camDist * Math.sin(pitch);
+    _camPos.set(state.x - sa * horiz, waterY + vert + BOAT.camLook, state.z - ca * horiz);
     const fx = Math.sin(state.heading);
     const fz = Math.cos(state.heading);
-    _camPos.set(state.x - fx * BOAT.camBack, waterY + BOAT.camHeight, state.z - fz * BOAT.camBack);
     _camLook.set(state.x + fx * 2.0, waterY + BOAT.camLook, state.z + fz * 2.0);
     if (!_camInit) {
       camera.position.copy(_camPos);

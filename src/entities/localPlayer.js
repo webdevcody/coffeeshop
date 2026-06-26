@@ -15,6 +15,14 @@ const FALL = { gravity: 22, respawnY: -12 };
 // next to a seat — apex ≈ v²/(2·gravity) ≈ 1.3 m, airtime ≈ 0.7 s.
 const JUMP_V = 7.6;
 
+// PARACHUTE. Once deployed (P while airborne) the descent is clamped to a slow
+// float and a gentle sway wanders the canopy sideways, so a tornado fling / cannon
+// launch / plain fall drifts safely down instead of plummeting.
+const PARACHUTE = {
+  fallV: -2.5,   // clamped descent speed under the canopy (m/s)
+  drift: 1.6,    // horizontal sway speed while floating (m/s peak)
+};
+
 // SWIM / FLOAT on the ocean. When the app injects an isWater(x,z) predicate (see
 // setIsWater), DESCENDING over open water drops you into a float instead of the
 // void fall+respawn: pos.y is pinned just above the sea surface (waterY +
@@ -57,6 +65,12 @@ export class LocalPlayer {
     this.ground = ground || [{ minX: -WORLD.width / 2, maxX: WORLD.width / 2, minZ: -WORLD.depth / 2, maxZ: WORLD.depth / 2 }];
     this.spawn = spawn || { x: 0, z: 4 };
     this.bounds = unionBounds(this.ground);
+    // STATION: walkable deck rects that live at altitude (stationFloorY) instead
+    // of y=0. Injected via setStation. While the player stands on one of these
+    // rects _updateVertical pins pos.y to stationFloorY (not 0), so they walk the
+    // orbital station deck high above the city. null/0 until a station is wired.
+    this.stationRects = null;
+    this.stationFloorY = 0;
     this.character = new Character(appearance, name || "me");
     this.character.group.position.set(this.spawn.x, 0, this.spawn.z);
     this.character.group.rotation.y = Math.PI;
@@ -90,6 +104,29 @@ export class LocalPlayer {
     // respawn and the Space=jump/sit handling is suppressed (Space is thrust).
     // Cleared back to false on landing, which resumes normal gravity/ground.
     this.flying = false;
+    // SECRET-CANNON LAUNCH. launchSelf() fires us out of the cannon: it sets an
+    // upward vy AND a constant horizontal glide (_launchVX/_launchVZ) that
+    // _updateVertical adds to pos.x/pos.z every airborne frame, so we arc clear
+    // across the map (over rooftops — no mid-air collision) and land wherever the
+    // descent meets ground / water / the void. `launched` gates the glide so plain
+    // jumps/falls are untouched; it's cleared the instant we leave the arc
+    // (landing, splashing in, sitting, jetpack, or void-respawn).
+    this.launched = false;
+    this._launchVX = 0;
+    this._launchVZ = 0;
+    // TORNADO FLING + PARACHUTE. A passing twister yanks a grounded walker off
+    // their feet (fling): a big upward pop + an outward glide reusing the launch
+    // channel above, with `tumbling` flipping the body end-over-end while it sails.
+    // While airborne (from a fling, a cannon launch, or a plain fall) pressing P
+    // deploys a PARACHUTE: `parachuting` clamps the descent to a gentle float, adds
+    // a slow drift, and shows a cheap canopy mesh (built lazily, parented above the
+    // body). All of it clears the instant we land / splash / sit / fly / respawn so
+    // it can never leave us stuck or NaN'd.
+    this.tumbling = false;
+    this._tumbleT = 0;
+    this.parachuting = false;
+    this._chute = null;
+    this._chuteT = 0;
     // SWIM / FLOAT. `isWater(x,z)` is injected by the app (main.js → setIsWater)
     // so _updateVertical can tell OPEN WATER apart from the void; the default
     // returns false so legacy/single-arg constructor callers keep the old
@@ -144,6 +181,15 @@ export class LocalPlayer {
   setIsWater(fn, waterY) {
     this.isWater = typeof fn === "function" ? fn : () => false;
     if (Number.isFinite(waterY)) this.waterY = waterY;
+  }
+
+  // Inject the orbital STATION deck rects + their world floor Y. While the player
+  // stands on one of these rects, _updateVertical lifts them to stationFloorY
+  // instead of pinning y=0, so they walk the station interior at altitude (the
+  // rects are ALSO in `this.ground`, so _isGround already treats them as solid).
+  setStation(rects, floorY) {
+    this.stationRects = Array.isArray(rects) && rects.length ? rects : null;
+    if (Number.isFinite(floorY)) this.stationFloorY = floorY;
   }
 
   setAppearance(app) {
@@ -278,7 +324,7 @@ export class LocalPlayer {
     }
     this.staminaPct = this.stamina;
 
-    if (this.moving) {
+    if (this.moving && !this.launched) {
       const inv = 1 / intent;
       // speedMul lets a ride (skateboard) boost ground speed without touching the
       // base walk speed. Default 1 (plain walking). sprintFactor is the on-foot
@@ -319,6 +365,17 @@ export class LocalPlayer {
     // (both 0 while grounded / not skating).
     this.character.group.position.y += this.pos.y + (this.rideLift || 0);
 
+    // TUMBLE: while flung by a tornado (and not yet under a chute) flip the body
+    // end-over-end so the fling reads as a ragdoll launch. Applied AFTER
+    // character.update() because that writes rotation.z (idle lean) each frame, so
+    // we override it here. Cleared to upright the moment the tumble ends (chute
+    // deploy / land), handled by _clearAir().
+    if (this.tumbling && this.airborne) {
+      this._tumbleT += dt * 6.5;
+      this.character.group.rotation.x = Math.sin(this._tumbleT) * 0.8;
+      this.character.group.rotation.z = Math.cos(this._tumbleT * 0.8) * 0.6;
+    }
+
     if (this.bubble) {
       this.bubbleTimer -= dt;
       if (this.bubbleTimer <= 0) {
@@ -353,6 +410,8 @@ export class LocalPlayer {
   _updateVertical(dt) {
     if (this.sitting) {
       this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
+      if (this.launched) this._clearLaunch();
+      this._clearAir();
       return;
     }
     // FLY (jetpack): rides.js owns pos.y (altitude) this frame, so skip the
@@ -361,6 +420,8 @@ export class LocalPlayer {
     // resumes the normal walk/fall logic cleanly next frame.
     if (this.flying) {
       this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
+      if (this.launched) this._clearLaunch(); // jetpack took over — drop the cannon glide
+      this._clearAir(); // and any fling/tumble/parachute
       return;
     }
     const onGround = this._isGround(this.pos.x, this.pos.z);
@@ -371,6 +432,9 @@ export class LocalPlayer {
     // Float line: the body rides a touch above the sea surface so the head/torso
     // stay clear of the water (waterY = -0.8 + surfaceOffset 0.4 → pos.y ≈ -0.4).
     const swimY = this.waterY + SWIM.surfaceOffset;
+    // Resting height when standing on ground at this XZ: the station deck altitude
+    // inside a station rect, else 0 (the city/ocean). Only meaningful on ground.
+    const floorY = onGround ? this._floorY(this.pos.x, this.pos.z) : 0;
 
     // --- SWIM / FLOAT --------------------------------------------------------
     // Already in the water: stay afloat (NEVER respawn) until we reach solid
@@ -401,17 +465,50 @@ export class LocalPlayer {
     }
 
     if (!this.airborne) {
-      if (onGround) { this.pos.y = 0; this.vy = 0; this.falling = false; return; }
+      if (onGround) { this.pos.y = floorY; this.vy = 0; this.falling = false; return; }
       // Stepped off the edge with no jump: begin a fall from rest.
       this.airborne = true; this.falling = true; this.vy = 0;
     }
     // Airborne (rising from a jump or falling): integrate gravity.
     this.vy -= FALL.gravity * dt;
+    // PARACHUTE: a deployed canopy clamps the descent to a gentle float (never
+    // faster than PARACHUTE.fallV) so a fling / launch / fall settles down softly.
+    // The rise of a fresh fling still plays out normally; only the fall is capped.
+    if (this.parachuting && this.vy < PARACHUTE.fallV) this.vy = PARACHUTE.fallV;
     this.pos.y += this.vy * dt;
     this.falling = this.vy < 0;
-    // Land when descending back to ground level over solid ground.
-    if (this.vy <= 0 && this.pos.y <= 0 && onGround) {
-      this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false;
+    // CANNON GLIDE: while launched, carry the horizontal velocity each airborne
+    // frame so the shot arcs across the map. No collision is resolved here — we're
+    // sailing OVER the rooftops, and the colliders are flat XZ footprints with no
+    // height, so resolving them would wrongly snag us mid-air. Clamp to the same
+    // generous outer backstop the walk integrator uses so position stays finite,
+    // and aim the body along the glide so we face where we fly.
+    if (this.launched) {
+      this.pos.x += this._launchVX * dt;
+      this.pos.z += this._launchVZ * dt;
+      this.pos.x = Math.max(this.bounds.minX - 3, Math.min(this.bounds.maxX + 3, this.pos.x));
+      this.pos.z = Math.max(this.bounds.minZ - 3, Math.min(this.bounds.maxZ + 3, this.pos.z));
+      if (this._launchVX || this._launchVZ) this.facing = Math.atan2(this._launchVX, this._launchVZ);
+    }
+    // PARACHUTE drift: a slow sideways sway so the canopy float wanders gently,
+    // plus a steady damp on any leftover launch glide so a flung descent settles
+    // into a calm float under the canopy. Clamped to the same generous backstop so
+    // the position can never run off to infinity.
+    if (this.parachuting) {
+      this._chuteT += dt;
+      if (this.launched) { this._launchVX *= 0.985; this._launchVZ *= 0.985; }
+      this.pos.x += Math.sin(this._chuteT * 0.8) * PARACHUTE.drift * dt;
+      this.pos.z += Math.cos(this._chuteT * 0.6) * PARACHUTE.drift * dt;
+      this.pos.x = Math.max(this.bounds.minX - 3, Math.min(this.bounds.maxX + 3, this.pos.x));
+      this.pos.z = Math.max(this.bounds.minZ - 3, Math.min(this.bounds.maxZ + 3, this.pos.z));
+    }
+    // Land when descending back to the floor over solid ground. The floor is 0 on
+    // the city/ocean and stationFloorY on the orbital station deck, so a hop on the
+    // station settles back onto the deck (≈260) instead of plunging through it.
+    if (this.vy <= 0 && this.pos.y <= floorY && onGround) {
+      this.pos.y = floorY; this.vy = 0; this.airborne = false; this.falling = false;
+      if (this.launched) this._clearLaunch(); // landed → resume normal walking
+      this._clearAir(); // touchdown: stow the chute, stop tumbling, stand upright
       return;
     }
     // Descending into OPEN WATER — splash in and start swimming instead of
@@ -433,6 +530,8 @@ export class LocalPlayer {
     this.airborne = false;
     this.falling = false;
     this._swimT = 0;
+    if (this.launched) this._clearLaunch(); // splashed down mid-arc → end the glide
+    this._clearAir(); // splashdown stows the chute + ends the tumble
   }
 
   // Climb out onto solid ground: back to a normal standing pose.
@@ -442,6 +541,8 @@ export class LocalPlayer {
     this.vy = 0;
     this.airborne = false;
     this.falling = false;
+    if (this.launched) this._clearLaunch();
+    this._clearAir();
   }
 
   // A standing hop. Only from the ground, on foot (not seated, not skating — a
@@ -473,6 +574,17 @@ export class LocalPlayer {
     return false;
   }
 
+  // World Y the player should rest at when standing on ground at (x,z): the
+  // station deck altitude inside a station rect, else 0 (the city/ocean ground).
+  _floorY(x, z) {
+    if (this.stationRects) {
+      for (const r of this.stationRects) {
+        if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return this.stationFloorY;
+      }
+    }
+    return 0;
+  }
+
   _respawn() {
     if (this.sitting) this._stand();
     this.pos.set(this.spawn.x, 0, this.spawn.z);
@@ -481,6 +593,8 @@ export class LocalPlayer {
     this.airborne = false;
     this.swimming = false;
     this.facing = Math.PI;
+    if (this.launched) this._clearLaunch(); // overshot into the void → land back at the cafe
+    this._clearAir(); // and stow any chute / end the tumble on the way home
   }
 
   // Nearest seat within reach, or null. Note: occupancy isn't tracked on the
@@ -527,6 +641,167 @@ export class LocalPlayer {
   // Public stand-up, used by the game overlay's "Leave game" button.
   standUp() {
     if (this.sitting) this._stand();
+  }
+
+  // Fire the player out of the SECRET CANNON. `v` = { vx, vy, vz } from
+  // cannon.launch(): vy is the initial upward speed and (vx, vz) the horizontal
+  // glide added to pos each airborne frame until landing, so we arc across the
+  // city. Robust by construction: bad/NaN input is ignored, any current state is
+  // cleared (stand up if seated, cancel swim/jetpack), and the arc resolves
+  // through the existing land / splash / void-respawn paths so it can never wedge.
+  launchSelf(v) {
+    if (!v) return;
+    const vx = +v.vx, vy = +v.vy, vz = +v.vz;
+    if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(vz)) return;
+    if (this.sitting) this._stand();
+    this.swimming = false;
+    this.flying = false;
+    // A fresh launch supersedes any chute/tumble left over from a prior arc.
+    this.parachuting = false;
+    this.tumbling = false;
+    if (this._chute) this._chute.visible = false;
+    this.vy = vy;
+    this.airborne = true;
+    this.falling = vy < 0;
+    this.launched = true;
+    this._launchVX = vx;
+    this._launchVZ = vz;
+  }
+
+  // Stop the cannon glide (called the instant we leave the launch arc).
+  _clearLaunch() {
+    this.launched = false;
+    this._launchVX = 0;
+    this._launchVZ = 0;
+  }
+
+  // TORNADO FLING. A passing funnel yanks us off our feet: a big upward POP plus an
+  // outward GLIDE (reusing the launch channel so _updateVertical arcs us up + across
+  // the map) and a `tumbling` flag so the body flips end-over-end mid-air. `strength`
+  // scales the outward glide; the up-pop is randomised ~16-22 so each fling reads a
+  // little different. Robust by construction: bad input falls back to a default,
+  // current state is cleared (stand up if seated, cancel swim/jetpack), and the arc
+  // resolves through the existing land / splash / void-respawn paths so it never
+  // wedges. Deploy a parachute (deployParachute) on the way down to float safely.
+  fling(strength) {
+    let s = +strength;
+    if (!Number.isFinite(s) || s <= 0) s = 18;
+    if (this.sitting) this._stand();
+    this.swimming = false;
+    this.flying = false;
+    this.parachuting = false;
+    if (this._chute) this._chute.visible = false;
+    // Up-pop (randomised) + an outward glide in a random horizontal direction.
+    this.vy = 16 + Math.random() * 6;          // ~16-22 m/s upward
+    const a = Math.random() * Math.PI * 2;
+    const h = s * (0.6 + Math.random() * 0.5); // outward speed scaled by strength
+    this._launchVX = Math.cos(a) * h;
+    this._launchVZ = Math.sin(a) * h;
+    this.airborne = true;
+    this.falling = false;
+    this.launched = true;     // reuse the glide channel in _updateVertical
+    this.tumbling = true;     // flip end-over-end while sailing
+    this._tumbleT = 0;
+  }
+
+  // Deploy the PARACHUTE. Only meaningful while airborne (from a fling, a cannon
+  // launch, or a plain fall) and not already under canopy / flying / swimming /
+  // seated. Stops the tumble, stands the body upright, shows the canopy mesh, and
+  // flips `parachuting` so _updateVertical clamps the descent to a gentle float.
+  // Returns true if it actually deployed (so the caller can play a whoosh).
+  deployParachute() {
+    if (this.parachuting) return false;
+    if (!this.airborne || this.flying || this.sitting || this.swimming) return false;
+    this.parachuting = true;
+    this.tumbling = false;
+    this._tumbleT = 0;
+    this._chuteT = 0;
+    if (this.character?.group) {
+      this.character.group.rotation.x = 0;
+      this.character.group.rotation.z = 0;
+    }
+    const c = this._ensureChute();
+    if (c) c.visible = true;
+    return true;
+  }
+
+  // Build the cheap parachute mesh once (lazily), parented ABOVE the body so it
+  // rides along with character.group. A shallow canopy cone + a fan of suspension
+  // lines down to the shoulders. Hidden until deployed.
+  _ensureChute() {
+    if (this._chute) return this._chute;
+    if (!this.character?.group) return null;
+    const chute = new THREE.Group();
+    chute.frustumCulled = false;
+    // Canopy: a wide, shallow open cone (apex up) in a bright safety red.
+    const canopy = new THREE.Mesh(
+      new THREE.ConeGeometry(1.7, 0.95, 14, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: "#e23b3b", roughness: 0.9, metalness: 0.0,
+        side: THREE.DoubleSide, flatShading: true,
+      })
+    );
+    canopy.position.y = 3.3;
+    canopy.frustumCulled = false;
+    chute.add(canopy);
+    // Suspension lines: cheap LineSegments from the canopy rim down to the body.
+    const rim = 1.55, top = 3.0, sh = 1.45;
+    const pts = [];
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      pts.push(Math.cos(a) * rim, top, Math.sin(a) * rim, 0, sh, 0);
+    }
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: "#d8d8d8" }));
+    lines.frustumCulled = false;
+    chute.add(lines);
+    chute.visible = false;
+    this.character.group.add(chute);
+    this._chute = chute;
+    return chute;
+  }
+
+  // End every airborne fling/parachute/tumble state and restore an upright body.
+  // Called from every terminal path (land / splash / sit / fly / respawn) so a
+  // fling can never leave the player stuck tumbling or floating under a stowed chute.
+  _clearAir() {
+    this.tumbling = false;
+    this._tumbleT = 0;
+    this.parachuting = false;
+    this._chuteT = 0;
+    if (this._chute) this._chute.visible = false;
+    if (this.character?.group) {
+      this.character.group.rotation.x = 0;
+      // Leave rotation.z to character.update()'s idle lean; just undo any tumble roll
+      // by zeroing it here — character.update() rewrites it next frame anyway.
+      this.character.group.rotation.z = 0;
+    }
+  }
+
+  // Fire the player out of the cannon toward a chosen world point (tx, tz) — used
+  // by the map-select cannon launch. Solves a simple ballistic arc that REUSES the
+  // existing launchSelf integrator (no duplicate physics): pick an up-speed `vy`
+  // (a 45°-ish launch, capped so far shots don't loft absurdly high), then the
+  // horizontal speed that covers the ground distance in that arc's airtime. The
+  // arc resolves through the normal land / splash / void-respawn paths, so it can
+  // never wedge; bad/NaN targets are ignored (launchSelf also guards). Close enough
+  // is fine — it's a cannon.
+  launchToward(tx, tz) {
+    const g = FALL.gravity;
+    const dx = (+tx) - this.pos.x;
+    const dz = (+tz) - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (!Number.isFinite(dist)) return;
+    // 45° launch (range = 2·vy²/g at vy = vh) up to a capped apex; past that reach
+    // keep the apex and just throw harder horizontally so it still lands near (tx,tz).
+    const VY_MAX = 40; // ~36 m apex, ~3.6 s airtime — a big, readable arc
+    const vy = Math.min(VY_MAX, Math.max(12, Math.sqrt((dist * g) / 2)));
+    const airtime = (2 * vy) / g; // time to rise and fall back to launch height
+    const vh = dist > 1e-3 ? dist / airtime : 0; // horizontal speed to cover `dist`
+    const ux = dist > 1e-3 ? dx / dist : 0;
+    const uz = dist > 1e-3 ? dz / dist : 0;
+    this.launchSelf({ vx: ux * vh, vy, vz: uz * vh });
   }
 
   // Hint text for the HUD: prompt to sit when near a seat, to stand when seated.

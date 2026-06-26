@@ -11,6 +11,8 @@ import { createAudio } from "./engine/audio.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
+import { buildAirport } from "./world/airport.js";
+import { buildCannon } from "./world/cannon.js";
 import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
@@ -45,7 +47,7 @@ const postFX = createPostFX(renderer, scene, camera);
 // its own onResize (camera aspect + renderer/label sizes) to the resize event;
 // we add a second listener that resizes the composer with the same dimensions.
 window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
-const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
+const { colliders, seats, bar, ground, spawn, tables, armory, getTraffic, getPedestrians, getRain, getTornadoes, update: updateWorld } = buildCoffeeshop(scene);
 
 // OCEAN: wraps the whole city in a huge animated sea so the landmass reads as an
 // island — adds a beach apron, a main dock + drivable boat, and four little
@@ -70,12 +72,36 @@ scene.add(ocean.group);
 // space.rocketSpawn and tops out near the station.
 const space = buildSpace({ landBounds });
 scene.add(space.group);
+// AIRPORT: an offshore AIRFIELD ISLAND east of the city, reachable on foot by a
+// walkable causeway off the city's east edge — wired EXACTLY like the OCEAN /
+// SPACE modules. Its group is added to the scene and its world (the island top +
+// causeway deck as walkable `ground`, plus hangar walls / tower / light + sock
+// poles / causeway rails as solid `colliders`) is merged below. The rideable
+// PLANE parks at airport.planeSpawn (west runway threshold) and the HELI on
+// airport.heliSpawn (south helipad) — both built in rides.js.
+const airport = buildAirport({ landBounds });
+scene.add(airport.group);
+// SECRET CANNON: a hidden STONE ROOM behind the cafe (centred at z=-22) holding a
+// giant human-cannonball CANNON, wired EXACTLY like the OCEAN / SPACE / AIRPORT
+// add-ons — its group is added to the scene and its world (the room floor +
+// doorway threshold as walkable `ground`, the brick walls / carriage / wheels /
+// crates + the sliding secret door as solid `colliders`) is merged below. A
+// sliding door in the cafe-facing wall (opened from the cafe via cannon.doorTrigger)
+// reveals the room; standing under the muzzle now opens the bird-eye map in
+// "cannon" select mode (gameMap.open("cannon")) so you pick WHERE to be launched,
+// then arcs the player there (local.launchToward). Pumped each frame in frame().
+const cannon = buildCannon({ landBounds });
+scene.add(cannon.group);
 // Merged world surfaces: beaches/docks/island tops + the launchpad apron become
 // walkable; island props (huts, palms, rail posts) + the gantry/fuel-tanks/flood
 // masts become solid. Used everywhere `ground`/`colliders` are consumed by the
 // player + rides so you can stroll the shoreline, sail the sea, and board the rocket.
-const groundAll = ground.concat(ocean.ground, space.ground);
-const collidersAll = colliders.concat(ocean.colliders, space.colliders);
+// The walkable orbital STATION interior rides along too: its deck rects join the
+// walkable ground (the player is LIFTED to space.stationFloorY on them — see
+// local.setStation below) and its hull-wall / console AABBs join the colliders so
+// you can't walk through them while strolling the station at altitude.
+const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground, cannon.ground);
+const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders, cannon.colliders);
 
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -95,9 +121,11 @@ const rides = createRides(scene, {
   colliders: collidersAll,
   isGround: isGroundFn,
   carSpawn: { x: 4, z: 18, heading: 0 },
+  getTraffic, // GTA car-jacking: E beside a moving traffic car yoinks it (handled in rides.js)
   interactables, // E priority: car > boat > rocket > interactable > skateboard (handled in rides.js)
   ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
   space, // launchable rocket parks on space.rocketSpawn; jetpack fly mode (F) lives here too
+  airport, // rideable plane parks at airport.planeSpawn, heli at airport.heliSpawn (handled in rides.js)
 });
 const remotes = new RemotePlayers(scene);
 const hud = new HUD();
@@ -173,12 +201,35 @@ const _flashTgt = new THREE.Vector3();
 // muzzle point (hand world position nudged forward), _shotDir the camera aim.
 const _shotOrigin = new THREE.Vector3();
 const _shotDir = new THREE.Vector3();
+// SECRET CANNON reach radii (XZ, metres): press E within LOAD of the muzzle to
+// fire, or simply walk into the muzzle mouth (WALKIN) to be launched hands-free.
+const CANNON_LOAD_R = 2.5;
+const CANNON_WALKIN_R = 1.3;
+// WEAPON ARMORY reach (XZ, metres): press E within this of the wall rack to CYCLE
+// gun → rocket → grenade → holster, so players discover the guns without the 1/2/3
+// keys. The rack sits deep in the cafe where no ride/interactable is ever in
+// E-reach, so reading E here (before rides.update) can't steal a ride's E.
+const ARMORY_R = 2.5;
 
 let local = null;
 let joined = false;
+// GTA cash: grows when you rob a pedestrian (R near one). Shown in the top-left HUD
+// money counter each frame while joined.
+let money = 0;
 // SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
 // on the walk/fall → swim transition (entering the sea), not every frame afloat.
 let _wasSwimming = false;
+// JUMP whoosh: tracks last frame's airborne state so we play the whoosh one-shot
+// exactly on the ground → air transition under our own power (a Space hop / swim
+// pop), not every airborne frame. Cannon/tornado glides play their own whoosh.
+let _wasAirborne = false;
+// JETPACK liftoff whoosh: tracks last frame's fly state so engaging the pack
+// (F → local.flying flips true) plays a single whoosh, not one per frame aloft.
+let _wasFlying = false;
+// FOOTSTEP cadence: a small accumulator that ticks a soft step one-shot roughly
+// every STEP_INTERVAL seconds while walking on foot.
+let _stepT = 0;
+const STEP_INTERVAL = 0.3;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
 
@@ -187,27 +238,89 @@ let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false,
 // (controls.consumeMap), freeze movement under it (setLocked), and feed it the live
 // player arrow while open. Clicking the map fast-travels the local player there.
 let _mapLocked = false; // true while WE locked controls for the open map
+// Which mode the map is currently serving: "travel" (plain M-map fast-travel) or
+// "cannon" (the secret cannon opened it to pick a launch destination). Kept in
+// sync with the overlay and fed to it via the render payload so the hint + click
+// behaviour match. Reset to "travel" whenever the map closes.
+let mapMode = "travel";
+// Latches the cannon's WALK-IN auto-open so cancelling the cannon map doesn't
+// instantly reopen it while you're still standing in the muzzle mouth — you step
+// clear of the muzzle to re-arm. (An explicit E press at the muzzle ignores it.)
+let _cannonLatch = false;
+
+// REAL BIRD-EYE TOP-DOWN CAMERA. One OrthographicCamera looking straight DOWN
+// (-Y) from 500 m up, framing the whole world (city + ocean + 4 islands). When
+// the M-map is open we render the ACTUAL scene through this camera onto the main
+// canvas (fog off, no postFX/labels) — a true rendered bird's-eye view, not a
+// drawing. updateTopCam() fits its orthographic frustum to the live canvas aspect
+// and publishes the WORLD rectangle it covers in `_topBounds`, which ui/map.js
+// uses to map a screen click <-> world (x,z) with the SAME transform and to place
+// the player arrow. up = +Z keeps NORTH up on screen (a downward camera can't
+// mirror, so east ends up on the left; north-up matches the old map / minimap).
+const MAP_FRAME = { minX: -210, maxX: 210, minZ: -80, maxZ: 350 };
+const topCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 700);
+const _topBounds = { minX: -210, maxX: 210, minZ: -80, maxZ: 350 };
+function updateTopCam() {
+  const W = Math.max(1, window.innerWidth);
+  const H = Math.max(1, window.innerHeight);
+  const cx = (MAP_FRAME.minX + MAP_FRAME.maxX) / 2; // 0
+  const cz = (MAP_FRAME.minZ + MAP_FRAME.maxZ) / 2; // 135
+  const spanX = MAP_FRAME.maxX - MAP_FRAME.minX; // 420
+  const spanZ = MAP_FRAME.maxZ - MAP_FRAME.minZ; // 430
+  // Uniform world-units-per-pixel that fits BOTH spans (letterbox the smaller),
+  // so the render isn't stretched. fW/fH are the world extents the FULL canvas
+  // spans (each >= the requested span).
+  const s = Math.min(W / spanX, H / spanZ);
+  const fW = W / s;
+  const fH = H / s;
+  topCam.left = -fW / 2;
+  topCam.right = fW / 2;
+  topCam.top = fH / 2;
+  topCam.bottom = -fH / 2;
+  topCam.position.set(cx, 500, cz);
+  topCam.up.set(0, 0, 1); // +Z (north) up on screen
+  topCam.lookAt(cx, 0, cz); // straight down
+  topCam.updateProjectionMatrix();
+  _topBounds.minX = cx - fW / 2;
+  _topBounds.maxX = cx + fW / 2;
+  _topBounds.minZ = cz - fH / 2;
+  _topBounds.maxZ = cz + fH / 2;
+}
+updateTopCam();
+
 const gameMap = createMap({
-  onTravel: ({ x, z }) => {
-    // Fast travel: drop the local player onto the clicked world point. Vertical
-    // settle / off-edge respawn is left to localPlayer._updateVertical.
-    if (local) {
+  onTravel: ({ x, z, mode }) => {
+    if (!local) {
+      gameMap.close();
+      return;
+    }
+    if (mode === "cannon") {
+      // CANNON SELECT: close the map and arc the player to the chosen world point.
+      // launchToward reuses the cannon glide integrator; it resolves through the
+      // normal land / splash / void-respawn paths, so it can never wedge.
+      gameMap.close();
+      local.launchToward(x, z);
+      audio.whoosh?.();
+    } else {
+      // Fast travel: drop the local player onto the clicked world point. Vertical
+      // settle / off-edge respawn is left to localPlayer._updateVertical.
       local.pos.x = x;
       local.pos.z = z;
       local.pos.y = 0;
+      gameMap.close();
     }
-    gameMap.close();
   },
 });
 // STATIC render payload, built ONCE from the city-layout constants (all WORLD
 // coords). Only `player` changes per frame (mutated in place below), so opening the
 // map and tracking the arrow allocate nothing.
 const MAP_DISTRICTS = [
-  // 4×4 grid, NW→SE row-major (north row first): [name, block colour].
-  ["Plaza", "#8a9a6a"], ["Market", "#b08a4f"], ["Downtown", "#7f8a99"], ["Arts", "#9a6ba0"],
-  ["Park", "#5f9e5a"], ["Shopping", "#c9a24a"], ["Offices", "#6f8aa8"], ["Nightlife", "#a05a86"],
-  ["Harbor", "#5b8fa8"], ["Pier", "#7aa6b8"], ["Skatepark", "#8a8f9a"], ["Transit", "#9a8f5f"],
-  ["Autoplaza", "#9a7f5a"], ["Arcade", "#7a6aa0"], ["Industrial", "#7d7d7d"], ["Stadium", "#5f8a6a"],
+  // EXACT match to city.js LAYOUT, row-major with MAP_ROWS below (row 0 = z=245
+  // north, row 3 = z=65 south), cols west→east [-90,-30,30,90]: [name, colour].
+  ["Pier", "#5b8fa8"], ["Harbor", "#7aa6b8"], ["Industrial", "#7d7d7d"], ["Nightlife", "#a05a86"], // z=245
+  ["Park", "#5f9e5a"], ["Transit", "#9a8f5f"], ["Offices", "#6f8aa8"], ["Stadium", "#5f8a6a"],       // z=185
+  ["Downtown", "#7f8a99"], ["Autoplaza", "#9a7f5a"], ["Shopping", "#c9a24a"], ["Arts", "#9a6ba0"],   // z=125
+  ["Plaza", "#8a9a6a"], ["Skatepark", "#8a8f9a"], ["Market", "#b08a4f"], ["Arcade", "#7a6aa0"],      // z=65
 ];
 const MAP_COLS = [-90, -30, 30, 90];   // district centre X, west → east
 const MAP_ROWS = [245, 185, 125, 65];  // district centre Z, north (top) → south
@@ -218,13 +331,15 @@ for (let r = 0; r < MAP_ROWS.length; r++) {
     _mapDistricts.push({ name, x: MAP_COLS[c], z: MAP_ROWS[r], w: 46, d: 46, color });
   }
 }
-const _mapRoads = [];
-for (const x of [-60, 0, 60]) _mapRoads.push({ x1: x, z1: 13, x2: x, z2: 277 });        // 3 avenues
-for (const z of [35, 95, 155, 215]) _mapRoads.push({ x1: -122, z1: z, x2: 122, z2: z }); // 4 cross streets
+// Render payload for the TRANSPARENT overlay. The real city/roads/water now come
+// from the live 3D bird-eye render behind the overlay, so we only feed the bits
+// it draws on top: the live `bounds` (the topCam world-rect — a live reference,
+// mutated each frame by updateTopCam), the `mode`, the player arrow, and thin
+// district / island / POI labels for orientation + click targets.
 const mapPayload = {
+  bounds: _topBounds,
+  mode: "travel",
   districts: _mapDistricts,
-  roads: _mapRoads,
-  water: { minX: -220, maxX: 220, minZ: -90, maxZ: 360 }, // big bbox around the city
   islands: [
     { x: -184, z: 319, r: 13, name: "NW Shops" },
     { x: 177, z: 312, r: 13, name: "NE Shops" },
@@ -520,7 +635,14 @@ hud.onJoin = ({ name, color }) => {
   // localPlayer._updateVertical). The void respawn still runs anywhere there's no
   // water below.
   local.setIsWater(ocean.isWater, ocean.waterY);
+  // Tell the player which walkable rects are the orbital STATION deck + the world
+  // Y it sits at, so standing on them lifts you to space.stationFloorY (≈260)
+  // instead of pinning y=0 — you walk the station interior after docking.
+  local.setStation(space.stationGround, space.stationFloorY);
   _wasSwimming = false;
+  _wasAirborne = false;
+  _wasFlying = false;
+  _stepT = 0;
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -538,6 +660,10 @@ hud.onJoin = ({ name, color }) => {
   // Sync the customize panel to our resolved look (skin/hair default from name).
   hud.setAppearance(local.getAppearance());
   joined = true;
+  // Flash the controls legend on first join so newcomers see the keys (incl. H to
+  // bring it back), then tuck it away after a few seconds.
+  hud.setHelpVisible(true);
+  setTimeout(() => hud.setHelpVisible(false), 7000);
   network.connect();
   // Send our full resolved look (clothing + skin + hair) so others render us
   // identically, not a different per-id default.
@@ -614,12 +740,75 @@ function frame() {
   interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
   ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle
+  airport.update(dt); // animate the airfield: rotating radar dish, blinking strobes, swaying windsock
+  cannon.update(dt); // animate the secret cannon: slide the door, flicker torches/fuse, curl muzzle smoke
+  // RAIN audio bed: track the live storm density (0..1) every frame. The rain
+  // gain is smoothed inside audio.setRain, and the call is a guarded no-op before
+  // the context unlocks, so this is cheap + safe to pump unconditionally.
+  audio.setRain(getRain ? getRain() : 0);
 
   if (joined && local) {
+    // --- SECRET CANNON (on-foot) ---------------------------------------------
+    // Proximity to the door press-spot (just inside the cafe, ~z=-10.8) and the
+    // muzzle loading-spot (deep in the hidden room, ~z=-22.5). BOTH sit behind /
+    // inside the cafe where NO vehicle, skateboard, or interactable is ever in
+    // reach, so we may read (and drain) the E edge HERE — before rides.update,
+    // which otherwise swallows it — without ever stealing a ride's E. Anywhere
+    // else E is left untouched for rides.update to consume as usual.
+    const _dDx = local.pos.x - cannon.doorTrigger.x;
+    const _dDz = local.pos.z - cannon.doorTrigger.z;
+    const nearDoor = !local.sitting && (_dDx * _dDx + _dDz * _dDz) <= cannon.doorTrigger.r * cannon.doorTrigger.r;
+    const _mDx = local.pos.x - cannon.mouth.x;
+    const _mDz = local.pos.z - cannon.mouth.z;
+    const muzzleD2 = _mDx * _mDx + _mDz * _mDz;
+    const nearMuzzle = !local.sitting && muzzleD2 <= CANNON_LOAD_R * CANNON_LOAD_R;
+    const cannonE = (nearDoor || nearMuzzle) && controls.consumeUse ? controls.consumeUse() : false;
+    // CANNON → MAP-SELECT LAUNCH. Pressing E under the muzzle, OR just walking
+    // into the muzzle mouth, no longer fires a fixed arc — it OPENS the bird-eye
+    // map in "cannon" select mode so you pick WHERE to be launched; the map's
+    // onTravel cannon branch then arcs you there (local.launchToward). The walk-in
+    // auto-open is latched so cancelling the map doesn't instantly reopen it while
+    // you're still standing in the mouth — step clear to re-arm. Guarded so we
+    // only open on foot, never mid-arc, and never over an in-world game.
+    const inMuzzleMouth = !local.sitting && muzzleD2 <= CANNON_WALKIN_R * CANNON_WALKIN_R;
+    const canCannon = !local.airborne && !local.flying && !local.sitting && !inWorld.open;
+    if (canCannon && !gameMap.isOpen &&
+        ((nearMuzzle && cannonE) || (inMuzzleMouth && !_cannonLatch))) {
+      mapMode = "cannon";
+      gameMap.open("cannon");
+      _cannonLatch = true;
+    } else if (nearDoor && cannonE) {
+      // Reveal / hide the secret room by sliding the brick door.
+      cannon.setDoorOpen(!cannon.doorOpen);
+    }
+    // Re-arm the walk-in auto-open once you've stepped clear of the muzzle zone.
+    if (muzzleD2 > CANNON_LOAD_R * CANNON_LOAD_R) _cannonLatch = false;
+
+    // --- WEAPON ARMORY (on-foot) ---------------------------------------------
+    // Within reach of the wall rack (and clear of the cannon spots), drain the E
+    // edge HERE — before rides.update swallows it — to CYCLE the held weapon:
+    // holster → gun → rocket → grenade → holster. This is safe to read because no
+    // ride/interactable sits in E-reach this deep inside the cafe, so it never
+    // steals a ride's E. The 1/2/3 number keys still work alongside this.
+    const _aDx = local.pos.x - armory.x;
+    const _aDz = local.pos.z - armory.z;
+    const nearArmory = !local.sitting && (_aDx * _aDx + _aDz * _aDz) <= ARMORY_R * ARMORY_R;
+    if (nearArmory && !nearDoor && !nearMuzzle && controls.consumeUse()) {
+      const cur = weapons.current();
+      const next = cur === null ? "gun" : cur === "gun" ? "rocket" : cur === "rocket" ? "grenade" : null;
+      equipWeapon(next);
+      audio.blip?.();
+      hud.toast(
+        next
+          ? `Grabbed the ${next === "gun" ? "pistol" : next === "rocket" ? "rocket launcher" : "grenade launcher"} — press B to fire`
+          : "Holstered your weapon"
+      );
+    }
+
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
     const ride = rides.update(dt, camera, controls, local);
-    if (ride.mode === "drive" || ride.mode === "boat" || ride.mode === "rocket") {
+    if (ride.mode === "drive" || ride.mode === "boat" || ride.mode === "rocket" || ride.mode === "plane" || ride.mode === "heli") {
       // Driving a car, sailing the boat, OR flying the rocket: the vehicle owns the
       // avatar + camera, so hide the on-foot avatar, suppress the bottom-center sit
       // prompt, and show the bottom-right speedometer (fed by whichever vehicle is
@@ -638,10 +827,17 @@ function frame() {
       hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
-      const speed = ride.mode === "boat" ? (rides.boat?.state?.speed ?? 0)
-        : ride.mode === "rocket" ? (rides.rocket?.state?.speed ?? 0)
-        : rides.car.state.speed;
-      hud.setDriveHud(true, speed); // speedometer + drive/sail/launch hint
+      const vstate = ride.mode === "boat" ? rides.boat?.state
+        : ride.mode === "rocket" ? rides.rocket?.state
+        : ride.mode === "plane" ? rides.plane?.state
+        : ride.mode === "heli" ? rides.heli?.state
+        : rides.car?.state;
+      const speed = vstate?.speed ?? 0;
+      // NOS gauge: car/boat expose state.nos + state.boosting; the rocket / plane /
+      // heli have no tank (pass null → the gauge hides itself).
+      const nos = (ride.mode === "rocket" || ride.mode === "plane" || ride.mode === "heli") ? null : (vstate?.nos ?? null);
+      const boosting = vstate?.boosting ?? false;
+      hud.setDriveHud(true, speed, nos, boosting); // speedometer + NOS gauge + hint
       // Vehicle engine hum, pitch/level rising with speed (top speed ~12 m/s).
       audio.setEngine(true, Math.min(1, Math.abs(speed) / 12));
     } else {
@@ -651,13 +847,89 @@ function frame() {
       // SWIM: splash one-shot on the moment we hit the water (not while afloat).
       if (local.swimming && !_wasSwimming) audio.splash();
       _wasSwimming = local.swimming;
+      // JUMP whoosh: fire the moment we leave the ground under our own power (a
+      // Space hop / swim pop-up rises with vy > 0). Cannon + tornado glides set
+      // `launched`, and the jetpack sets `flying`, so those play their own whoosh
+      // and are excluded here — no double-whoosh.
+      if (local.airborne && !_wasAirborne && local.vy > 0 && !local.launched && !local.flying) {
+        audio.whoosh();
+      }
+      _wasAirborne = local.airborne;
+      // JETPACK liftoff whoosh: one shot the moment the pack engages (F).
+      if (local.flying && !_wasFlying) audio.whoosh();
+      _wasFlying = local.flying;
+      // FOOTSTEPS: while actually walking on the ground (not airborne / swimming),
+      // tick a soft step one-shot on a fixed cadence. Cheap accumulator; the step
+      // sound is a guarded no-op before the audio context unlocks.
+      if (local.moving && !local.airborne && !local.swimming && !local.sitting) {
+        _stepT += dt;
+        if (_stepT >= STEP_INTERVAL) { audio.footstep(); _stepT -= STEP_INTERVAL; }
+      } else {
+        _stepT = STEP_INTERVAL; // primed so the next step fires promptly on resume
+      }
+      // TORNADO FLING: a live, full-strength funnel sweeping over a grounded walker
+      // yanks them off their feet — a big upward pop + an outward tumble (local.fling)
+      // so they sail across the map. Guarded so it only catches us on the ground (not
+      // mid-air / flying / swimming / seated / already parachuting); the storm + the
+      // landing paths re-arm it. Deploy the parachute (P) to float down.
+      if (!local.airborne && !local.flying && !local.swimming && !local.sitting && !local.parachuting) {
+        const funnels = getTornadoes ? getTornadoes() : null;
+        if (funnels) {
+          for (let i = 0; i < funnels.length; i++) {
+            const f = funnels[i];
+            if (!f.active) continue;
+            const dx = f.x - local.pos.x, dz = f.z - local.pos.z;
+            if (dx * dx + dz * dz <= f.radius * f.radius) {
+              local.fling(18);
+              audio.whoosh();
+              hud.toast("🌪️ Caught in a tornado! Press P for a parachute");
+              break;
+            }
+          }
+        }
+      }
+      // PARACHUTE (P): while airborne (from a fling / cannon launch / fall) and not
+      // already under canopy, deploy the chute — clamps the descent to a gentle
+      // float. deployParachute() returns true only if it actually opened.
+      if (controls.consumeParachute() && local.deployParachute()) audio.whoosh();
+      // ROB (R): mug the nearest pedestrian within ~2.5 m. rob() pays out a one-off
+      // $5..$50 (0 if that ped was robbed too recently — no farming) and triggers the
+      // ped's hands-up/flee reaction. Cash lands in `money`, with a blip + toast.
+      if (controls.consumeRob() && !local.sitting && getPedestrians) {
+        const peds = getPedestrians();
+        let best = null, bestD = 2.5 * 2.5;
+        for (let i = 0; i < peds.length; i++) {
+          const dx = peds[i].x - local.pos.x, dz = peds[i].z - local.pos.z;
+          const d = dx * dx + dz * dz;
+          if (d < bestD) { bestD = d; best = peds[i]; }
+        }
+        if (best) {
+          const cash = best.rob();
+          if (cash > 0) {
+            money += cash;
+            audio.blip();
+            hud.toast(`Robbed $${cash}!`);
+          }
+        }
+      }
       // True first-person while seated at a board: hide your OWN avatar so your body
       // doesn't fill the screen (only affects your local view; others still see you).
       if (local.character?.group) {
         local.character.group.visible = !(seatedView && seatedView.active);
       }
-      // A ride prompt (drive/skate) takes precedence over the sit prompt.
-      hud.setSitPrompt(ride.prompt || local.sitPromptText());
+      // A ride prompt (drive/skate) takes precedence over the sit prompt; the
+      // SECRET CANNON hints (door / muzzle) take precedence over both when you're
+      // standing in their spots behind/inside the cafe.
+      // While airborne high up (a fling / cannon launch / fall) and not yet under a
+      // canopy, the chute hint takes precedence over everything else.
+      const airHint = (local.airborne && !local.parachuting && local.pos.y > 3) ? "🪂 Press P for a parachute" : null;
+      hud.setSitPrompt(
+        airHint ? airHint
+        : nearMuzzle ? "💥 Press E to FIRE the cannon"
+        : nearDoor ? (cannon.doorOpen ? "🚪 Press E to close the secret door" : "🚪 Press E to open the secret door")
+        : nearArmory ? "🔫 Press E to grab a weapon"
+        : (ride.prompt || local.sitPromptText())
+      );
       // Open the coffee-bar menu when standing in the order zone; reflect whatever
       // you're holding (and the drop hint) the rest of the time.
       hud.setShopVisible(nearBar() && !local.sitting);
@@ -667,6 +939,9 @@ function frame() {
       // while running and flashes when drained.
       hud.setStamina(local.staminaPct, local.sprinting);
     }
+    // GTA money counter: reflect the running cash total (top-left) every frame
+    // while joined — covers both the on-foot and in-vehicle branches above.
+    hud.setMoney(money);
     // City minimap: redraw from this frame's positions (local arrow + facing,
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();
@@ -695,6 +970,10 @@ function frame() {
   voice.updateSpeaking(dt);
   screenShare.update(dt);
 
+  // CONTROLS LEGEND (H): toggle the on-screen help panel on the key edge. Cheap +
+  // safe to pump every frame; the panel lives in the game-ui (hidden before join).
+  if (controls.consumeHelp()) hud.toggleHelp();
+
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
   // SpotLight to the camera and aim it along the camera's forward so it lights
   // exactly what you face. Done AFTER all camera moves this frame (walk / drive /
@@ -711,8 +990,24 @@ function frame() {
     flashlight.target.position.copy(_flashTgt);
   }
 
-  postFX.render();
-  labelRenderer.render(scene, camera);
+  // RENDER. While the bird-eye MAP is open, render the REAL scene straight down
+  // through topCam onto the main canvas — fog OFF (restored right after) so the
+  // whole map is crisp from 500 m, and NO postFX/labels so the map view stays
+  // clean (the transparent ui/map.js overlay draws the arrow + labels on top, and
+  // its click→world maths inverts this exact topCam framing). Otherwise render
+  // normally: postFX (bloom + grade) then the CSS2D name labels.
+  if (gameMap.isOpen) {
+    if (labelRenderer.domElement.style.display !== "none") labelRenderer.domElement.style.display = "none";
+    updateTopCam();
+    const savedFog = scene.fog;
+    scene.fog = null;
+    renderer.render(scene, topCam);
+    scene.fog = savedFog;
+  } else {
+    if (labelRenderer.domElement.style.display === "none") labelRenderer.domElement.style.display = "";
+    postFX.render();
+    labelRenderer.render(scene, camera);
+  }
   requestAnimationFrame(frame);
 }
 
@@ -792,18 +1087,25 @@ function maybeSendState() {
 // same projectile + explosion. Firing is suppressed while seated; controls.js
 // already gates both edges to null/false while a game overlay holds the lock.
 // Allocation-free: origin/aim reuse the _shot* scratch vectors.
+// Equip (or holster, kind=null) a weapon and keep the held group parented to the
+// player's hand. Shared by the number-key path (updateWeapons) and the ARMORY
+// E-cycle (frame), so both swap weapons identically.
+function equipWeapon(kind) {
+  weapons.equip(kind);
+  if (kind) {
+    if (weapons.group.parent !== local.character.handAnchor) {
+      local.character.handAnchor.add(weapons.group);
+    }
+  } else if (weapons.group.parent) {
+    weapons.group.parent.remove(weapons.group); // holster: drop it out of the hand
+  }
+}
+
 function updateWeapons() {
   const slot = controls.consumeWeaponSlot();
   if (slot != null) {
     const kind = slot === 1 ? "gun" : slot === 2 ? "rocket" : slot === 3 ? "grenade" : null;
-    weapons.equip(kind);
-    if (kind) {
-      if (weapons.group.parent !== local.character.handAnchor) {
-        local.character.handAnchor.add(weapons.group);
-      }
-    } else if (weapons.group.parent) {
-      weapons.group.parent.remove(weapons.group); // holster: drop it out of the hand
-    }
+    equipWeapon(kind);
   }
   // consumeFire() is called first so the B edge always drains, even when holstered.
   if (controls.consumeFire() && weapons.current() && !local.sitting) {
@@ -822,9 +1124,14 @@ function updateWeapons() {
 // `locked`, so the same M press that ui/map.js handles as a close can't bounce back
 // through here and reopen it.
 function updateMap() {
-  if (controls.consumeMap() && !inWorld.open) gameMap.toggle();
+  // M opens the PLAIN travel map (only when NOT mid-game). Tag the mode first so
+  // the overlay + onTravel treat the click as a fast-travel, not a cannon launch.
+  if (controls.consumeMap() && !inWorld.open) {
+    mapMode = "travel";
+    gameMap.toggle("travel");
+  }
   // Sync the movement lock to the map's REAL open state — it can self-close (Esc /
-  // ✕ / M / a fast-travel click) without telling us. Never fight a game's own lock.
+  // ✕ / M / a click) without telling us. Never fight a game's own lock.
   if (!inWorld.open && currentRole == null) {
     if (gameMap.isOpen && !_mapLocked) {
       controls.setLocked(true);
@@ -832,14 +1139,17 @@ function updateMap() {
     } else if (!gameMap.isOpen && _mapLocked) {
       controls.setLocked(false);
       _mapLocked = false;
+      mapMode = "travel"; // map closed → next M opens a plain travel map
     }
   }
-  // Track the live player arrow — only while open, mutating the cached payload in
-  // place so the per-frame redraw allocates nothing.
+  // Track the live player arrow + the topCam world-rect — only while open, mutating
+  // the cached payload in place so the per-frame redraw allocates nothing.
   if (gameMap.isOpen && local) {
+    updateTopCam(); // keep _topBounds (which mapPayload.bounds references) current
     mapPayload.player.x = local.pos.x;
     mapPayload.player.z = local.pos.z;
     mapPayload.player.heading = local.facing;
+    mapPayload.mode = mapMode;
     gameMap.render(mapPayload);
   }
 }
@@ -847,5 +1157,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, audio, gameMap, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, topCam, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

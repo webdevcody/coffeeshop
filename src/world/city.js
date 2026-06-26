@@ -76,20 +76,33 @@ export function buildCity(scene) {
   }
 
   // Ambient life: cars driving the road grid + pedestrians on the sidewalks.
+  // GTA hooks: getTraffic()/getPedestrians() surface the live roaming cars + people
+  // so the player can steal/rob them. Default to empty accessors if life fails to
+  // build, so the gameplay layer above can call them unconditionally.
+  let getTraffic = () => [];
+  let getPedestrians = () => [];
   try {
     const life = buildCityLife();
     if (life && life.group) group.add(life.group);
     if (typeof life.update === "function") updates.push(life.update);
+    if (typeof life.getTraffic === "function") getTraffic = life.getTraffic;
+    if (typeof life.getPedestrians === "function") getPedestrians = life.getPedestrians;
   } catch (e) {
     console.warn("[city] cityLife failed", e);
   }
 
   // Ambient weather: a slow clear→overcast→rain→clearing cycle with drifting clouds,
   // pooled instanced rain that blankets the map, distant lightning, and a wind value.
+  // getRain()/getTornadoes() surface the live storm so the audio + tornado-fling
+  // layers above can react. Default to inert accessors if weather fails to build.
+  let getRain = () => 0;
+  let getTornadoes = () => [];
   try {
     const weather = buildCityWeather();
     if (weather && weather.group) group.add(weather.group);
     if (weather && typeof weather.update === "function") updates.push(weather.update);
+    if (weather && typeof weather.getRain === "function") getRain = weather.getRain;
+    if (weather && typeof weather.getTornadoes === "function") getTornadoes = weather.getTornadoes;
   } catch (e) {
     console.warn("[city] cityWeather failed", e);
   }
@@ -124,5 +137,5 @@ export function buildCity(scene) {
     }
   };
 
-  return { group, colliders, ground, update };
+  return { group, colliders, ground, update, getTraffic, getPedestrians, getRain, getTornadoes };
 }

@@ -8,13 +8,29 @@ import { makeCar } from "./car.js";
 import { makeBoat } from "./boat.js";
 import { makeSkateboard } from "./skateboard.js";
 import { makeRocket } from "./rocket.js";
+import { makeAirplane } from "./airplane.js";
+import { makeHelicopter } from "./helicopter.js";
 import { makeJetpack, FLY } from "./jetpack.js";
 
 const FAR = 1e9;
 const CAR_REACH = 3.2; // how close you must be to enter the car
+const STEAL_REACH = 3.5; // how close you must be to a moving traffic car to car-jack it
 const BOAT_REACH = 4.0; // how close (at a dock) you must be to board the boat
 const ROCKET_REACH = 6.0; // how close (on the launchpad) you must be to board the rocket
 const ROCKET_CEIL = 300; // rocket flight ceiling (m) passed to rocket.drive — clears the station
+const PLANE_REACH = 6.0; // how close (on the runway/apron) you must be to board the plane
+const HELI_REACH = 5.0; // how close (on a helipad) you must be to board the helicopter
+const PLANE_CEIL = 200; // plane flight ceiling (m) passed to airplane.drive
+const HELI_CEIL = 200; // heli flight ceiling (m) passed to helicopter.drive
+// DOCKING: once the rocket climbs within this many metres of the station altitude
+// (space.stationY ≈ 260), E docks instead of bailing out — the player is whisked
+// inside the station interior and the rocket parks at the airlock. Below the band,
+// E still exits to the pad as before.
+const STATION_DOCK_BAND = 45;
+// Re-boarding the docked rocket from the station deck: the dock spot sits just
+// OUTSIDE the airlock bulkhead, so this reach is wider than ROCKET_REACH to let you
+// board from inside the airlock (you can only walk up to the hatch, not past it).
+const STATION_REBOARD_REACH = 14;
 const SKATE_SPEED = 1.9; // ground-speed multiplier while skating
 // Where the jetpack mounts on the local player's back (torso height, tucked just
 // behind the spine). Mirrored in remotePlayers.js for the networked version.
@@ -71,6 +87,15 @@ export function createRides(scene, opts) {
   // The SPACE world (launchpad apron + gantry/tanks + station + rocketSpawn). null
   // when no space was threaded in — then the rocket is never created/offered.
   const space = opts.space || null;
+  // The AIRPORT (offshore airfield island + causeway). null when no airport was
+  // threaded in — then the plane + heli are never created/offered. Provides
+  // planeSpawn (west runway threshold) + heliSpawn (south helipad).
+  const airport = opts.airport || null;
+  // GTA car-jacking: a fn returning the live roaming traffic cars
+  // [{ x, z, heading, hide() }]. When supplied, pressing E next to one (and NOT
+  // beside the parked drivable car) yoinks it — vanish the traffic car + teleport our
+  // drivable car onto its spot/heading + drop straight into drive. null when unwired.
+  const getTraffic = opts.getTraffic || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -97,6 +122,28 @@ export function createRides(scene, opts) {
     colliders.push(rocketCollider);
   }
 
+  // The rideable AIRPLANE + HELICOPTER — built once (like the car/boat/rocket),
+  // parked on the offshore airfield. The plane sits at the WEST runway threshold
+  // (airport.planeSpawn, nose EAST) so its take-off roll runs out over open ocean;
+  // the heli rests on the south helipad (airport.heliSpawn). On foot you board
+  // either with E while standing beside it on the island. Each parks a footprint
+  // collider (pushed inert while piloting it, exactly like the car / rocket). null
+  // with no airport threaded in.
+  let plane = null;
+  let planeCollider = null;
+  let heli = null;
+  let heliCollider = null;
+  if (airport) {
+    plane = makeAirplane({ spawn: airport.planeSpawn });
+    scene.add(plane.group);
+    planeCollider = { ...plane.footprint() };
+    colliders.push(planeCollider);
+    heli = makeHelicopter({ spawn: airport.heliSpawn });
+    scene.add(heli.group);
+    heliCollider = { ...heli.footprint() };
+    colliders.push(heliCollider);
+  }
+
   // The wearable JETPACK — built once, hidden until you toggle fly mode (F). Unlike
   // the car/boat you don't sit in it: on mount it parents onto the local player's
   // back and you keep your on-foot avatar; update() pulses its flame by thrust.
@@ -111,6 +158,10 @@ export function createRides(scene, opts) {
 
   let board = null;
   let mode = "walk"; // walk | drive | boat | skate | fly | rocket
+  // True while the rocket is parked at the orbital station (at space.dockSpot, up
+  // at the station altitude) and the player is walking the interior on foot. While
+  // docked, the near-rocket re-board check uses the wider STATION_REBOARD_REACH.
+  let docked = false;
 
   // Per-frame jetpack fly sub-state. null while not flying; { vy, armed } while in
   // fly mode. `armed` flips true once we've genuinely lifted off the ground, so a
@@ -157,6 +208,60 @@ export function createRides(scene, opts) {
     if (!rocketCollider) return;
     if (on) Object.assign(rocketCollider, rocket.footprint());
     else Object.assign(rocketCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // Same trick for the plane + heli: a tight footprint while parked (re-registered
+  // at the vehicle's current position), pushed far away (inert) while piloting it.
+  function parkPlaneCollider(on) {
+    if (!planeCollider) return;
+    if (on) Object.assign(planeCollider, plane.footprint());
+    else Object.assign(planeCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+  function parkHeliCollider(on) {
+    if (!heliCollider) return;
+    if (on) Object.assign(heliCollider, heli.footprint());
+    else Object.assign(heliCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // DOCK: leave the cockpit and step INTO the station. The rocket is teleported to
+  // park just outside the airlock (space.dockSpot) floated up to the station deck
+  // level, and the player is stood inside the airlock on the deck — lifted to
+  // space.stationFloorY (localPlayer pins them there on the station rects). Called
+  // when E is pressed in rocket mode within docking range of the station.
+  function dockAtStation(local) {
+    const d = space.dockSpot, ex = space.exitSpot, fy = space.stationFloorY;
+    // Park the rocket at the airlock, hovering at the station deck altitude.
+    rocket.state.x = d.x;
+    rocket.state.z = d.z;
+    rocket.state.heading = d.heading || 0;
+    rocket.state.altitude = fy; // base sits ~level with the deck beside the hatch
+    rocket.syncGroup();         // shove the (now parked) rocket group to the dock
+    parkRocketCollider(true);   // re-register its footprint at the dock spot
+    docked = true;
+    // Stand the player just inside the airlock on the deck, facing the interior.
+    local.pos.x = ex.x;
+    local.pos.z = ex.z;
+    local.pos.y = fy;
+    local.facing = Math.PI / 2; // +X, toward the corridor / control room
+    local.airborne = false;
+    local.falling = false;
+    local.vy = 0;
+    local.character.group.position.set(ex.x, fy, ex.z);
+    local.character.group.rotation.y = local.facing;
+  }
+
+  // UNDOCK: re-boarding the docked rocket flies you HOME. We relocate the rocket
+  // back above the launchpad (space.rocketSpawn) but keep it aloft at the station
+  // altitude, so cutting the throttle lets it descend straight down and touch back
+  // onto the pad (where the grounded exit drops you beside it). Without the XZ
+  // snap it would land in the empty space east of the city.
+  function undockToPad(local) {
+    const sp = space.rocketSpawn;
+    rocket.state.x = sp.x;
+    rocket.state.z = sp.z;
+    rocket.state.heading = sp.heading || 0;
+    rocket.syncGroup(); // keep altitude; just move it over the pad
+    docked = false;
   }
 
   // Strap the jetpack onto the local player's back + enter fly mode. The avatar
@@ -234,13 +339,23 @@ export function createRides(scene, opts) {
     // The boat floats in the water at a dock tip, so this is only ever true when
     // you're standing on a dock right next to it (you can't reach it across water).
     const nearBoat = boat ? boat.distanceTo(local.pos.x, local.pos.z) < BOAT_REACH : false;
-    // The rocket sits at pad centre, so this is only true on the launchpad apron.
-    const nearRocket = rocket ? rocket.distanceTo(local.pos.x, local.pos.z) < ROCKET_REACH : false;
+    // The rocket sits at pad centre (or, while docked, just outside the airlock), so
+    // this is only true on the launchpad apron or beside the docked rocket. Docking
+    // parks it past the airlock bulkhead, so re-boarding gets the wider reach.
+    const rocketReach = docked ? STATION_REBOARD_REACH : ROCKET_REACH;
+    const nearRocket = rocket ? rocket.distanceTo(local.pos.x, local.pos.z) < rocketReach : false;
+    // The plane sits at the west runway threshold; the heli on a south helipad —
+    // both on the offshore airfield, reached on foot via the causeway.
+    const nearPlane = plane ? plane.distanceTo(local.pos.x, local.pos.z) < PLANE_REACH : false;
+    const nearHeli = heli ? heli.distanceTo(local.pos.x, local.pos.z) < HELI_REACH : false;
 
     if (mode === "boat") {
       const { throttle, steer } = controls.driveAxis();
-      boat.drive(dt, throttle, steer, ocean.isWater);
-      boat.updateCamera(camera, dt);
+      // Shift = NOS boost, Shift+Ctrl = EXTREME. In a vehicle the sprint tier means
+      // NOS (not on-foot sprint), so there's no conflict. Threaded as drive()'s 5th arg.
+      const boost = controls.sprintLevel();
+      boat.drive(dt, throttle, steer, ocean.isWater, boost);
+      boat.updateCamera(camera, dt, controls); // pass controls for mouse free-look
       // Glue the (hidden) avatar + networked position to the boat so exiting is
       // seamless and remotes see you sailing, not frozen on the dock.
       local.pos.x = boat.state.x;
@@ -261,8 +376,13 @@ export function createRides(scene, opts) {
     }
 
     if (mode === "drive") {
-      car.drive(dt, controls.driveAxis(), colliders, isGround);
-      car.updateCamera(camera, dt);
+      // Shift = NOS boost, Shift+Ctrl = EXTREME (sprint tier = NOS in a vehicle, no
+      // on-foot conflict). Thread it into the car's drive input by reusing the axis
+      // object driveAxis() already allocated (no extra per-frame allocation).
+      const axis = controls.driveAxis();
+      axis.boost = controls.sprintLevel();
+      car.drive(dt, axis, colliders, isGround);
+      car.updateCamera(camera, dt, controls); // pass controls for mouse free-look
       // Keep the (hidden) avatar + networked position riding along with the car so
       // exiting is seamless and remote players see you move, not freeze.
       local.pos.x = car.state.x;
@@ -295,7 +415,25 @@ export function createRides(scene, opts) {
       local.pos.z = rocket.state.z;
       local.pos.y = rocket.state.altitude;
       local.facing = rocket.state.heading;
+      // High enough to reach the orbital station? Then E DOCKS (board the station)
+      // instead of bailing out. Below the band, E exits to the pad as before.
+      const canDock = !!space && rocket.state.altitude >= space.stationY - STATION_DOCK_BAND;
+      // AUTO-DOCK: the moment you fly the rocket all the way up to the station you're
+      // pulled straight in — no key press (players couldn't find the "E to dock"
+      // prompt). canDock arms at stationY-45; we wait until you're right at the
+      // station (within 6 m) so the climb finishes, then dock automatically. The
+      // manual E-dock below still works for an early dock in the 215-254 band.
+      if (canDock && rocket.state.altitude >= space.stationY - 6) {
+        dockAtStation(local);
+        mode = "walk";
+        return { mode, prompt: "🛰️ Docked! Explore the station — walk around, E by the rocket to fly home", overrideWalk: false };
+      }
       if (useE) {
+        if (canDock) {
+          dockAtStation(local);
+          mode = "walk";
+          return { mode, prompt: "🛰️ Docked! Explore the station — E by the rocket to fly home", overrideWalk: false };
+        }
         const s = rocket.exitSpot();
         local.pos.x = s.x;
         local.pos.z = s.z;
@@ -308,7 +446,77 @@ export function createRides(scene, opts) {
         mode = "walk";
         return { mode, prompt: "🚀 Press E to board rocket", overrideWalk: false };
       }
-      return { mode, prompt: "🚀 Throttle: W launch · A/D yaw · E exit", overrideWalk: true };
+      return {
+        mode,
+        prompt: canDock
+          ? "🛰️ E to DOCK at the station · A/D yaw"
+          : "🚀 Throttle: W launch · A/D yaw · E exit",
+        overrideWalk: true,
+      };
+    }
+
+    if (mode === "plane") {
+      // Mirror the rocket/boat drive branch: throttle = engine (W builds forward
+      // airspeed → lift → climb; the plane climbs by GAINING AIRSPEED, so flyThrust
+      // doesn't apply), steer = rudder yaw (with a visual bank). Vehicle owns avatar
+      // + camera.
+      const { throttle, steer } = controls.driveAxis();
+      plane.drive(dt, throttle, steer, { maxAltitude: PLANE_CEIL });
+      plane.updateCamera(camera, dt);
+      // Glue the (hidden) avatar + networked position to the plane so exiting is
+      // seamless and remotes track where you flew (XZ + heading; pos.y carries the
+      // altitude for the HUD/minimap + the riding name tag).
+      local.pos.x = plane.state.x;
+      local.pos.z = plane.state.z;
+      local.pos.y = plane.state.altitude;
+      local.facing = plane.state.heading;
+      if (useE) {
+        const s = plane.exitSpot();
+        local.pos.x = s.x;
+        local.pos.z = s.z;
+        local.pos.y = 0;
+        local.facing = s.facing;
+        // Stand the avatar on the ground beside the plane so it doesn't fall.
+        local.character.group.position.set(s.x, 0, s.z);
+        local.character.group.rotation.y = s.facing;
+        parkPlaneCollider(true);
+        mode = "walk";
+        return { mode, prompt: "✈️ Press E to fly", overrideWalk: false };
+      }
+      return { mode, prompt: "✈️ Throttle: W speed up · A/D yaw · E exit", overrideWalk: true };
+    }
+
+    if (mode === "heli") {
+      // Drain the Space sit/ollie edge each frame so holding Space for collective
+      // lift can't leave a stale toggle that fires the instant you step off.
+      if (controls.consumeSit) controls.consumeSit();
+      // Helicopter controls (fixed so it actually flies around):
+      //   SPACE = add gas / climb, X (or Shift/Ctrl) = descend, neutral = HOVER.
+      //   W/S = fly FORWARD / back (cyclic tilt), A/D = turn (tail-rotor yaw).
+      // Collective lift comes from flyThrust() ONLY (Space/X); W/S now drives the
+      // forward drift via ctx.forward so the heli moves where it's pointing.
+      const { throttle, steer } = controls.driveAxis(); // throttle = W/S, steer = A/D
+      const lift = controls.flyThrust ? controls.flyThrust() : 0; // Space +1 / X -1
+      heli.drive(dt, lift, steer, { maxAltitude: HELI_CEIL, forward: throttle });
+      heli.updateCamera(camera, dt);
+      local.pos.x = heli.state.x;
+      local.pos.z = heli.state.z;
+      local.pos.y = heli.state.altitude;
+      local.facing = heli.state.heading;
+      if (useE) {
+        const s = heli.exitSpot();
+        local.pos.x = s.x;
+        local.pos.z = s.z;
+        local.pos.y = 0;
+        local.facing = s.facing;
+        // Stand the avatar on the ground beside the skids so it doesn't fall.
+        local.character.group.position.set(s.x, 0, s.z);
+        local.character.group.rotation.y = s.facing;
+        parkHeliCollider(true);
+        mode = "walk";
+        return { mode, prompt: "🚁 Press E to fly", overrideWalk: false };
+      }
+      return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
     }
 
     if (mode === "fly") {
@@ -367,6 +575,26 @@ export function createRides(scene, opts) {
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
+      // CAR-JACK: not beside the parked car, but standing next to a moving traffic
+      // car? Yoink it GTA-style — vanish that traffic car, snap our drivable car onto
+      // its position + heading, and drop straight into drive. Outdoors only (traffic
+      // only exists on the streets), and it sits right after the parked-car board so
+      // a real parked car always wins.
+      if (outdoors && getTraffic) {
+        const t = nearestTraffic(local.pos.x, local.pos.z);
+        if (t) {
+          t.hide();                       // make the stolen traffic car disappear
+          car.state.x = t.x;
+          car.state.z = t.z;
+          car.state.heading = t.heading;
+          car.state.speed = 0;
+          car.syncGroup();                // shove our drivable car onto its spot
+          parkCollider(false);
+          car.resetCamera();
+          mode = "drive";
+          return { mode, prompt: "🚗 Car jacked! WASD to drive · E to exit", overrideWalk: true };
+        }
+      }
       // BOAT: reachable only from a dock (it floats in the water). Boards between
       // the car and the interactables in the E-priority order.
       if (nearBoat) {
@@ -374,13 +602,31 @@ export function createRides(scene, opts) {
         mode = "boat";
         return { mode, prompt: "🚤 WASD to sail · E to dock", overrideWalk: true };
       }
-      // ROCKET: reachable only on the launchpad apron. Boards between the boat and
-      // the interactables in the E-priority order.
+      // ROCKET: reachable on the launchpad apron, OR — while docked — from inside the
+      // airlock. Boards between the boat and the interactables in the E-priority
+      // order. Re-boarding the docked rocket undocks it back over the pad so flying
+      // down lands you home.
       if (nearRocket) {
+        if (docked) undockToPad(local);
         parkRocketCollider(false);
         rocket.resetCamera();
         mode = "rocket";
         return { mode, prompt: "🚀 Throttle: W launch · A/D yaw · E exit", overrideWalk: true };
+      }
+      // PLANE / HELI: reachable on the offshore airfield. Board between the rocket
+      // and the interactables in the E-priority order:
+      // car > boat > rocket > plane > heli > interactable > skate.
+      if (nearPlane) {
+        parkPlaneCollider(false);
+        plane.resetCamera();
+        mode = "plane";
+        return { mode, prompt: "✈️ Throttle: W speed up · A/D yaw · E exit", overrideWalk: true };
+      }
+      if (nearHeli) {
+        parkHeliCollider(false);
+        heli.resetCamera();
+        mode = "heli";
+        return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
       }
       // INTERACTABLES: a world object in range claims E before the skateboard.
       // tryUse returns its HUD line (truthy) only when something was in range;
@@ -399,7 +645,9 @@ export function createRides(scene, opts) {
     const ip = interactables && !local.sitting ? interactables.nearestPrompt(local.pos.x, local.pos.z) : null;
     if (nearCar) prompt = "🚗 Press E to drive";
     else if (nearBoat && !local.sitting) prompt = "🚤 Press E to sail"; // boat hover sits between car and interactable
-    else if (nearRocket && !local.sitting) prompt = "🚀 Press E to board rocket"; // rocket hover, on the pad
+    else if (nearRocket && !local.sitting) prompt = docked ? "🚀 Press E to board & fly home" : "🚀 Press E to board rocket"; // rocket hover (pad, or docked at the station)
+    else if (nearPlane && !local.sitting) prompt = "✈️ Press E to fly"; // plane hover (west runway threshold)
+    else if (nearHeli && !local.sitting) prompt = "🚁 Press E to fly"; // heli hover (south helipad)
     else if (ip) prompt = ip; // interactable hover prompt sits between car and skate
     else if (outdoors && !local.sitting) prompt = "🛹 Press E to skateboard";
     return { mode, prompt, overrideWalk: false };
@@ -506,6 +754,21 @@ export function createRides(scene, opts) {
     local.rideSpin = skate.spin;
   }
 
+  // Nearest stealable traffic car within STEAL_REACH of (x,z), else null. getTraffic()
+  // is only invoked here on an E press (never per frame), so its fresh array is fine.
+  function nearestTraffic(x, z) {
+    if (!getTraffic) return null;
+    const list = getTraffic();
+    let best = null, bestD = STEAL_REACH * STEAL_REACH;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      const dx = e.x - x, dz = e.z - z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
+  }
+
   // First ramp footprint containing (x,z), else null.
   function rampAt(x, z) {
     for (const r of RAMPS) {
@@ -585,18 +848,23 @@ export function createRides(scene, opts) {
     car,
     boat,
     rocket,
+    plane,
+    heli,
     get trick() { return skate ? skate.lastTrick : null; },
     get score() { return skate ? skate.score : 0; },
     get mode() { return mode; },
     // Network-friendly ride tag: null while walking, "car" while driving, "boat"
     // while sailing, "skate" while on the board, "jetpack" while flying, "rocket"
-    // while launched. Threaded through sendState so remotes render the matching mesh.
+    // while launched, "plane"/"heli" while flying the aircraft. Threaded through
+    // sendState so remotes render the matching mesh.
     get ride() {
       return mode === "drive" ? "car"
         : mode === "boat" ? "boat"
         : mode === "skate" ? "skate"
         : mode === "fly" ? "jetpack"
         : mode === "rocket" ? "rocket"
+        : mode === "plane" ? "plane"
+        : mode === "heli" ? "heli"
         : null;
     },
   };
