@@ -751,16 +751,16 @@ export function buildSpace(opts = {}) {
     if (typeof m.update === "function") stationModuleUpdates.push(m.update);
     // A bright fill light per zone so the interior detail is actually visible (the
     // modules' own emissive accents read dark without general lighting up here).
-    const zoneLight = new THREE.PointLight(0xdce8ff, 90, 64, 1.4);
-    zoneLight.position.set(mox, stationFloorY + 4.2, IZ);
+    const zoneLight = new THREE.PointLight(0xdce8ff, 40, 58, 1.7);
+    zoneLight.position.set(mox, stationFloorY + 4.4, IZ);
     group.add(zoneLight);
     mox += 38; // contiguous 38 m-wide decks: 320, 358, ... , 662
   }
   // Fill lights over the airlock / corridor / control room (the existing interior
   // near IX) so the entry isn't a dark tunnel either.
   for (const lx of [IX - 30, IX - 8, IX + 14]) {
-    const eL = new THREE.PointLight(0xdce8ff, 80, 60, 1.4);
-    eL.position.set(lx, stationFloorY + 4.2, IZ);
+    const eL = new THREE.PointLight(0xdce8ff, 36, 56, 1.7);
+    eL.position.set(lx, stationFloorY + 4.4, IZ);
     group.add(eL);
   }
   // Outer hull around the whole run (x≈301..681, z = IZ±19): long side walls + an
