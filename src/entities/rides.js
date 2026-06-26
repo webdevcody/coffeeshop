@@ -484,13 +484,14 @@ export function createRides(scene, opts) {
       // Drain the Space sit/ollie edge each frame so holding Space for collective
       // lift can't leave a stale toggle that fires the instant you step off.
       if (controls.consumeSit) controls.consumeSit();
-      // Collective (vertical lift) = throttle (W/S) PLUS Space/X from flyThrust, so
-      // the heli lifts with throttle+Space and eases into a hover at neutral; steer
-      // (A/D) yaws via the tail rotor. Vehicle owns avatar + camera.
-      const { throttle, steer } = controls.driveAxis();
-      const lift = controls.flyThrust ? controls.flyThrust() : 0;
-      const collective = Math.max(-1, Math.min(1, throttle + lift));
-      heli.drive(dt, collective, steer, { maxAltitude: HELI_CEIL });
+      // Helicopter controls (fixed so it actually flies around):
+      //   SPACE = add gas / climb, X (or Shift/Ctrl) = descend, neutral = HOVER.
+      //   W/S = fly FORWARD / back (cyclic tilt), A/D = turn (tail-rotor yaw).
+      // Collective lift comes from flyThrust() ONLY (Space/X); W/S now drives the
+      // forward drift via ctx.forward so the heli moves where it's pointing.
+      const { throttle, steer } = controls.driveAxis(); // throttle = W/S, steer = A/D
+      const lift = controls.flyThrust ? controls.flyThrust() : 0; // Space +1 / X -1
+      heli.drive(dt, lift, steer, { maxAltitude: HELI_CEIL, forward: throttle });
       heli.updateCamera(camera, dt);
       local.pos.x = heli.state.x;
       local.pos.z = heli.state.z;
@@ -509,7 +510,7 @@ export function createRides(scene, opts) {
         mode = "walk";
         return { mode, prompt: "🚁 Press E to fly", overrideWalk: false };
       }
-      return { mode, prompt: "🚁 W/Space up · S/X down · A/D yaw · E exit", overrideWalk: true };
+      return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
     }
 
     if (mode === "fly") {
@@ -599,7 +600,7 @@ export function createRides(scene, opts) {
         parkHeliCollider(false);
         heli.resetCamera();
         mode = "heli";
-        return { mode, prompt: "🚁 W/Space up · S/X down · A/D yaw · E exit", overrideWalk: true };
+        return { mode, prompt: "🚁 Space gas/up · X down · W/S fly · A/D turn · E exit", overrideWalk: true };
       }
       // INTERACTABLES: a world object in range claims E before the skateboard.
       // tryUse returns its HUD line (truthy) only when something was in range;
