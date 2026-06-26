@@ -1,5 +1,5 @@
 # The Daily Grind — multiplayer 3D coffeeshop on Launch Pad
-# Deploy: lpd deploy (from this directory)
+# Deploy: lpd deploy --cluster coffee-shop (this project lives on that cluster only)
 project = "coffeeshop"
 
 [[service]]
