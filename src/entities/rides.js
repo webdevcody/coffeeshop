@@ -363,6 +363,16 @@ export function createRides(scene, opts) {
       // High enough to reach the orbital station? Then E DOCKS (board the station)
       // instead of bailing out. Below the band, E exits to the pad as before.
       const canDock = !!space && rocket.state.altitude >= space.stationY - STATION_DOCK_BAND;
+      // AUTO-DOCK: the moment you fly the rocket all the way up to the station you're
+      // pulled straight in — no key press (players couldn't find the "E to dock"
+      // prompt). canDock arms at stationY-45; we wait until you're right at the
+      // station (within 6 m) so the climb finishes, then dock automatically. The
+      // manual E-dock below still works for an early dock in the 215-254 band.
+      if (canDock && rocket.state.altitude >= space.stationY - 6) {
+        dockAtStation(local);
+        mode = "walk";
+        return { mode, prompt: "🛰️ Docked! Explore the station — walk around, E by the rocket to fly home", overrideWalk: false };
+      }
       if (useE) {
         if (canDock) {
           dockAtStation(local);
