@@ -106,6 +106,18 @@ export class Network {
     this._send({ type: "signal", to, data });
   }
 
+  // Push the shared world VEHICLE's authoritative pose. The driver sends it while
+  // driving (throttled) with driverId = this.id to claim the wheel, and once on
+  // EXIT with driverId = null to release + park it. The server stores it and
+  // relays to the OTHER clients, which mirror the car at that pose.
+  sendVehicle(vehicleId, kind, x, z, heading, driverId) {
+    // NOTE: the vehicle KIND travels as `kind`, NOT `type`. `type` is the message
+    // discriminator ("vehicle") that the server switch + client on() route on; a
+    // second `type` key here would overwrite it (last key wins) and the message
+    // would mis-route as {type:"car"}, silently breaking the whole shared-car sync.
+    this._send({ type: "vehicle", vehicleId, kind, x, z, heading, driverId });
+  }
+
   // Tell the server about your current listening state so it can warn the people
   // you can no longer hear. `muted` is the list of player ids you've muted.
   sendVoiceMute(deafened, muted) {

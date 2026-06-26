@@ -108,6 +108,19 @@ const clients = new Map();
 let nextId = 1;
 
 // ---------------------------------------------------------------------------
+// Shared world vehicles (server-authoritative)
+// ---------------------------------------------------------------------------
+// The single drivable CAR is a SHARED WORLD OBJECT: its pose lives HERE, not on
+// each client. Whoever is behind the wheel claims `driverId` and PUSHES the pose;
+// every other client MIRRORS the stored pose. When the driver exits (or drops),
+// driverId clears and the car stays parked exactly where it was left, claimable by
+// the next person. Seeded with the SAME spawn the client car uses (carSpawn
+// x=4,z=18) so the very first frame already agrees with everyone.
+/** @type {Map<string, {id:string, type:string, x:number, z:number, heading:number, driverId:string|null}>} */
+const vehicles = new Map();
+vehicles.set("car-1", { id: "car-1", type: "car", x: 4, z: 18, heading: 0, driverId: null });
+
+// ---------------------------------------------------------------------------
 // Game-table room coordination
 // ---------------------------------------------------------------------------
 // The server is a generic match coordinator — it doesn't know or care what game
@@ -574,7 +587,7 @@ wss.on("connection", (ws) => {
         for (const [oid, c] of clients) {
           if (oid !== id) others.push(c.player);
         }
-        send(ws, { type: "welcome", id, you: player, players: others });
+        send(ws, { type: "welcome", id, you: player, players: others, vehicles: Array.from(vehicles.values()) });
         // Tell everyone else about the newcomer.
         broadcast({ type: "player-joined", player }, id);
         // PASSERSBY: paint every active match's PUBLIC board for the newcomer so
@@ -646,6 +659,36 @@ wss.on("connection", (ws) => {
         const ox = msg.ox, oy = msg.oy, oz = msg.oz, dx = msg.dx, dy = msg.dy, dz = msg.dz;
         if (![ox, oy, oz, dx, dy, dz].every((n) => typeof n === "number" && Number.isFinite(n))) break;
         broadcast({ type: "shot", id, weapon, ox, oy, oz, dx, dy, dz }, id);
+        break;
+      }
+      case "vehicle": {
+        // Server-authoritative SHARED VEHICLE pose (the single drivable car). The
+        // sender updates the stored pose and may ONLY claim ITSELF as the driver:
+        // driverId = (msg.driverId === this connection id ? id : null), so a client
+        // can never mark someone else (or steal) as the driver. We validate the
+        // id/type strings + finite, clamped numbers, then relay the canonical pose
+        // to the OTHER clients so they mirror the car where the driver moved/parked it.
+        const vehicleId = typeof msg.vehicleId === "string" ? msg.vehicleId.slice(0, 32) : null;
+        // The vehicle KIND arrives as `kind` (NOT `type`): `type` is the message
+        // discriminator we switched on, so it always equals "vehicle" here. Reading
+        // the kind from `msg.type` would store "vehicle" as the kind; reading it as a
+        // duplicate `type` on the broadcast would mis-route the relay as {type:"car"}.
+        const vtype = typeof msg.kind === "string" ? msg.kind.slice(0, 16) : null;
+        if (!vehicleId || !vtype) break;
+        const v = vehicles.get(vehicleId);
+        if (!v) break; // only known vehicles (no client-spawned ids)
+        if (typeof msg.x !== "number" || !Number.isFinite(msg.x)) break;
+        if (typeof msg.z !== "number" || !Number.isFinite(msg.z)) break;
+        if (typeof msg.heading !== "number" || !Number.isFinite(msg.heading)) break;
+        v.type = vtype;
+        v.x = clamp(msg.x, -400, 400);
+        v.z = clamp(msg.z, -400, 400);
+        v.heading = msg.heading;
+        v.driverId = msg.driverId === id ? id : null;
+        broadcast(
+          { type: "vehicle", vehicleId, kind: v.type, x: v.x, z: v.z, heading: v.heading, driverId: v.driverId },
+          id
+        );
         break;
       }
       case "signal": {
@@ -913,6 +956,15 @@ wss.on("connection", (ws) => {
     // Drop any proximity-watch subscriptions this client held (they don't set
     // gameTable, so releaseSeat doesn't cover them).
     for (const t of tables.values()) t.spectators.delete(id);
+    // SHARED VEHICLES: a driver who quits leaves the car PARKED where it was,
+    // claimable by others. Clear their claim and broadcast the parked pose so
+    // everyone keeps the car at that spot (and can re-board it).
+    for (const v of vehicles.values()) {
+      if (v.driverId === id) {
+        v.driverId = null;
+        broadcast({ type: "vehicle", vehicleId: v.id, kind: v.type, x: v.x, z: v.z, heading: v.heading, driverId: null });
+      }
+    }
     if (clients.delete(id)) {
       broadcast({ type: "player-left", id });
     }

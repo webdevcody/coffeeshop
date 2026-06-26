@@ -135,6 +135,28 @@ const interactables = buildInteractables();
 scene.add(interactables.group);
 
 const isGroundFn = (x, z) => groundAll.some((g) => x >= g.minX && x <= g.maxX && z >= g.minZ && z <= g.maxZ);
+const network = new Network();
+// SHARED WORLD VEHICLES: the server owns the single drivable car's pose. We mirror
+// the latest authoritative pose per vehicle id here (keyed by id, e.g. "car-1");
+// rides.js seeds/reads it for the local car and remotePlayers.js positions a remote
+// driver's car proxy from it, so a car driven + parked by anyone shows at that exact
+// spot for everyone. Populated from the welcome roster + live "vehicle" relays.
+const sharedVehicles = new Map();
+function upsertVehicle(v) {
+  // Welcome-roster entries key on `id`; live relays key on `vehicleId`.
+  const key = v.vehicleId || v.id;
+  if (!key) return;
+  let e = sharedVehicles.get(key);
+  if (!e) { e = { id: key }; sharedVehicles.set(key, e); }
+  // Vehicle kind: live "vehicle" relays carry it as `kind` (the message's own `type`
+  // is the discriminator "vehicle"); the welcome roster entries carry it as `type`.
+  e.type = v.kind ?? v.type;
+  e.x = v.x;
+  e.z = v.z;
+  e.heading = v.heading;
+  e.driverId = v.driverId ?? null;
+}
+const getVehicle = (id) => sharedVehicles.get(id);
 const rides = createRides(scene, {
   colliders: collidersAll,
   isGround: isGroundFn,
@@ -144,10 +166,11 @@ const rides = createRides(scene, {
   ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
   space, // launchable rocket parks on space.rocketSpawn; jetpack fly mode (F) lives here too
   airport, // rideable plane parks at airport.planeSpawn, heli at airport.heliSpawn (handled in rides.js)
+  getVehicle, // read/seed the shared "car-1" pose (server-authoritative)
+  network, // push the shared car pose while driving + on exit
 });
-const remotes = new RemotePlayers(scene);
+const remotes = new RemotePlayers(scene, { getVehicle });
 const hud = new HUD();
-const network = new Network();
 const arcade = new Arcade();
 
 // WEAPONS (a cosmetic combat toy): 1/2/3 equip a pistol / rocket launcher /
@@ -433,8 +456,14 @@ function refreshPeople() {
 // --- Network wiring --------------------------------------------------------
 network.on("welcome", (m) => {
   for (const p of m.players) remotes.add(p);
+  // Seed the shared world vehicles (the drivable car) so rides.js can place the
+  // local car at the authoritative pose and remotes render it at the synced spot.
+  if (Array.isArray(m.vehicles)) for (const v of m.vehicles) upsertVehicle(v);
   updateCount();
 });
+// A shared vehicle moved/parked (someone else driving, or a driver released it).
+// Upsert the authoritative pose; rides.js + remotePlayers.js read it each frame.
+network.on("vehicle", (m) => upsertVehicle(m));
 network.on("player-joined", (m) => {
   remotes.add(m.player);
   updateCount();

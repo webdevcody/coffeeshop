@@ -96,6 +96,12 @@ export function createRides(scene, opts) {
   // beside the parked drivable car) yoinks it — vanish the traffic car + teleport our
   // drivable car onto its spot/heading + drop straight into drive. null when unwired.
   const getTraffic = opts.getTraffic || null;
+  // SHARED CAR (server-authoritative): getVehicle(id) returns the latest shared pose
+  // for a world vehicle (we only use "car-1"); network.sendVehicle pushes our pose
+  // while WE drive + once on exit. Both are null in a no-network context (the car
+  // then behaves exactly as the old local-only car).
+  const getVehicle = opts.getVehicle || null;
+  const network = opts.network || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -200,6 +206,49 @@ export function createRides(scene, opts) {
   function parkCollider(on) {
     if (on) Object.assign(carCollider, car.footprint());
     else Object.assign(carCollider, { minX: FAR, maxX: FAR, minZ: FAR, maxZ: FAR });
+  }
+
+  // --- SHARED CAR sync (server-authoritative) -------------------------------
+  // The single drivable car is the shared world object "car-1". While WE drive it
+  // we PUSH its pose to the server (throttled to every PUSH_EVERY frames) and keep
+  // our LOCAL copy of the shared pose in lock-step so that, the instant we park and
+  // exit, the non-drive mirror agrees with where we left it (we never receive our
+  // OWN relay back, so without this the mirror would snap the car to a stale pose).
+  // When we're NOT driving it, mirrorSharedCar() each frame drops the local car onto
+  // whatever pose the server last sent (someone else driving, or parked).
+  const CAR_VEHICLE_ID = "car-1";
+  const PUSH_EVERY = 6; // frames between outbound pose sends while driving (~10/s)
+  let _carPushTick = 0; // counts drive frames; reset to 0 on board so we send at once
+
+  // Latest shared pose object for our car (the live entry main.js mutates), or null
+  // before any welcome/relay (single-player / pre-connect → local car is authoritative).
+  function sharedCarPose() {
+    return getVehicle ? getVehicle(CAR_VEHICLE_ID) : null;
+  }
+
+  // Copy the local car.state into our local shared-pose entry so our mirror matches
+  // what we just sent. Scalars only — no allocation. No-op until the entry exists.
+  function writeSharedCar(driverId) {
+    const v = sharedCarPose();
+    if (!v) return;
+    v.x = car.state.x;
+    v.z = car.state.z;
+    v.heading = car.state.heading;
+    v.driverId = driverId;
+  }
+
+  // Mirror the shared (server-authoritative) pose onto the local car when we are NOT
+  // driving it: place the group + keep the parked footprint collider following it, so
+  // a car someone else drove/parked shows here at the synced spot (and still blocks
+  // you where they left it). Scalars only — no per-frame allocation.
+  function mirrorSharedCar() {
+    const v = sharedCarPose();
+    if (!v) return;
+    car.state.x = v.x;
+    car.state.z = v.z;
+    car.state.heading = v.heading;
+    car.syncGroup();
+    parkCollider(true); // footprint follows the parked car to its synced spot
   }
 
   // Same trick for the rocket: a tight footprint while parked, pushed far away
@@ -330,6 +379,11 @@ export function createRides(scene, opts) {
   // overrideWalk true means main.js should NOT run the normal walk update (driving
   // owns the avatar + camera this frame).
   function update(dt, camera, controls, local) {
+    // SHARED CAR: unless WE are the one driving it, keep the local car glued to the
+    // server-authoritative pose (someone else driving it, or it parked where it was
+    // left). Driving owns the pose instead (it PUSHES below), so we skip the mirror
+    // then to avoid fighting our own updates.
+    if (mode !== "drive") mirrorSharedCar();
     const useE = controls.consumeUse ? controls.consumeUse() : false;
     // Drain the F edge every frame (in any mode) so it can't carry over stale;
     // only the walk + fly branches act on it (toggle the jetpack on / land).
@@ -388,6 +442,14 @@ export function createRides(scene, opts) {
       local.pos.x = car.state.x;
       local.pos.z = car.state.z;
       local.facing = car.state.heading;
+      // SHARED CAR: we own the wheel — keep our local shared pose in lock-step every
+      // frame (so the mirror agrees the instant we exit) and PUSH it to the server on
+      // a throttle so everyone else sees the car move where we drive it. driverId =
+      // network.id claims us as the driver.
+      writeSharedCar(network ? network.id : null);
+      if (network && (_carPushTick++ % PUSH_EVERY) === 0) {
+        network.sendVehicle(CAR_VEHICLE_ID, "car", car.state.x, car.state.z, car.state.heading, network.id);
+      }
       if (useE) {
         const s = car.exitSpot();
         local.pos.x = s.x;
@@ -397,6 +459,11 @@ export function createRides(scene, opts) {
         local.character.group.rotation.y = s.facing;
         parkCollider(true);
         mode = "walk";
+        // SHARED CAR: send one final PARKED pose with driverId=null so the car is
+        // released + left exactly here for everyone (and is claimable by the next
+        // driver). Keep our local copy released too so the mirror doesn't re-claim it.
+        writeSharedCar(null);
+        if (network) network.sendVehicle(CAR_VEHICLE_ID, "car", car.state.x, car.state.z, car.state.heading, null);
         return { mode, prompt: "🚗 Press E to drive", overrideWalk: false };
       }
       return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
@@ -572,6 +639,7 @@ export function createRides(scene, opts) {
       if (nearCar) {
         parkCollider(false);
         car.resetCamera();
+        _carPushTick = 0; // claim the wheel on the next drive frame (send immediately)
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
@@ -591,6 +659,7 @@ export function createRides(scene, opts) {
           car.syncGroup();                // shove our drivable car onto its spot
           parkCollider(false);
           car.resetCamera();
+          _carPushTick = 0; // claim the wheel on the next drive frame (send immediately)
           mode = "drive";
           return { mode, prompt: "🚗 Car jacked! WASD to drive · E to exit", overrideWalk: true };
         }

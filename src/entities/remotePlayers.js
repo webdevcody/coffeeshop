@@ -56,10 +56,15 @@ const SEAT_Y = { car: 0.6, boat: 0.34, rocket: 1.25, plane: 0.58, heli: 0.6 };
 const RIG_BASE_Y = { car: 0, boat: WATER_Y, rocket: ROCKET_BASE_Y, plane: 0, heli: 0 };
 
 export class RemotePlayers {
-  constructor(scene) {
+  constructor(scene, opts = {}) {
     this.scene = scene;
     /** @type {Map<string, object>} */
     this.players = new Map();
+    // SHARED CAR: getVehicle(id) returns the server-authoritative pose for a shared
+    // world vehicle ("car-1"). When a remote player is driving the car we pose their
+    // car PROXY from this so it lands on the exact authoritative spot for everyone,
+    // rather than just chasing that avatar's (lerped) position. null when unwired.
+    this.getVehicle = opts.getVehicle || null;
   }
 
   add(p) {
@@ -317,8 +322,18 @@ export class RemotePlayers {
       // here, sharing the avatar's seat origin so the posed avatar sits in it. The
       // worn proxy (board/jetpack) is parented under the avatar and moves with it.
       if (e.rideGroup) {
-        e.rideGroup.position.set(g.position.x, (RIG_BASE_Y[e.ride] || 0) + e.curY, g.position.z);
-        e.rideGroup.rotation.y = g.rotation.y;
+        // SHARED CAR: a remote driving the shared car gets its proxy posed from the
+        // server-authoritative "car-1" pose (so it matches the spot everyone sees),
+        // falling back to this avatar's lerped position if the pose isn't known yet.
+        // Other rig rides (boat/rocket/plane/heli) still track the avatar.
+        const sv = e.ride === "car" && this.getVehicle ? this.getVehicle("car-1") : null;
+        if (sv) {
+          e.rideGroup.position.set(sv.x, RIG_BASE_Y.car || 0, sv.z);
+          e.rideGroup.rotation.y = sv.heading;
+        } else {
+          e.rideGroup.position.set(g.position.x, (RIG_BASE_Y[e.ride] || 0) + e.curY, g.position.z);
+          e.rideGroup.rotation.y = g.rotation.y;
+        }
         e.rideGroup.userData.spin?.(dt); // cheap moving bits: wheels / prop / rotor / flame
       }
       if (e.worn) e.worn.userData.spin?.(dt); // jetpack flame pulse
