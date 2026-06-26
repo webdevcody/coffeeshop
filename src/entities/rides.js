@@ -14,6 +14,7 @@ import { makeJetpack, FLY } from "./jetpack.js";
 
 const FAR = 1e9;
 const CAR_REACH = 3.2; // how close you must be to enter the car
+const STEAL_REACH = 3.5; // how close you must be to a moving traffic car to car-jack it
 const BOAT_REACH = 4.0; // how close (at a dock) you must be to board the boat
 const ROCKET_REACH = 6.0; // how close (on the launchpad) you must be to board the rocket
 const ROCKET_CEIL = 300; // rocket flight ceiling (m) passed to rocket.drive — clears the station
@@ -90,6 +91,11 @@ export function createRides(scene, opts) {
   // threaded in — then the plane + heli are never created/offered. Provides
   // planeSpawn (west runway threshold) + heliSpawn (south helipad).
   const airport = opts.airport || null;
+  // GTA car-jacking: a fn returning the live roaming traffic cars
+  // [{ x, z, heading, hide() }]. When supplied, pressing E next to one (and NOT
+  // beside the parked drivable car) yoinks it — vanish the traffic car + teleport our
+  // drivable car onto its spot/heading + drop straight into drive. null when unwired.
+  const getTraffic = opts.getTraffic || null;
 
   const car = makeCar({ x: spawn.x, z: spawn.z, heading: spawn.heading, color: opts.carColor || "#d23b34" });
   scene.add(car.group);
@@ -569,6 +575,26 @@ export function createRides(scene, opts) {
         mode = "drive";
         return { mode, prompt: "🚗 WASD to drive · E to exit", overrideWalk: true };
       }
+      // CAR-JACK: not beside the parked car, but standing next to a moving traffic
+      // car? Yoink it GTA-style — vanish that traffic car, snap our drivable car onto
+      // its position + heading, and drop straight into drive. Outdoors only (traffic
+      // only exists on the streets), and it sits right after the parked-car board so
+      // a real parked car always wins.
+      if (outdoors && getTraffic) {
+        const t = nearestTraffic(local.pos.x, local.pos.z);
+        if (t) {
+          t.hide();                       // make the stolen traffic car disappear
+          car.state.x = t.x;
+          car.state.z = t.z;
+          car.state.heading = t.heading;
+          car.state.speed = 0;
+          car.syncGroup();                // shove our drivable car onto its spot
+          parkCollider(false);
+          car.resetCamera();
+          mode = "drive";
+          return { mode, prompt: "🚗 Car jacked! WASD to drive · E to exit", overrideWalk: true };
+        }
+      }
       // BOAT: reachable only from a dock (it floats in the water). Boards between
       // the car and the interactables in the E-priority order.
       if (nearBoat) {
@@ -726,6 +752,21 @@ export function createRides(scene, opts) {
     // 4) Publish the visual channels so local.update applies them this frame.
     local.rideLift = skate.lift;
     local.rideSpin = skate.spin;
+  }
+
+  // Nearest stealable traffic car within STEAL_REACH of (x,z), else null. getTraffic()
+  // is only invoked here on an E press (never per frame), so its fresh array is fine.
+  function nearestTraffic(x, z) {
+    if (!getTraffic) return null;
+    const list = getTraffic();
+    let best = null, bestD = STEAL_REACH * STEAL_REACH;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      const dx = e.x - x, dz = e.z - z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
   }
 
   // First ramp footprint containing (x,z), else null.

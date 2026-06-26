@@ -47,7 +47,7 @@ const postFX = createPostFX(renderer, scene, camera);
 // its own onResize (camera aspect + renderer/label sizes) to the resize event;
 // we add a second listener that resizes the composer with the same dimensions.
 window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
-const { colliders, seats, bar, ground, spawn, tables, update: updateWorld } = buildCoffeeshop(scene);
+const { colliders, seats, bar, ground, spawn, tables, getTraffic, getPedestrians, update: updateWorld } = buildCoffeeshop(scene);
 
 // OCEAN: wraps the whole city in a huge animated sea so the landmass reads as an
 // island — adds a beach apron, a main dock + drivable boat, and four little
@@ -120,6 +120,7 @@ const rides = createRides(scene, {
   colliders: collidersAll,
   isGround: isGroundFn,
   carSpawn: { x: 4, z: 18, heading: 0 },
+  getTraffic, // GTA car-jacking: E beside a moving traffic car yoinks it (handled in rides.js)
   interactables, // E priority: car > boat > rocket > interactable > skateboard (handled in rides.js)
   ocean, // drivable boat lives in the sea; boarded from a dock (handled in rides.js)
   space, // launchable rocket parks on space.rocketSpawn; jetpack fly mode (F) lives here too
@@ -206,6 +207,9 @@ const CANNON_WALKIN_R = 1.3;
 
 let local = null;
 let joined = false;
+// GTA cash: grows when you rob a pedestrian (R near one). Shown in the top-left HUD
+// money counter each frame while joined.
+let money = 0;
 // SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
 // on the walk/fall → swim transition (entering the sea), not every frame afloat.
 let _wasSwimming = false;
@@ -721,6 +725,26 @@ function frame() {
       // SWIM: splash one-shot on the moment we hit the water (not while afloat).
       if (local.swimming && !_wasSwimming) audio.splash();
       _wasSwimming = local.swimming;
+      // ROB (R): mug the nearest pedestrian within ~2.5 m. rob() pays out a one-off
+      // $5..$50 (0 if that ped was robbed too recently — no farming) and triggers the
+      // ped's hands-up/flee reaction. Cash lands in `money`, with a blip + toast.
+      if (controls.consumeRob() && !local.sitting && getPedestrians) {
+        const peds = getPedestrians();
+        let best = null, bestD = 2.5 * 2.5;
+        for (let i = 0; i < peds.length; i++) {
+          const dx = peds[i].x - local.pos.x, dz = peds[i].z - local.pos.z;
+          const d = dx * dx + dz * dz;
+          if (d < bestD) { bestD = d; best = peds[i]; }
+        }
+        if (best) {
+          const cash = best.rob();
+          if (cash > 0) {
+            money += cash;
+            audio.blip();
+            hud.toast(`Robbed $${cash}!`);
+          }
+        }
+      }
       // True first-person while seated at a board: hide your OWN avatar so your body
       // doesn't fill the screen (only affects your local view; others still see you).
       if (local.character?.group) {
@@ -743,6 +767,9 @@ function frame() {
       // while running and flashes when drained.
       hud.setStamina(local.staminaPct, local.sprinting);
     }
+    // GTA money counter: reflect the running cash total (top-left) every frame
+    // while joined — covers both the on-foot and in-vehicle branches above.
+    hud.setMoney(money);
     // City minimap: redraw from this frame's positions (local arrow + facing,
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();

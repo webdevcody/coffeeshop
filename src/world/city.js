@@ -76,10 +76,17 @@ export function buildCity(scene) {
   }
 
   // Ambient life: cars driving the road grid + pedestrians on the sidewalks.
+  // GTA hooks: getTraffic()/getPedestrians() surface the live roaming cars + people
+  // so the player can steal/rob them. Default to empty accessors if life fails to
+  // build, so the gameplay layer above can call them unconditionally.
+  let getTraffic = () => [];
+  let getPedestrians = () => [];
   try {
     const life = buildCityLife();
     if (life && life.group) group.add(life.group);
     if (typeof life.update === "function") updates.push(life.update);
+    if (typeof life.getTraffic === "function") getTraffic = life.getTraffic;
+    if (typeof life.getPedestrians === "function") getPedestrians = life.getPedestrians;
   } catch (e) {
     console.warn("[city] cityLife failed", e);
   }
@@ -124,5 +131,5 @@ export function buildCity(scene) {
     }
   };
 
-  return { group, colliders, ground, update };
+  return { group, colliders, ground, update, getTraffic, getPedestrians };
 }

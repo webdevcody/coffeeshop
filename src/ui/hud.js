@@ -89,6 +89,7 @@ export class HUD {
           <div class="custom-row"><span class="custom-label">Clothing</span><div class="swatch-row" id="cloth-swatches"></div></div>
         </div>
       </div>
+      <div class="money-hud hidden" id="money-hud">$0</div>
       <div class="topbar">
         <div class="pill" id="count-pill">☕ 1 here</div>
         <button class="pill people-btn" id="people-btn">👥 People</button>
@@ -147,6 +148,7 @@ export class HUD {
     this.shopPanel = ui.querySelector("#shop-panel");
     this.shopList = ui.querySelector("#shop-list");
     this.heldEl = ui.querySelector("#held-item");
+    this.moneyHud = ui.querySelector("#money-hud");
     this.chatInput = ui.querySelector("#chat-input");
     const form = ui.querySelector("#chat-bar");
 
@@ -248,6 +250,17 @@ export class HUD {
 
   setCount(n) {
     this.countPill.textContent = `☕ ${n} here`;
+  }
+
+  // GTA cash counter (top-left). Shown only once joined; called each frame by
+  // main.js with the running total. Allocation-free (only writes text when it
+  // actually changes).
+  setMoney(n) {
+    if (!this.moneyHud) return;
+    if (!this.joined) { this.moneyHud.classList.add("hidden"); return; }
+    this.moneyHud.classList.remove("hidden");
+    const txt = `$${n | 0}`;
+    if (this.moneyHud.textContent !== txt) this.moneyHud.textContent = txt;
   }
 
   // Brief, self-dismissing message centered near the top (e.g. "table full").

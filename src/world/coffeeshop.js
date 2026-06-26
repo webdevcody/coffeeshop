@@ -1207,7 +1207,13 @@ export function buildCoffeeshop(scene) {
     }
   };
 
-  return { group, colliders, lights, seats, bar, ground, spawn, tables, update };
+  // GTA hooks surfaced up to main.js: getTraffic() (roaming cars you can steal) and
+  // getPedestrians() (people you can rob). Both come straight from cityLife via city.
+  return {
+    group, colliders, lights, seats, bar, ground, spawn, tables, update,
+    getTraffic: city.getTraffic,
+    getPedestrians: city.getPedestrians,
+  };
 }
 
 // Register an axis-aligned box collider centered at (cx, cz) with full size (w, d).

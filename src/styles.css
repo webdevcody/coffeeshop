@@ -618,6 +618,31 @@ body {
 .look-corner .pill {
   pointer-events: auto;
 }
+
+/* ---------- GTA money counter (top-left, under the Customize button) ---------- */
+.money-hud {
+  position: fixed;
+  top: 56px;
+  left: 14px;
+  pointer-events: none;
+  background: rgba(20, 32, 18, 0.82);
+  color: #7df08a;
+  border: 1px solid rgba(125, 240, 138, 0.4);
+  border-radius: 999px;
+  padding: 6px 15px;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  z-index: 5;
+}
+.money-hud.hidden {
+  display: none;
+}
+
 .customize-panel {
   width: min(86vw, 250px);
   background: rgba(34, 22, 14, 0.92);
