@@ -21,6 +21,23 @@ const CAR = {
   camHeight: 3.6,
   camLook: 1.0,
   camEase: 4.5,
+  // Free-look chase orbit (GTA-style). The cam sits on a sphere of radius camDist
+  // around the look point; camBasePitch reproduces the old fixed (camBack/camHeight)
+  // framing when no `controls` is passed. Pitch is clamped to [camMinPitch,camMaxPitch].
+  camDist: 7.94,      // ≈ hypot(camBack, camHeight - camLook); orbit radius
+  camBasePitch: 0.33, // ≈ atan2(camHeight - camLook, camBack); resting chase pitch
+  camMinPitch: 0.1,
+  camMaxPitch: 1.05,
+};
+
+// NOS boost tuning (shared feel with the boat). Level 1 = Shift, level 2 = Shift+Ctrl.
+const NOS = {
+  mult1: 1.5,    // level-1 top-speed + accel multiplier
+  mult2: 2.1,    // level-2 (EXTREME) multiplier
+  drain1: 0.30,  // tank drain /s at level 1
+  drain2: 0.6,   // tank drain /s at level 2 (extreme burns faster)
+  regen: 0.15,   // tank refill /s when not boosting
+  rearm: 0.1,    // after the tank empties it must refill past this before NOS re-arms
 };
 
 function box(w, h, d, color, opts = {}) {
@@ -274,6 +291,23 @@ function buildCarGroup(color) {
   ring.visible = false;
   g.add(ring);
 
+  // --- NOS exhaust flames (rear): twin cones tucked under the bumper that flare
+  // out the back while the driver is boosting. Hidden at rest; drive() flickers
+  // their opacity/length + tints them (blue normal, orange EXTREME). Cheap: one
+  // shared MeshBasicMaterial, no per-frame allocation. ---
+  const nosMat = new THREE.MeshBasicMaterial({ color: "#7fdfff", transparent: true, opacity: 0, depthWrite: false });
+  const nosGeo = new THREE.ConeGeometry(0.13, 0.9, 12);
+  const nosFlames = [];
+  for (const nx of [-0.5, 0.5]) {
+    const fl = new THREE.Mesh(nosGeo, nosMat);
+    fl.rotation.x = -Math.PI / 2; // cone apex points out the back (-Z)
+    fl.position.set(nx, 0.5, -2.05);
+    fl.visible = false;
+    g.add(fl);
+    nosFlames.push(fl);
+  }
+  g.userData.nos = { flames: nosFlames, mat: nosMat };
+
   // Stash material/mesh refs + idle baselines so drive() can mutate emissive
   // intensity in place each frame with zero per-frame allocation.
   g.userData.wheels = wheels;
@@ -299,6 +333,8 @@ export function makeCar(opts = {}) {
     z: opts.z ?? 0,
     heading: opts.heading ?? 0,
     speed: 0,
+    nos: 1,         // NOS tank, 0..1 (full at spawn) — read by the HUD gauge
+    boosting: false, // true while NOS is actively firing — read by the HUD gauge
   };
   group.position.set(state.x, 0, state.z);
   group.rotation.y = state.heading;
@@ -306,6 +342,9 @@ export function makeCar(opts = {}) {
   const _camPos = new THREE.Vector3();
   const _camLook = new THREE.Vector3();
   let _camInit = false;
+  let _baseYaw = 0;     // orbit-yaw captured on (re)board so free-look starts behind the car
+  let _nosEmpty = false; // latched true when the tank bottoms out; cleared once it refills past NOS.rearm
+  const _nos = group.userData.nos;
 
   // Horn honk state: countdown timer (seconds remaining) ticked down in drive().
   // Self-contained + visual-only (no audio) so horn() can be called anywhere.
@@ -323,10 +362,31 @@ export function makeCar(opts = {}) {
   // colliders: world AABBs; isGround(x,z): bool. Returns nothing.
   function drive(dt, input, colliders, isGround) {
     const { throttle, steer } = input;
+    const boost = input.boost || 0; // 0|1|2 NOS level (Shift / Shift+Ctrl in a vehicle)
     const prevSpeed = state.speed; // for "speed dropping" brake-light detection
+
+    // --- NOS boost: holding Shift (1) / Shift+Ctrl (2) while throttling FORWARD
+    // burns the tank for extra top speed + accel; otherwise the tank slowly refills.
+    // Never fires without throttle or with an empty tank, and once the tank bottoms
+    // out it must refill past NOS.rearm before it re-arms (so empty ≠ stutter). ---
+    if (state.nos <= 0.001) _nosEmpty = true;
+    if (state.nos >= NOS.rearm) _nosEmpty = false;
+    const boosting = boost > 0 && throttle > 0 && !_nosEmpty && state.nos > 0;
+    state.boosting = boosting;
+    let maxSpeed = CAR.maxSpeed;
+    let accel = CAR.accel;
+    if (boosting) {
+      const mult = boost >= 2 ? NOS.mult2 : NOS.mult1;
+      maxSpeed *= mult;
+      accel *= mult;
+      state.nos = Math.max(0, state.nos - (boost >= 2 ? NOS.drain2 : NOS.drain1) * dt);
+    } else {
+      state.nos = Math.min(1, state.nos + NOS.regen * dt);
+    }
+
     // Longitudinal
     if (throttle > 0) {
-      state.speed += CAR.accel * throttle * dt;
+      state.speed += accel * throttle * dt;
     } else if (throttle < 0) {
       // brake first if moving forward, else reverse
       if (state.speed > 0.1) state.speed -= CAR.brake * dt;
@@ -337,7 +397,7 @@ export function makeCar(opts = {}) {
       if (state.speed > 0) state.speed = Math.max(0, state.speed - f);
       else if (state.speed < 0) state.speed = Math.min(0, state.speed + f);
     }
-    state.speed = Math.max(-CAR.maxReverse, Math.min(CAR.maxSpeed, state.speed));
+    state.speed = Math.max(-CAR.maxReverse, Math.min(maxSpeed, state.speed));
 
     // Steering — proportional to how fast we're going, and reversed in reverse.
     if (Math.abs(state.speed) > 0.05) {
@@ -403,6 +463,24 @@ export function makeCar(opts = {}) {
         _lights.head.emissiveIntensity = _lights.headBase;
       }
     }
+
+    // --- NOS flames: flicker + stretch the twin cones while boosting, tinted blue
+    // (level 1) or orange (EXTREME level 2). Mutates the shared material/meshes in
+    // place — no per-frame allocation. ---
+    if (_nos) {
+      if (boosting) {
+        const flicker = 0.75 + Math.random() * 0.25;
+        _nos.mat.opacity = 0.85 * flicker;
+        _nos.mat.color.setHex(boost >= 2 ? 0xff7a3c : 0x7fdfff);
+        const len = (boost >= 2 ? 1.7 : 1.1) * flicker;
+        for (const fl of _nos.flames) {
+          fl.visible = true;
+          fl.scale.set(1, len, 1);
+        }
+      } else if (_nos.flames[0].visible) {
+        for (const fl of _nos.flames) fl.visible = false;
+      }
+    }
   }
 
   // Visual horn honk — flashes the headlights + an expanding ring for ~0.45s.
@@ -412,11 +490,30 @@ export function makeCar(opts = {}) {
     _honk = HONK_TIME;
   }
 
-  // Trailing chase camera behind the car.
-  function updateCamera(camera, dt) {
+  // Trailing chase camera behind the car. With free-look, controls.orbit.yaw swings
+  // the chase angle around the car (GTA-style) and controls.orbit.pitch raises/lowers
+  // it; the offset is HELD (no auto-recenter) for a true free-look. When `controls`
+  // is absent it falls back to the old fixed behind-the-car chase. Scratch-vector
+  // reuse keeps it allocation-free.
+  function updateCamera(camera, dt, controls) {
+    // Free-look offsets from the mouse-drag orbit. The yaw baseline is captured on
+    // (re)board so the view starts directly behind the car, then the drag delta
+    // swings it; pitch rides the orbit pitch (already clamped in controls.js).
+    let yawOff = 0;
+    let pitch = CAR.camBasePitch;
+    if (controls && controls.orbit) {
+      if (!_camInit) _baseYaw = controls.orbit.yaw;
+      yawOff = controls.orbit.yaw - _baseYaw;
+      pitch = Math.max(CAR.camMinPitch, Math.min(CAR.camMaxPitch, controls.orbit.pitch));
+    }
+    const ang = state.heading + yawOff;
+    const sa = Math.sin(ang);
+    const ca = Math.cos(ang);
+    const horiz = CAR.camDist * Math.cos(pitch);
+    const vert = CAR.camDist * Math.sin(pitch);
+    _camPos.set(state.x - sa * horiz, vert + CAR.camLook, state.z - ca * horiz);
     const fx = Math.sin(state.heading);
     const fz = Math.cos(state.heading);
-    _camPos.set(state.x - fx * CAR.camBack, CAR.camHeight, state.z - fz * CAR.camBack);
     _camLook.set(state.x + fx * 2.0, CAR.camLook, state.z + fz * 2.0);
     if (!_camInit) {
       camera.position.copy(_camPos);

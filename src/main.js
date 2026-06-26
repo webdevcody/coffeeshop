@@ -647,10 +647,15 @@ function frame() {
       hud.setSitPrompt(null);
       hud.setShopVisible(false);
       hud.setHeldItem(null);
-      const speed = ride.mode === "boat" ? (rides.boat?.state?.speed ?? 0)
-        : ride.mode === "rocket" ? (rides.rocket?.state?.speed ?? 0)
-        : rides.car.state.speed;
-      hud.setDriveHud(true, speed); // speedometer + drive/sail/launch hint
+      const vstate = ride.mode === "boat" ? rides.boat?.state
+        : ride.mode === "rocket" ? rides.rocket?.state
+        : rides.car?.state;
+      const speed = vstate?.speed ?? 0;
+      // NOS gauge: car/boat expose state.nos + state.boosting; the rocket has no tank
+      // (pass null → the gauge hides itself).
+      const nos = ride.mode === "rocket" ? null : (vstate?.nos ?? null);
+      const boosting = vstate?.boosting ?? false;
+      hud.setDriveHud(true, speed, nos, boosting); // speedometer + NOS gauge + hint
       // Vehicle engine hum, pitch/level rising with speed (top speed ~12 m/s).
       audio.setEngine(true, Math.min(1, Math.abs(speed) / 12));
     } else {

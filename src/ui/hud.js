@@ -120,6 +120,7 @@ export class HUD {
       </div>
       <div class="drive-hud hidden" id="drive-hud">
         <div class="speedo"><span class="speedo-num" id="speedo-num">0</span><span class="speedo-unit">km/h</span></div>
+        <div class="nos-gauge hidden" id="nos-gauge"><span class="nos-label">NOS</span><div class="nos-track"><div class="nos-fill" id="nos-fill"></div></div></div>
         <div class="drive-hint" id="drive-hint">WASD to drive · E to exit</div>
       </div>
       <form class="chat-bar" id="chat-bar" autocomplete="off">
@@ -155,6 +156,8 @@ export class HUD {
     this.driveHud = ui.querySelector("#drive-hud");
     this.speedoNum = ui.querySelector("#speedo-num");
     this.driveHint = ui.querySelector("#drive-hint");
+    this.nosGauge = ui.querySelector("#nos-gauge");
+    this.nosFill = ui.querySelector("#nos-fill");
     this.minimapCanvas = ui.querySelector("#minimap-canvas");
     this._initMinimap();
 
@@ -695,14 +698,29 @@ export class HUD {
 
   // --- Driving HUD ---------------------------------------------------------
   // Show the speedometer + drive hint while driving (mode "drive"); hide it
-  // otherwise. `speed` is the car's signed m/s; we show absolute km/h.
-  setDriveHud(active, speed = 0) {
+  // otherwise. `speed` is the vehicle's signed m/s; we show absolute km/h.
+  // `nos` (0..1) drives the NOS tank gauge beside the speedo — pass null to hide it
+  // (the rocket has no tank). `boosting` tints the gauge while NOS is firing; an
+  // empty tank flashes. Extra params are optional so older callers still work.
+  setDriveHud(active, speed = 0, nos = null, boosting = false) {
     if (!this.driveHud) return;
     this.driveHud.classList.toggle("hidden", !active);
     if (!active) return;
     const kmh = Math.round(Math.abs(speed) * 3.6);
     const txt = String(kmh);
     if (this.speedoNum.textContent !== txt) this.speedoNum.textContent = txt;
+    // NOS gauge: only shown when a tank value is supplied (car/boat). Allocation-free.
+    if (this.nosGauge) {
+      if (nos == null) {
+        this.nosGauge.classList.add("hidden");
+      } else {
+        this.nosGauge.classList.remove("hidden");
+        const p = Math.max(0, Math.min(1, nos));
+        this.nosFill.style.width = (p * 100).toFixed(1) + "%";
+        this.nosGauge.classList.toggle("boosting", !!boosting);
+        this.nosGauge.classList.toggle("empty", p <= 0.02);
+      }
+    }
   }
 
   addChatLog(name, text, color) {

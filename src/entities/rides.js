@@ -296,8 +296,11 @@ export function createRides(scene, opts) {
 
     if (mode === "boat") {
       const { throttle, steer } = controls.driveAxis();
-      boat.drive(dt, throttle, steer, ocean.isWater);
-      boat.updateCamera(camera, dt);
+      // Shift = NOS boost, Shift+Ctrl = EXTREME. In a vehicle the sprint tier means
+      // NOS (not on-foot sprint), so there's no conflict. Threaded as drive()'s 5th arg.
+      const boost = controls.sprintLevel();
+      boat.drive(dt, throttle, steer, ocean.isWater, boost);
+      boat.updateCamera(camera, dt, controls); // pass controls for mouse free-look
       // Glue the (hidden) avatar + networked position to the boat so exiting is
       // seamless and remotes see you sailing, not frozen on the dock.
       local.pos.x = boat.state.x;
@@ -318,8 +321,13 @@ export function createRides(scene, opts) {
     }
 
     if (mode === "drive") {
-      car.drive(dt, controls.driveAxis(), colliders, isGround);
-      car.updateCamera(camera, dt);
+      // Shift = NOS boost, Shift+Ctrl = EXTREME (sprint tier = NOS in a vehicle, no
+      // on-foot conflict). Thread it into the car's drive input by reusing the axis
+      // object driveAxis() already allocated (no extra per-frame allocation).
+      const axis = controls.driveAxis();
+      axis.boost = controls.sprintLevel();
+      car.drive(dt, axis, colliders, isGround);
+      car.updateCamera(camera, dt, controls); // pass controls for mouse free-look
       // Keep the (hidden) avatar + networked position riding along with the car so
       // exiting is seamless and remote players see you move, not freeze.
       local.pos.x = car.state.x;
