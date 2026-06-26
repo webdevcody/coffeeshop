@@ -183,7 +183,15 @@ export function buildCoffeeshop(scene) {
   // Wall colliders (thin boxes just inside each wall). The front wall leaves a
   // gap at the entrance so you can walk through it.
   const t = 0.3;
-  addBox(colliders, 0, -halfD + t / 2, WORLD.width, t); // back
+  // BACK WALL: split into two segments leaving a doorway gap at x∈[-2,2], aligned
+  // with the SECRET CANNON room's doorway behind the cafe (cannon.js front wall at
+  // z=-13, same x∈[-2,2] gap). The cannon's own sliding door blocks/clears this
+  // opening; with the door open you walk straight through into the hidden room.
+  // The rest of the back wall stays solid. (Mirrors the front-entrance split above.)
+  const backDoorHalf = 2; // half-width of the secret passage (matches cannon DOOR_HALF)
+  const backSegW = halfW - backDoorHalf; // width of each back-wall segment (11)
+  addBox(colliders, -(backDoorHalf + backSegW / 2), -halfD + t / 2, backSegW, t); // back-left
+  addBox(colliders, backDoorHalf + backSegW / 2, -halfD + t / 2, backSegW, t); // back-right
   addBox(colliders, -(doorHalf + sideW / 2), halfD - t / 2, sideW, t); // front-left
   addBox(colliders, doorHalf + sideW / 2, halfD - t / 2, sideW, t); // front-right
   addBox(colliders, -halfW + t / 2, 0, t, WORLD.depth); // left

@@ -96,6 +96,16 @@ export class LocalPlayer {
     // respawn and the Space=jump/sit handling is suppressed (Space is thrust).
     // Cleared back to false on landing, which resumes normal gravity/ground.
     this.flying = false;
+    // SECRET-CANNON LAUNCH. launchSelf() fires us out of the cannon: it sets an
+    // upward vy AND a constant horizontal glide (_launchVX/_launchVZ) that
+    // _updateVertical adds to pos.x/pos.z every airborne frame, so we arc clear
+    // across the map (over rooftops — no mid-air collision) and land wherever the
+    // descent meets ground / water / the void. `launched` gates the glide so plain
+    // jumps/falls are untouched; it's cleared the instant we leave the arc
+    // (landing, splashing in, sitting, jetpack, or void-respawn).
+    this.launched = false;
+    this._launchVX = 0;
+    this._launchVZ = 0;
     // SWIM / FLOAT. `isWater(x,z)` is injected by the app (main.js → setIsWater)
     // so _updateVertical can tell OPEN WATER apart from the void; the default
     // returns false so legacy/single-arg constructor callers keep the old
@@ -293,7 +303,7 @@ export class LocalPlayer {
     }
     this.staminaPct = this.stamina;
 
-    if (this.moving) {
+    if (this.moving && !this.launched) {
       const inv = 1 / intent;
       // speedMul lets a ride (skateboard) boost ground speed without touching the
       // base walk speed. Default 1 (plain walking). sprintFactor is the on-foot
@@ -368,6 +378,7 @@ export class LocalPlayer {
   _updateVertical(dt) {
     if (this.sitting) {
       this.pos.y = 0; this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
+      if (this.launched) this._clearLaunch();
       return;
     }
     // FLY (jetpack): rides.js owns pos.y (altitude) this frame, so skip the
@@ -376,6 +387,7 @@ export class LocalPlayer {
     // resumes the normal walk/fall logic cleanly next frame.
     if (this.flying) {
       this.vy = 0; this.airborne = false; this.falling = false; this.swimming = false;
+      if (this.launched) this._clearLaunch(); // jetpack took over — drop the cannon glide
       return;
     }
     const onGround = this._isGround(this.pos.x, this.pos.z);
@@ -427,11 +439,25 @@ export class LocalPlayer {
     this.vy -= FALL.gravity * dt;
     this.pos.y += this.vy * dt;
     this.falling = this.vy < 0;
+    // CANNON GLIDE: while launched, carry the horizontal velocity each airborne
+    // frame so the shot arcs across the map. No collision is resolved here — we're
+    // sailing OVER the rooftops, and the colliders are flat XZ footprints with no
+    // height, so resolving them would wrongly snag us mid-air. Clamp to the same
+    // generous outer backstop the walk integrator uses so position stays finite,
+    // and aim the body along the glide so we face where we fly.
+    if (this.launched) {
+      this.pos.x += this._launchVX * dt;
+      this.pos.z += this._launchVZ * dt;
+      this.pos.x = Math.max(this.bounds.minX - 3, Math.min(this.bounds.maxX + 3, this.pos.x));
+      this.pos.z = Math.max(this.bounds.minZ - 3, Math.min(this.bounds.maxZ + 3, this.pos.z));
+      if (this._launchVX || this._launchVZ) this.facing = Math.atan2(this._launchVX, this._launchVZ);
+    }
     // Land when descending back to the floor over solid ground. The floor is 0 on
     // the city/ocean and stationFloorY on the orbital station deck, so a hop on the
     // station settles back onto the deck (≈260) instead of plunging through it.
     if (this.vy <= 0 && this.pos.y <= floorY && onGround) {
       this.pos.y = floorY; this.vy = 0; this.airborne = false; this.falling = false;
+      if (this.launched) this._clearLaunch(); // landed → resume normal walking
       return;
     }
     // Descending into OPEN WATER — splash in and start swimming instead of
@@ -453,6 +479,7 @@ export class LocalPlayer {
     this.airborne = false;
     this.falling = false;
     this._swimT = 0;
+    if (this.launched) this._clearLaunch(); // splashed down mid-arc → end the glide
   }
 
   // Climb out onto solid ground: back to a normal standing pose.
@@ -462,6 +489,7 @@ export class LocalPlayer {
     this.vy = 0;
     this.airborne = false;
     this.falling = false;
+    if (this.launched) this._clearLaunch();
   }
 
   // A standing hop. Only from the ground, on foot (not seated, not skating — a
@@ -512,6 +540,7 @@ export class LocalPlayer {
     this.airborne = false;
     this.swimming = false;
     this.facing = Math.PI;
+    if (this.launched) this._clearLaunch(); // overshot into the void → land back at the cafe
   }
 
   // Nearest seat within reach, or null. Note: occupancy isn't tracked on the
@@ -558,6 +587,34 @@ export class LocalPlayer {
   // Public stand-up, used by the game overlay's "Leave game" button.
   standUp() {
     if (this.sitting) this._stand();
+  }
+
+  // Fire the player out of the SECRET CANNON. `v` = { vx, vy, vz } from
+  // cannon.launch(): vy is the initial upward speed and (vx, vz) the horizontal
+  // glide added to pos each airborne frame until landing, so we arc across the
+  // city. Robust by construction: bad/NaN input is ignored, any current state is
+  // cleared (stand up if seated, cancel swim/jetpack), and the arc resolves
+  // through the existing land / splash / void-respawn paths so it can never wedge.
+  launchSelf(v) {
+    if (!v) return;
+    const vx = +v.vx, vy = +v.vy, vz = +v.vz;
+    if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(vz)) return;
+    if (this.sitting) this._stand();
+    this.swimming = false;
+    this.flying = false;
+    this.vy = vy;
+    this.airborne = true;
+    this.falling = vy < 0;
+    this.launched = true;
+    this._launchVX = vx;
+    this._launchVZ = vz;
+  }
+
+  // Stop the cannon glide (called the instant we leave the launch arc).
+  _clearLaunch() {
+    this.launched = false;
+    this._launchVX = 0;
+    this._launchVZ = 0;
   }
 
   // Hint text for the HUD: prompt to sit when near a seat, to stand when seated.

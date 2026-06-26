@@ -12,6 +12,7 @@ import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
 import { buildAirport } from "./world/airport.js";
+import { buildCannon } from "./world/cannon.js";
 import { buildInteractables } from "./world/interactables.js";
 import { LocalPlayer } from "./entities/localPlayer.js";
 import { createRides } from "./entities/rides.js";
@@ -80,6 +81,16 @@ scene.add(space.group);
 // airport.heliSpawn (south helipad) — both built in rides.js.
 const airport = buildAirport({ landBounds });
 scene.add(airport.group);
+// SECRET CANNON: a hidden STONE ROOM behind the cafe (centred at z=-22) holding a
+// giant human-cannonball CANNON, wired EXACTLY like the OCEAN / SPACE / AIRPORT
+// add-ons — its group is added to the scene and its world (the room floor +
+// doorway threshold as walkable `ground`, the brick walls / carriage / wheels /
+// crates + the sliding secret door as solid `colliders`) is merged below. A
+// sliding door in the cafe-facing wall (opened from the cafe via cannon.doorTrigger)
+// reveals the room; standing under the muzzle fires the player in a high arc over
+// the city (cannon.launch() → local.launchSelf()). Pumped each frame in frame().
+const cannon = buildCannon({ landBounds });
+scene.add(cannon.group);
 // Merged world surfaces: beaches/docks/island tops + the launchpad apron become
 // walkable; island props (huts, palms, rail posts) + the gantry/fuel-tanks/flood
 // masts become solid. Used everywhere `ground`/`colliders` are consumed by the
@@ -88,8 +99,8 @@ scene.add(airport.group);
 // walkable ground (the player is LIFTED to space.stationFloorY on them — see
 // local.setStation below) and its hull-wall / console AABBs join the colliders so
 // you can't walk through them while strolling the station at altitude.
-const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground);
-const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders);
+const groundAll = ground.concat(ocean.ground, space.ground, space.stationGround, airport.ground, cannon.ground);
+const collidersAll = colliders.concat(ocean.colliders, space.colliders, space.stationColliders, airport.colliders, cannon.colliders);
 
 const controls = createControls(canvas);
 // Rideables: a stealable car (parked just outside the cafe door) + a summonable
@@ -188,6 +199,10 @@ const _flashTgt = new THREE.Vector3();
 // muzzle point (hand world position nudged forward), _shotDir the camera aim.
 const _shotOrigin = new THREE.Vector3();
 const _shotDir = new THREE.Vector3();
+// SECRET CANNON reach radii (XZ, metres): press E within LOAD of the muzzle to
+// fire, or simply walk into the muzzle mouth (WALKIN) to be launched hands-free.
+const CANNON_LOAD_R = 2.5;
+const CANNON_WALKIN_R = 1.3;
 
 let local = null;
 let joined = false;
@@ -635,8 +650,35 @@ function frame() {
   ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle
   airport.update(dt); // animate the airfield: rotating radar dish, blinking strobes, swaying windsock
+  cannon.update(dt); // animate the secret cannon: slide the door, flicker torches/fuse, curl muzzle smoke
 
   if (joined && local) {
+    // --- SECRET CANNON (on-foot) ---------------------------------------------
+    // Proximity to the door press-spot (just inside the cafe, ~z=-10.8) and the
+    // muzzle loading-spot (deep in the hidden room, ~z=-22.5). BOTH sit behind /
+    // inside the cafe where NO vehicle, skateboard, or interactable is ever in
+    // reach, so we may read (and drain) the E edge HERE — before rides.update,
+    // which otherwise swallows it — without ever stealing a ride's E. Anywhere
+    // else E is left untouched for rides.update to consume as usual.
+    const _dDx = local.pos.x - cannon.doorTrigger.x;
+    const _dDz = local.pos.z - cannon.doorTrigger.z;
+    const nearDoor = !local.sitting && (_dDx * _dDx + _dDz * _dDz) <= cannon.doorTrigger.r * cannon.doorTrigger.r;
+    const _mDx = local.pos.x - cannon.mouth.x;
+    const _mDz = local.pos.z - cannon.mouth.z;
+    const muzzleD2 = _mDx * _mDx + _mDz * _mDz;
+    const nearMuzzle = !local.sitting && muzzleD2 <= CANNON_LOAD_R * CANNON_LOAD_R;
+    const cannonE = (nearDoor || nearMuzzle) && controls.consumeUse ? controls.consumeUse() : false;
+    // FIRE the player: press E under the muzzle, OR just walk into the muzzle
+    // mouth. Guarded so we only fire on foot and never re-trigger mid-arc.
+    if (!local.airborne && !local.flying && !local.sitting &&
+        (muzzleD2 <= CANNON_WALKIN_R * CANNON_WALKIN_R || (nearMuzzle && cannonE))) {
+      local.launchSelf(cannon.launch());
+      audio.whoosh?.();
+    } else if (nearDoor && cannonE) {
+      // Reveal / hide the secret room by sliding the brick door.
+      cannon.setDoorOpen(!cannon.doorOpen);
+    }
+
     // Ride machine (walk / drive / skate). Driving owns the avatar + camera, so we
     // skip the normal walk update that frame and hide the on-foot avatar.
     const ride = rides.update(dt, camera, controls, local);
@@ -684,8 +726,14 @@ function frame() {
       if (local.character?.group) {
         local.character.group.visible = !(seatedView && seatedView.active);
       }
-      // A ride prompt (drive/skate) takes precedence over the sit prompt.
-      hud.setSitPrompt(ride.prompt || local.sitPromptText());
+      // A ride prompt (drive/skate) takes precedence over the sit prompt; the
+      // SECRET CANNON hints (door / muzzle) take precedence over both when you're
+      // standing in their spots behind/inside the cafe.
+      hud.setSitPrompt(
+        nearMuzzle ? "💥 Press E to FIRE the cannon"
+        : nearDoor ? (cannon.doorOpen ? "🚪 Press E to close the secret door" : "🚪 Press E to open the secret door")
+        : (ride.prompt || local.sitPromptText())
+      );
       // Open the coffee-bar menu when standing in the order zone; reflect whatever
       // you're holding (and the drop hint) the rest of the time.
       hud.setShopVisible(nearBar() && !local.sitting);
@@ -875,5 +923,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, audio, gameMap, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;
