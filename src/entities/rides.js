@@ -266,6 +266,11 @@ export function createRides(scene, opts) {
     r.vehicle.state.z = v.z;
     r.vehicle.state.heading = v.heading;
     r.vehicle.syncGroup();
+    // Hide our local copy while ANOTHER player is piloting it — their remote proxy
+    // renders the craft at the true position (incl. flight altitude), so this avoids a
+    // flyer "ground ghost" sitting at spawn height and a grounded-vehicle double-render.
+    // When it's parked (driverId null) it's shown at the synced spot.
+    r.vehicle.group.visible = !(v.driverId && (!network || v.driverId !== network.id));
     if (r.park) r.park(true); // footprint follows the parked vehicle to its synced spot
   }
 
@@ -273,6 +278,7 @@ export function createRides(scene, opts) {
   // the mirror agrees the instant we exit) and PUSH it to the server on the throttle
   // (driverId = our network id claims the controls).
   function pushSharedPose(r) {
+    r.vehicle.group.visible = true; // we're piloting it — always show (undo any mirror-hide)
     writeSharedPose(r, network ? network.id : null);
     if (network && (r.tick++ % PUSH_EVERY) === 0) {
       network.sendVehicle(r.id, r.kind, r.vehicle.state.x, r.vehicle.state.z, r.vehicle.state.heading, network.id);
