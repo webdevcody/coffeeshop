@@ -30,6 +30,7 @@ import { createGame as createFlipbookMenu } from "./games/inworld/menu.js";
 import { getGame, listGames } from "./games/registry.js";
 import { ITEMS, getItem } from "./world/items.js";
 import { NET } from "./config.js";
+import { createPersistence } from "./persist.js";
 
 const canvas = document.getElementById("scene");
 const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, getTimeOfDay } = createEngine(canvas);
@@ -259,6 +260,12 @@ const CANNON_WALKIN_R = 1.3;
 // E-reach, so reading E here (before rides.update) can't steal a ride's E.
 const ARMORY_R = 2.5;
 
+// Cross-reload persistence of the local player's state (appearance / money / last
+// position / time-of-day) under localStorage key "coffee.player". All access is
+// try/catch-guarded inside, so blocked/private storage is a silent no-op. Loaded
+// on JOIN; written on money/appearance changes + a throttled positional save.
+const persist = createPersistence();
+
 let local = null;
 let joined = false;
 // GTA cash: grows when you rob a pedestrian (R near one). Shown in the top-left HUD
@@ -280,6 +287,11 @@ let _stepT = 0;
 const STEP_INTERVAL = 0.3;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
+// Throttle the periodic positional save: persist {lastPos, timeOfDay} once every
+// PERSIST_SAVE_FRAMES frames (~0.5s at 60fps) so we never write localStorage (or
+// allocate the small state object) per frame.
+const PERSIST_SAVE_FRAMES = 30;
+let _saveTick = 0;
 
 // CITY MAP (M): a full-screen top-down overlay built from the fixed city layout.
 // ui/map.js draws it + owns its own Esc / ✕ / M-to-close; we own M-to-OPEN
@@ -683,7 +695,13 @@ hud.onJoin = ({ name, color }) => {
   // NEVER block joining / building the player (a thrown audio call here once aborted
   // join before the avatar was created — "no character loads").
   try { audio.resume(); audio.setAmbient(true); } catch (e) { console.warn("[audio] init failed", e); }
-  local = new LocalPlayer(scene, controls, collidersAll, { color }, name, seats, groundAll, spawn);
+  // Restore saved state from a previous visit (null on a first visit or blocked
+  // storage — every restore below then falls back to the live defaults). Build the
+  // avatar with the SAVED appearance so it comes back identical; on a first visit
+  // use the join-card colour.
+  const saved = persist.load();
+  const initialAppearance = saved?.appearance || { color };
+  local = new LocalPlayer(scene, controls, collidersAll, initialAppearance, name, seats, groundAll, spawn);
   // SWIM: give the player the ocean's open-water predicate + surface height so
   // jumping/falling into the sea floats instead of respawning (handled inside
   // localPlayer._updateVertical). The void respawn still runs anywhere there's no
@@ -697,6 +715,27 @@ hud.onJoin = ({ name, color }) => {
   _wasAirborne = false;
   _wasFlying = false;
   _stepT = 0;
+  // --- Restore the rest of the saved state -----------------------------------
+  // MONEY: reload the saved cash total (default 0) and reflect it in the HUD now
+  // so the counter isn't blank for a frame before the loop refreshes it.
+  money = saved?.money ?? 0;
+  hud.setMoney(money);
+  // TIME OF DAY: reload into the same lighting we left in (skip on a first visit).
+  if (saved && saved.timeOfDay != null) setTimeOfDay(saved.timeOfDay);
+  // POSITION: drop back roughly where we left off — but only the on-foot XZ +
+  // facing. We never persist (and so never restore) an in-vehicle / flying /
+  // airborne state: y is forced to 0 and _updateVertical re-settles us onto the
+  // floor (incl. the lifted station deck). Guard against a wall/void by only
+  // restoring when the saved spot is on a walkable ground rect; else keep spawn.
+  const savedPos = saved?.lastPos;
+  if (savedPos && Number.isFinite(+savedPos.x) && Number.isFinite(+savedPos.z) && isGroundFn(+savedPos.x, +savedPos.z)) {
+    local.pos.x = +savedPos.x;
+    local.pos.z = +savedPos.z;
+    local.pos.y = 0;
+    if (Number.isFinite(+savedPos.facing)) local.facing = +savedPos.facing;
+    local.character.group.position.set(local.pos.x, 0, local.pos.z);
+    local.character.group.rotation.y = local.facing;
+  }
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -720,11 +759,13 @@ hud.onJoin = ({ name, color }) => {
   setTimeout(() => hud.setHelpVisible(false), 7000);
   network.connect();
   // Send our full resolved look (clothing + skin + hair) so others render us
-  // identically, not a different per-id default.
+  // identically, not a different per-id default. join() carries the appearance,
+  // and we sendAppearance() right after so a RESTORED look is broadcast to anyone
+  // already in the room (both deferred to socket-open so neither send is dropped).
   const appearance = local.getAppearance();
-  network.on("open", () => network.join(name, appearance));
+  network.on("open", () => { network.join(name, appearance); network.sendAppearance(appearance); });
   // If we connected before the handler was attached (fast localhost), join now.
-  if (network.connected) network.join(name, appearance);
+  if (network.connected) { network.join(name, appearance); network.sendAppearance(appearance); }
   updateCount();
 };
 
@@ -734,6 +775,8 @@ hud.onCustomize = (partial) => {
   local.setAppearance(partial);
   network.sendAppearance(local.getAppearance());
   refreshPeople();
+  // Persist the new look so the avatar comes back the same after a reload.
+  persist.update({ appearance: local.getAppearance() });
 };
 
 hud.onChat = (text) => network.sendChat(text);
@@ -983,6 +1026,7 @@ function frame() {
             money += cash;
             audio.blip();
             hud.toast(`Robbed $${cash}!`);
+            persist.update({ money }); // persist the new cash total on every change
           }
         }
       }
@@ -1020,6 +1064,19 @@ function frame() {
     // remote dots, and the car). Cheap 2D draw into the HUD's reused canvas.
     updateMinimap();
     maybeSendState();
+    // PERSIST: a throttled save of the lightweight, reload-safe slice of state
+    // (on-foot XZ + facing + time-of-day) ~every 30 frames (~0.5s). The small
+    // state object is built ONLY on the save tick, so the loop stays
+    // allocation-free between saves; money + appearance persist on their own
+    // change events. y / vehicle / flying state are deliberately NOT saved — we
+    // always reload on foot at ground level.
+    if (++_saveTick >= PERSIST_SAVE_FRAMES) {
+      _saveTick = 0;
+      persist.update({
+        lastPos: { x: local.pos.x, z: local.pos.z, facing: local.facing },
+        timeOfDay: getTimeOfDay ? getTimeOfDay() : null,
+      });
+    }
     updateWeapons(dt);
     updateMap();
 
