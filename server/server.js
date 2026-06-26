@@ -133,6 +133,31 @@ vehicles.set("plane-1", { id: "plane-1", type: "plane", x: 148, z: 134, heading:
 vehicles.set("heli-1", { id: "heli-1", type: "heli", x: 172, z: 106, heading: 0, driverId: null });
 
 // ---------------------------------------------------------------------------
+// Shared world clock (server-authoritative day/night time-of-day)
+// ---------------------------------------------------------------------------
+// The day/night sky must read the SAME for everyone, so the SERVER owns the clock
+// instead of each client free-running its own phase. The client's scene.js advances
+// time-of-day (a 0..1 scalar) through one full sunrise→day→sunset→night loop every
+// DAY_LENGTH_SECONDS real seconds (its makeDayNight CYCLE_SECONDS). We mirror that
+// EXACT period here so the server clock and every client's local cycle tick at the
+// same rate: clients SNAP to this value on join (welcome) and on the periodic
+// re-sync broadcast, then let their own scene.js advance smoothly in between.
+const DAY_LENGTH_SECONDS = 420; // MUST match scene.js makeDayNight CYCLE_SECONDS (420)
+// Phase the world opens on (0..1). 0.7 ≈ the late-afternoon golden hour scene.js
+// seeds, so a fresh server boots on the same warm sky the look was tuned for.
+const DAY_START_OFFSET = 0.7;
+// Server boot instant; the authoritative time-of-day is derived from elapsed time
+// since here, so it advances on its own with no per-frame state to keep.
+const worldEpoch = Date.now();
+// Current authoritative time-of-day in [0,1), wrapping once per DAY_LENGTH_SECONDS.
+function worldTimeOfDay() {
+  const elapsed = (Date.now() - worldEpoch) / 1000; // real seconds since boot
+  let t = (DAY_START_OFFSET + elapsed / DAY_LENGTH_SECONDS) % 1;
+  if (t < 0) t += 1; // guard (DAY_START_OFFSET could be authored negative)
+  return t;
+}
+
+// ---------------------------------------------------------------------------
 // Game-table room coordination
 // ---------------------------------------------------------------------------
 // The server is a generic match coordinator — it doesn't know or care what game
@@ -599,7 +624,19 @@ wss.on("connection", (ws) => {
         for (const [oid, c] of clients) {
           if (oid !== id) others.push(c.player);
         }
-        send(ws, { type: "welcome", id, you: player, players: others, vehicles: Array.from(vehicles.values()) });
+        // SHARED SKY: hand the newcomer the authoritative time-of-day (and the
+        // cycle length) so they join straight into the world's current sky instead
+        // of their own free-running phase. The periodic "time" broadcast below keeps
+        // them re-synced; scene.js advances it smoothly in between.
+        send(ws, {
+          type: "welcome",
+          id,
+          you: player,
+          players: others,
+          vehicles: Array.from(vehicles.values()),
+          timeOfDay: worldTimeOfDay(),
+          dayLength: DAY_LENGTH_SECONDS,
+        });
         // Tell everyone else about the newcomer.
         broadcast({ type: "player-joined", player }, id);
         // PASSERSBY: paint every active match's PUBLIC board for the newcomer so
@@ -1005,6 +1042,15 @@ const heartbeat = setInterval(() => {
   }
 }, 15000);
 wss.on("close", () => clearInterval(heartbeat));
+
+// SHARED SKY re-sync: re-broadcast the authoritative time-of-day every ~15s so
+// every client periodically snaps back onto the shared clock and drift stays
+// sub-second (each client's scene.js keeps advancing the cycle smoothly between
+// snaps). One tiny message per client; no per-frame work, no stored world state.
+const timeSync = setInterval(() => {
+  broadcast({ type: "time", timeOfDay: worldTimeOfDay() });
+}, 15000);
+wss.on("close", () => clearInterval(timeSync));
 
 server.listen(PORT, () => {
   console.log(`☕ Coffeeshop server listening on http://localhost:${PORT}`);

@@ -483,7 +483,25 @@ network.on("welcome", (m) => {
   // Seed the shared world vehicles (the drivable car) so rides.js can place the
   // local car at the authoritative pose and remotes render it at the synced spot.
   if (Array.isArray(m.vehicles)) for (const v of m.vehicles) upsertVehicle(v);
+  // SHARED SKY: the server owns an authoritative day/night clock, so snap our
+  // local cycle to its time-of-day on join — every player thus shares one sky.
+  // scene.js keeps advancing it at the same rate between the periodic "time"
+  // re-syncs. GUARD: an older server sends no timeOfDay; fall back to the prior
+  // behavior (restore the persisted value) so the cycle still starts somewhere.
+  if (typeof m.timeOfDay === "number" && Number.isFinite(m.timeOfDay)) {
+    setTimeOfDay(m.timeOfDay);
+  } else {
+    const saved = persist.load();
+    if (saved && saved.timeOfDay != null) setTimeOfDay(saved.timeOfDay);
+  }
   updateCount();
+});
+// SHARED SKY re-sync: the server re-broadcasts the authoritative time-of-day every
+// ~15s. Snap to it (a once-per-15s jump is imperceptible — scene.js advances the
+// cycle smoothly in between, so this only trims accumulated drift). Guarded so a
+// malformed payload is ignored.
+network.on("time", (m) => {
+  if (typeof m.timeOfDay === "number" && Number.isFinite(m.timeOfDay)) setTimeOfDay(m.timeOfDay);
 });
 // A shared vehicle moved/parked (someone else driving, or a driver released it).
 // Upsert the authoritative pose; rides.js + remotePlayers.js read it each frame.
@@ -737,8 +755,12 @@ hud.onJoin = ({ name, color }) => {
   // so the counter isn't blank for a frame before the loop refreshes it.
   money = saved?.money ?? 0;
   hud.setMoney(money);
-  // TIME OF DAY: reload into the same lighting we left in (skip on a first visit).
-  if (saved && saved.timeOfDay != null) setTimeOfDay(saved.timeOfDay);
+  // TIME OF DAY: the day/night clock is now SERVER-AUTHORITATIVE — we snap to the
+  // server's shared timeOfDay on "welcome" (and re-sync on the periodic "time"
+  // broadcast), so we intentionally do NOT restore the persisted value here; letting
+  // it win would split the sky between players again. It's still saved harmlessly
+  // below and only consulted as a fallback in the welcome handler if the server
+  // (an older build) sends no timeOfDay.
   // POSITION: drop back roughly where we left off — but only the on-foot XZ +
   // facing. We never persist (and so never restore) an in-vehicle / flying /
   // airborne state: y is forced to 0 and _updateVertical re-settles us onto the
