@@ -853,7 +853,9 @@ function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   controls.update();
   updateDayNight?.(dt); // advance the day/night cycle: sun arc, sky, fog, ambient
-  updateWorld?.(dt); // animate the street: cars driving by, birds overhead
+  // Pass the local player's XZ so the city can distance-cull far traffic/peds and
+  // centre the rain on the camera. null before join → systems keep whole-map behaviour.
+  updateWorld?.(dt, (joined && local) ? local.pos : null); // animate the street: cars driving by, birds overhead
   interactables.update(dt); // advance in-progress "use" animations (piano keys, hoop shot, ATM glow, flash, steam)
   ocean.update(dt); // animate the sea: swell, sparkle, foam shimmer
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle

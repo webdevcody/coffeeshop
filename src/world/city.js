@@ -141,9 +141,14 @@ export function buildCity(scene) {
   group.userData.districtGroups = districtGroups;
   scene.add(group);
 
-  const update = (dt) => {
+  // `player` is an optional { x, z } (the local player's XZ) threaded down from
+  // main.js. cityLife + cityWeather read it to distance-cull far traffic/peds and
+  // to centre the rain footprint; the other update fns simply ignore the extra
+  // arg. When absent (pre-join) those systems fall back to their original
+  // whole-map behaviour, so this stays a safe no-op for existing callers.
+  const update = (dt, player) => {
     for (const u of updates) {
-      try { u(dt); } catch { /* a district anim error must not kill the loop */ }
+      try { u(dt, player); } catch { /* a district anim error must not kill the loop */ }
     }
   };
 
