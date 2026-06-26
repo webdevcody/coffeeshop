@@ -1,5 +1,5 @@
 # ☕ The Daily Grind — Multiplayer 3D Coffeeshop
-
+ 
 A cozy, goal-free multiplayer café. Walk around a warm little coffeeshop with other
 people, bump into the furniture, chat with speech bubbles floating over your head,
 and talk over proximity voice (WebRTC) — the closer you stand, the louder you are.
