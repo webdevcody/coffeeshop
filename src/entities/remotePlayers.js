@@ -13,11 +13,15 @@
 // already satisfies the multiplayer-visible requirement without that.
 
 import { Character } from "./character.js";
-import { makeCar } from "./car.js";
-import { makeBoat } from "./boat.js";
-import { makeSkateboard } from "./skateboard.js";
-import { makeRocket } from "./rocket.js";
-import { makeJetpack } from "./jetpack.js";
+import {
+  buildCarProxy,
+  buildBoatProxy,
+  buildRocketProxy,
+  buildPlaneProxy,
+  buildHeliProxy,
+  buildSkateProxy,
+  buildJetpackProxy,
+} from "./rideProxies.js";
 import { getItem } from "../world/items.js";
 import {
   makeNameLabel,
@@ -31,13 +35,25 @@ import { NET } from "../config.js";
 // Sea surface height — mirrors ocean.js's waterY so a remote player's boat floats
 // at the same level as the local sea (this module can't see the live ocean instance).
 const WATER_Y = -0.8;
-// Rocket base sits on the pad platform top (mirrors rocket.js ROCKET.padTop). We
-// don't receive the pilot's live altitude over the wire, so a remote rocket rests
-// here at their synced ground position.
+// Rocket base sits on the pad platform top (mirrors rocket.js ROCKET.padTop), so a
+// remote rocket on the ground rests level with the pad.
 const ROCKET_BASE_Y = 0.5;
-// Where a remote's jetpack mounts on their back (mirrors rides.js mountJetpack).
+// Where a remote's jetpack mounts on their back / the board under their feet
+// (mirrors rides.js mountJetpack / mountBoard).
 const JETPACK_BACK_Y = 1.12;
 const JETPACK_BACK_Z = -0.14;
+const BOARD_Z = 0.12;
+
+// --- Ride pose tables -------------------------------------------------------
+// "rig" rides build a scene-space proxy the seated avatar sits ON; "worn" rides
+// parent a proxy onto the still-standing avatar. For each rig ride: SEAT_Y is the
+// local height in the proxy where the seated avatar's hips rest (the proxy is
+// built with its seat at local XZ origin, so the avatar drops straight onto it),
+// and RIG_BASE_Y is the vertical offset of the whole rig's base above world 0
+// (boat floats at the sea surface; the rocket rests on the pad top). The synced
+// altitude (curY) stacks on top of RIG_BASE_Y so flyers rise/fall as one rig.
+const SEAT_Y = { car: 0.6, boat: 0.34, rocket: 1.25, plane: 0.58, heli: 0.6 };
+const RIG_BASE_Y = { car: 0, boat: WATER_Y, rocket: ROCKET_BASE_Y, plane: 0, heli: 0 };
 
 export class RemotePlayers {
   constructor(scene) {
@@ -62,7 +78,11 @@ export class RemotePlayers {
       e.character.group.position.set(p.x, 0, p.z);
       e.character.group.rotation.y = p.ry;
       e.character.setAppearance({ color: p.color, skin: p.skin, hair: p.hair });
-      e.character.setSeated(!!p.sitting, p.seatY || 0);
+      // Table-sit state is stored and re-applied every frame in update() (so a
+      // vehicle pose can override it without the wire flag fighting back).
+      e.sitting = !!p.sitting;
+      e.seatY = p.seatY || 0;
+      e.character.setSeated(e.sitting, e.seatY);
       if (e.label) setLabelText(e.label, p.name);
       e.cantHear.visible = !!p.deafened;
       e.color = p.color;
@@ -100,13 +120,17 @@ export class RemotePlayers {
       target: { x: p.x, z: p.z, ry: p.ry, y: p.y || 0 },
       curY: p.y || 0, // smoothed render height (drives flyers' altitude)
       moving: false,
-      // Body color (kept so a remote car can be painted to match this player).
+      // Table-sit state from the wire (applied each frame in update(); a ride pose
+      // overrides it).
+      sitting: !!p.sitting,
+      seatY: p.seatY || 0,
+      // Body color (kept so a remote car/heli is painted to match this player).
       color: p.color,
-      // Ride state: tag + the meshes we attach for it (built lazily in _setRide).
+      // Ride state: tag + the proxy meshes we attach for it (built lazily in
+      // _setRide, one per entity, reused across frames).
       ride: null,
-      rideGroup: null, // car / boat / rocket group, lives in scene space, follows the lerp
-      board: null, // skateboard group, parented under the avatar's feet
-      jetpack: null, // jetpack group, parented on the avatar's back (avatar visible)
+      rideGroup: null, // rig proxy (car/boat/rocket/plane/heli) in scene space, follows the lerp
+      worn: null, // worn proxy (skateboard under the feet / jetpack on the back), parented to the avatar
       // Held item: the wire id + the mesh we attach under the hand (built in _setHeld).
       held: null,
       heldObj: null,
@@ -119,63 +143,58 @@ export class RemotePlayers {
     return entry;
   }
 
-  // Attach/detach the car or skateboard mesh for a remote player when their ride
-  // tag changes. Built once and reused; meshes are torn down on change/remove so
-  // there is no per-frame allocation and nothing leaks.
+  // Attach/detach the CHEAP proxy vehicle for a remote player when their ride tag
+  // changes. The proxy is built once (lazily, from rideProxies.js) and reused
+  // every frame; it's torn down + GPU-disposed on change/remove so there is no
+  // per-frame allocation and nothing leaks. A "rig" ride (car/boat/rocket/plane/
+  // heli) gets a scene-space proxy the seated avatar sits ON (posed in update());
+  // a "worn" ride (skate/jetpack) parents its proxy onto the still-standing avatar.
   _setRide(e, ride) {
     if (e.ride === ride) return; // no-op if unchanged
     e.ride = ride;
-    // Tear down whatever was attached previously.
+    // Tear down whatever was attached previously (scene rig proxy or worn proxy).
     if (e.rideGroup) {
       this.scene.remove(e.rideGroup);
+      disposeGroup(e.rideGroup);
       e.rideGroup = null;
     }
-    if (e.board && e.board.parent) e.board.parent.remove(e.board);
-    e.board = null;
-    if (e.jetpack && e.jetpack.parent) e.jetpack.parent.remove(e.jetpack);
-    e.jetpack = null;
+    if (e.worn) {
+      if (e.worn.parent) e.worn.parent.remove(e.worn);
+      disposeGroup(e.worn);
+      e.worn = null;
+    }
 
     const body = e.character.group;
+    body.visible = true; // the avatar is always visible — we pose it on the vehicle
+
     if (ride === "car") {
-      // Fresh car mesh painted to this player's color. We only use .group (never
-      // edit car.js). The avatar is hidden so the car represents the player.
-      e.rideGroup = makeCar({ color: e.color }).group;
+      e.rideGroup = buildCarProxy(e.color); // painted to this player's color
       this.scene.add(e.rideGroup);
-      body.visible = false;
     } else if (ride === "boat") {
-      // Fresh boat mesh floating at the sea surface. Like the car it lives in scene
-      // space (not parented to the avatar) and follows the lerped XZ in update();
-      // the avatar is hidden so the boat represents the sailing player. We only use
-      // .group (never edit boat.js).
-      e.rideGroup = makeBoat({ waterY: WATER_Y }).group;
+      e.rideGroup = buildBoatProxy();
       this.scene.add(e.rideGroup);
-      body.visible = false;
     } else if (ride === "rocket") {
-      // Fresh rocket mesh standing in scene space (like the car/boat). The avatar
-      // is hidden so the rocket represents the launching player; it follows the
-      // lerped XZ in update(). We only use .group (never edit rocket.js). Without
-      // the pilot's live altitude over the wire it rests on the pad.
-      e.rideGroup = makeRocket({}).group;
+      e.rideGroup = buildRocketProxy();
       this.scene.add(e.rideGroup);
-      body.visible = false;
+    } else if (ride === "plane") {
+      e.rideGroup = buildPlaneProxy();
+      this.scene.add(e.rideGroup);
+    } else if (ride === "heli") {
+      e.rideGroup = buildHeliProxy(e.color);
+      this.scene.add(e.rideGroup);
     } else if (ride === "jetpack") {
-      // Jetpack rides on the (still-visible) avatar's back, the same mount the
-      // local rides.js uses, parented so it tracks the character automatically.
-      e.jetpack = makeJetpack().group;
-      e.jetpack.position.set(0, JETPACK_BACK_Y, JETPACK_BACK_Z);
-      body.add(e.jetpack);
-      body.visible = true;
+      // Pack rides on the avatar's back, the same mount rides.js uses locally,
+      // parented so it tracks the character (and rises with it) automatically.
+      e.worn = buildJetpackProxy();
+      e.worn.position.set(0, JETPACK_BACK_Y, JETPACK_BACK_Z);
+      body.add(e.worn);
     } else if (ride === "skate") {
-      // Board rides under the (still-visible) avatar's feet, same offset the local
-      // rides.js uses, parented so it moves with the character automatically.
-      e.board = makeSkateboard();
-      e.board.position.set(0, 0, 0.12);
-      body.add(e.board);
-      body.visible = true;
-    } else {
-      // Walking: avatar visible, nothing attached.
-      body.visible = true;
+      // Board rides under the avatar's feet, same offset rides.js uses locally.
+      e.worn = buildSkateProxy();
+      e.worn.position.set(0, 0, BOARD_Z);
+      body.add(e.worn);
     }
+    // ride === null → walking: avatar visible, no proxy attached.
   }
 
   // Attach/detach the held coffee-bar item mesh on this remote's hand when their
@@ -206,9 +225,11 @@ export class RemotePlayers {
     if (e.indicator) e.character.head.remove(e.indicator);
     if (e.cantHear) e.character.head.remove(e.cantHear);
     if (e.bubble) e.character.head.remove(e.bubble);
-    // Detach a remote car (scene-space mesh) so a disconnect mid-drive doesn't
-    // leak it. The board is a child of the avatar group and goes with it.
-    if (e.rideGroup) this.scene.remove(e.rideGroup);
+    // Detach + dispose a remote rig proxy (scene-space mesh) so a disconnect
+    // mid-ride doesn't leak it. The worn proxy is a child of the avatar group and
+    // goes with it, but dispose its GPU resources here too.
+    if (e.rideGroup) { this.scene.remove(e.rideGroup); disposeGroup(e.rideGroup); }
+    if (e.worn) disposeGroup(e.worn);
     // The held mesh is parented under character.handAnchor (inside the group), so
     // removing the group detaches it; dispose its geometry/material here for
     // symmetry with _setRide's teardown and to guarantee no GPU leak.
@@ -226,7 +247,10 @@ export class RemotePlayers {
     e.target.ry = ry;
     e.target.y = y || 0; // height above ground (flying/rocket/jumping)
     e.moving = moving;
-    e.character.setSeated(!!sitting, seatY);
+    // Store table-sit state; update() resolves the actual seated pose each frame
+    // (a vehicle pose takes priority over the wire's table-sit flag).
+    e.sitting = !!sitting;
+    e.seatY = seatY;
     this._setRide(e, ride || null);
     this._setHeld(e, held || null);
   }
@@ -272,22 +296,32 @@ export class RemotePlayers {
       g.position.z += (e.target.z - g.position.z) * k;
       e.curY += (e.target.y - e.curY) * k; // smooth the synced altitude
       g.rotation.y = lerpAngle(g.rotation.y, e.target.ry, k);
+
+      // Resolve the seated pose BEFORE character.update animates it: a rig vehicle
+      // seats the avatar at its proxy's seat height; otherwise honor the wire's
+      // table-sit flag. Driven every frame so the (per-snapshot) table-sit flag
+      // can't un-seat a driver between ride-tag changes.
+      const seatY = SEAT_Y[e.ride];
+      if (seatY !== undefined) e.character.setSeated(true, seatY);
+      else e.character.setSeated(e.sitting, e.seatY);
+
       e.character.update(dt, e.moving);
       // character.update sets group.position.y for the walk bob / seat drop; stack
-      // the synced altitude on top so a remote jetpack flyer (avatar visible) rises
-      // off the ground for everyone, instead of skating along at y=0.
-      g.position.y += e.curY;
+      // the rig base (e.g. the boat's sea surface) + the synced altitude on top so
+      // a remote flyer (jetpack/rocket/plane/heli) rises off the ground — avatar and
+      // vehicle together — for everyone, instead of skating along at y=0.
+      g.position.y += e.curY + (RIG_BASE_Y[e.ride] || 0);
 
-      // The car/boat/rocket group lives in scene space (not parented to the avatar),
-      // so it follows the lerped XZ + heading here. The car sits at world y=0; the
-      // boat floats at the sea surface (WATER_Y); the ROCKET rises with the synced
-      // altitude (curY) so others watch it launch. The board needs no handling — it's
-      // parented under the avatar and moves with it.
+      // The rig proxy (car/boat/rocket/plane/heli) lives in scene space (not
+      // parented to the avatar), so it tracks the lerped XZ + heading + altitude
+      // here, sharing the avatar's seat origin so the posed avatar sits in it. The
+      // worn proxy (board/jetpack) is parented under the avatar and moves with it.
       if (e.rideGroup) {
-        const baseY = e.ride === "boat" ? WATER_Y : e.ride === "rocket" ? ROCKET_BASE_Y : 0;
-        e.rideGroup.position.set(g.position.x, baseY + (e.ride === "rocket" ? e.curY : 0), g.position.z);
+        e.rideGroup.position.set(g.position.x, (RIG_BASE_Y[e.ride] || 0) + e.curY, g.position.z);
         e.rideGroup.rotation.y = g.rotation.y;
+        e.rideGroup.userData.spin?.(dt); // cheap moving bits: wheels / prop / rotor / flame
       }
+      if (e.worn) e.worn.userData.spin?.(dt); // jetpack flame pulse
 
       if (e.bubble) {
         e.bubbleTimer -= dt;
@@ -305,4 +339,17 @@ function lerpAngle(a, b, t) {
   let d = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
   if (d < -Math.PI) d += Math.PI * 2;
   return a + d * t;
+}
+
+// Free a proxy's GPU resources (geometry + material(s)) when it's swapped out or
+// the owning player leaves. Geometry/materials may be shared between a proxy's
+// meshes; THREE's dispose() is safe to call more than once, so a plain traversal
+// is fine. Only called on ride change / removal — never per frame.
+function disposeGroup(group) {
+  group.traverse((o) => {
+    o.geometry?.dispose?.();
+    const m = o.material;
+    if (Array.isArray(m)) m.forEach((mm) => mm?.dispose?.());
+    else m?.dispose?.();
+  });
 }
