@@ -765,8 +765,12 @@ export function buildSpace(opts = {}) {
   // per zone (was 10 zone + 3 entry = 13 PointLights; now ~4). Three big lights
   // cover the module deck (x≈301..681) and one entry light keeps the airlock /
   // corridor / control room near IX from going dark.
-  for (const sx of [360, 500, 620]) {
-    const runLight = new THREE.PointLight(0xdce8ff, 52, 95, 1.7);
+  // Even fill down the whole run. These live in `stationInterior`, which is hidden
+  // (group.visible=false) whenever you're not at the station, so Three.js skips them
+  // entirely — they cost ZERO when you're in the city and only light the deck when
+  // you're actually up here. So we can afford generous, evenly-spaced coverage.
+  for (const sx of [330, 385, 440, 495, 550, 605, 660]) {
+    const runLight = new THREE.PointLight(0xdce8ff, 34, 72, 1.7);
     runLight.position.set(sx, stationFloorY + 4.4, IZ);
     stationInterior.add(runLight);
   }
