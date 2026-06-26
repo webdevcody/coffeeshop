@@ -742,15 +742,12 @@ export function buildSpace(opts = {}) {
     const m = buildMod({ ox: mox, oz: IZ, floorY: stationFloorY });
     group.add(m.group);
     if (Array.isArray(m.ground)) for (const g of m.ground) stationGround.push(g);
-    // Keep each module's walls/furniture SOLID (no more "false walls" you pass
-    // through) EXCEPT any collider that crosses the central walking corridor
-    // (z within ±3.5 of the spine) — those are the inter-zone divider walls, left
-    // OPEN so you can still walk the whole station end to end. Side/perimeter walls
-    // and off-corridor furniture stay solid.
-    if (Array.isArray(m.colliders)) for (const c of m.colliders) {
-      if (c.maxZ > IZ - 3.6 && c.minZ < IZ + 3.6) continue; // crosses the corridor → leave open
-      stationColliders.push(c);
-    }
+    // DROP each module's own colliders so you can walk FREELY through the entire
+    // station and explore every zone — keeping them solid turned the 10 chained
+    // sealed-room modules into a maze of blocking walls. The outer hull (below) is
+    // the only solid boundary, so you can't fall off the sides. (A separate pass
+    // also strips the modules' interior divider walls so they don't even look like
+    // false walls.)
     if (typeof m.update === "function") stationModuleUpdates.push(m.update);
     // A bright fill light per zone so the interior detail is actually visible (the
     // modules' own emissive accents read dark without general lighting up here).
