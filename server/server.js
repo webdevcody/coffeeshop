@@ -594,6 +594,11 @@ wss.on("connection", (ws) => {
     // Held coffee-bar item id (null = empty-handed). Stored so a newcomer's
     // welcome/player-joined roster shows what each player is already holding.
     held: null,
+    // SHARED MONEY LEADERBOARD: this player's running cash total (GTA robbery
+    // cash). Lives on the player object so it rides the welcome roster (`players`)
+    // and `player-joined` to every newcomer, and is updated by the "money" handler
+    // below + relayed live so all clients can rank everyone's totals.
+    money: 0,
     // Voice: whether this player has muted everyone (deafened). Sent to newcomers
     // so they immediately see the "can't hear you" badge over an already-deafened
     // player. Per-person mutes are relayed live and not stored here.
@@ -695,6 +700,18 @@ wss.on("connection", (ws) => {
         const text = sanitizeChat(msg.text);
         if (!text) return;
         broadcast({ type: "chat", id, name: player.name, text });
+        break;
+      }
+      case "money": {
+        // SHARED MONEY LEADERBOARD. The player pushes their running cash total after
+        // every change; we validate it's a finite number, clamp it to a sane range,
+        // store it on the player (so it rides the welcome roster / player-joined for
+        // any newcomer), and relay {id, money} to the OTHER clients so their
+        // leaderboard ranks this player. The amount travels as the distinct field
+        // `money` — `type` stays the discriminator ("money"), never reused as data.
+        if (typeof msg.money !== "number" || !Number.isFinite(msg.money)) break;
+        player.money = clamp(msg.money, 0, 1e9);
+        broadcast({ type: "money", id, money: player.money }, id);
         break;
       }
       case "shot": {

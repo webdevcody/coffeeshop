@@ -131,6 +131,7 @@ export class HUD {
           <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
           <div class="help-row"><kbd>J</kbd><span>Sound mixer</span></div>
           <div class="help-row"><kbd>N</kbd><span>Lofi music</span></div>
+          <div class="help-row"><kbd>L</kbd><span>Leaderboard</span></div>
           <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
         </div>
       </div>
@@ -146,6 +147,10 @@ export class HUD {
           <button class="music-btn" id="music-next" aria-label="Next track">⏭</button>
           <input type="range" class="music-vol" id="music-vol" min="0" max="100" step="1" value="100" aria-label="Music volume" />
         </div>
+      </div>
+      <div class="leaderboard hidden" id="leaderboard">
+        <div class="lb-title">🏆 Leaderboard <span class="lb-hint">press L to hide</span></div>
+        <div class="lb-list" id="lb-list"></div>
       </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
@@ -188,6 +193,8 @@ export class HUD {
     this.musicPlayBtn = ui.querySelector("#music-play");
     this.musicNextBtn = ui.querySelector("#music-next");
     this.musicVol = ui.querySelector("#music-vol");
+    this.leaderboardPanel = ui.querySelector("#leaderboard");
+    this.lbList = ui.querySelector("#lb-list");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
@@ -581,6 +588,55 @@ export class HUD {
   setMusicVolume(v) {
     if (!this.musicVol || document.activeElement === this.musicVol) return;
     this.musicVol.value = String(Math.round(Math.max(0, Math.min(1, v || 0)) * 100));
+  }
+
+  // --- Money leaderboard (L) -----------------------------------------------
+  // Show/hide + toggle the standings panel (matches the help/mixer/music overlays).
+  setLeaderboardVisible(on) {
+    if (!this.leaderboardPanel) return;
+    this.leaderboardPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleLeaderboard() {
+    if (!this.leaderboardPanel) return;
+    this.leaderboardPanel.classList.toggle("hidden");
+  }
+
+  // Render the money standings, ranked high→low. `entries` is a pre-sorted
+  // [{ name, money, you }] (main.js owns the model + sort, so this only paints DOM
+  // and only when the model actually changed — never per frame). The local player's
+  // row is highlighted and tagged "(You)". An empty list shows a friendly hint.
+  setLeaderboard(entries) {
+    if (!this.lbList) return;
+    this.lbList.textContent = "";
+    if (!entries || !entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "lb-empty";
+      empty.textContent = "No earnings yet — rob someone (R) to get on the board.";
+      this.lbList.appendChild(empty);
+      return;
+    }
+    let rank = 0;
+    for (const e of entries) {
+      rank++;
+      const row = document.createElement("div");
+      row.className = "lb-row" + (e.you ? " you" : "");
+
+      const rk = document.createElement("span");
+      rk.className = "lb-rank";
+      rk.textContent = "#" + rank;
+
+      const name = document.createElement("span");
+      name.className = "lb-name";
+      name.textContent = (e.name || "Guest") + (e.you ? " (You)" : "");
+
+      const amt = document.createElement("span");
+      amt.className = "lb-amount";
+      amt.textContent = "$" + (e.money | 0);
+
+      row.append(rk, name, amt);
+      this.lbList.appendChild(row);
+    }
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're

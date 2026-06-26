@@ -283,6 +283,47 @@ let joined = false;
 // GTA cash: grows when you rob a pedestrian (R near one). Shown in the top-left HUD
 // money counter each frame while joined.
 let money = 0;
+// The name we joined with — used as our own MONEY LEADERBOARD entry's label (the
+// server's roster carries it for everyone else; ours is purely local).
+let myName = "";
+// SHARED MONEY LEADERBOARD model: id -> { name, money } for every player (including
+// US, keyed by network.id). Seeded from the welcome roster + player-joined (each
+// carries a `money` field now), pruned on player-left, and updated live by the
+// "money" relay + our own local money changes. `_lbDirty` flags that the model
+// changed so the sorted standings are rebuilt only when needed (and on a light
+// throttle), never per frame — keeping the hot loop allocation-free.
+const leaderboard = new Map();
+let _lbDirty = false;
+let _lbThrottle = 0;
+// Insert/update one player's leaderboard entry (name and/or money). Marks the model
+// dirty so the next throttled rebuild repaints the panel.
+function lbUpsert(id, fields) {
+  if (id == null) return;
+  const key = String(id);
+  let e = leaderboard.get(key);
+  if (!e) { e = { name: "", money: 0 }; leaderboard.set(key, e); }
+  if (typeof fields.name === "string" && fields.name) e.name = fields.name;
+  if (typeof fields.money === "number" && Number.isFinite(fields.money)) e.money = fields.money;
+  _lbDirty = true;
+}
+function lbRemove(id) {
+  if (leaderboard.delete(String(id))) _lbDirty = true;
+}
+// Rebuild the sorted-desc standings and push them to the HUD. Allocates a fresh
+// array + row objects, so it is called ONLY from the dirty/throttled path below —
+// not every frame. Tags the local player's row and keeps remote names current from
+// the live roster (the remotes entry is the freshest source of a player's name).
+function pushLeaderboard() {
+  const meId = network.id != null ? String(network.id) : null;
+  const arr = [];
+  for (const [id, e] of leaderboard) {
+    const you = id === meId;
+    const name = you ? (myName || e.name) : (remotes.players.get(id)?.name || e.name);
+    arr.push({ name, money: e.money | 0, you });
+  }
+  arr.sort((a, b) => b.money - a.money);
+  hud.setLeaderboard(arr);
+}
 // SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
 // on the walk/fall → swim transition (entering the sea), not every frame afloat.
 let _wasSwimming = false;
@@ -485,6 +526,16 @@ function refreshPeople() {
 // --- Network wiring --------------------------------------------------------
 network.on("welcome", (m) => {
   for (const p of m.players) remotes.add(p);
+  // MONEY LEADERBOARD: welcome carries the FULL current roster, so rebuild the
+  // standings from scratch (clearing any stale entries — e.g. our own OLD id after a
+  // reconnect assigns a new one). Seed every player from the roster (each carries
+  // their `money` now), add OURSELVES (network.id was just set from this welcome),
+  // and PUBLISH our restored total so the server stores it and everyone else ranks
+  // us. Sending here (post-connect) populates our roster entry's money.
+  leaderboard.clear();
+  for (const p of m.players) lbUpsert(p.id, { name: p.name, money: p.money });
+  lbUpsert(network.id, { name: myName, money });
+  network.sendMoney(money);
   // Seed the shared world vehicles (the drivable car) so rides.js can place the
   // local car at the authoritative pose and remotes render it at the synced spot.
   if (Array.isArray(m.vehicles)) for (const v of m.vehicles) upsertVehicle(v);
@@ -513,11 +564,20 @@ network.on("time", (m) => {
 network.on("vehicle", (m) => upsertVehicle(m));
 network.on("player-joined", (m) => {
   remotes.add(m.player);
+  // MONEY LEADERBOARD: a newcomer joins with their current total in the roster.
+  lbUpsert(m.player.id, { name: m.player.name, money: m.player.money });
   updateCount();
 });
 network.on("player-left", (m) => {
   remotes.remove(m.id);
+  lbRemove(m.id); // drop them from the standings
   updateCount();
+});
+// MONEY LEADERBOARD: another player's cash total changed — update their standing.
+// The server relays this to OTHERS only, so we never receive our own echo (our own
+// entry is updated locally wherever `money` changes).
+network.on("money", (m) => {
+  lbUpsert(m.id, { money: m.money });
 });
 network.on("state", (m) => {
   remotes.setState(m.id, m.x, m.z, m.ry, m.moving, m.sitting, m.seatY, m.ride, m.held, m.y);
@@ -739,6 +799,9 @@ hud.onJoin = ({ name, color }) => {
   // storage — every restore below then falls back to the live defaults). Build the
   // avatar with the SAVED appearance so it comes back identical; on a first visit
   // use the join-card colour.
+  // Remember our display name for our own MONEY LEADERBOARD entry (everyone else's
+  // name rides the server roster; ours is local).
+  myName = name;
   const saved = persist.load();
   const initialAppearance = saved?.appearance || { color };
   local = new LocalPlayer(scene, controls, collidersAll, initialAppearance, name, seats, groundAll, spawn);
@@ -1092,6 +1155,11 @@ function frame() {
             audio.blip();
             hud.toast(`Robbed $${cash}!`);
             persist.update({ money }); // persist the new cash total on every change
+            // MONEY LEADERBOARD: publish our new total so the server stores it and
+            // everyone else re-ranks us, and refresh our own standings entry locally
+            // (the server relays "money" to OTHERS only, so we never echo back).
+            network.sendMoney(money);
+            lbUpsert(network.id, { money });
           }
         }
       }
@@ -1216,6 +1284,20 @@ function frame() {
   if (controls.consumeMusic()) {
     syncMusicWidget();
     hud.toggleMusic();
+  }
+
+  // MONEY LEADERBOARD (L): toggle the standings panel on the key edge. Like the
+  // help legend / mixer / music widget it's a non-locking HUD overlay; the model is
+  // kept current by the network handlers + rob path, so it's ready whenever opened.
+  if (controls.consumeLeaderboard()) hud.toggleLeaderboard();
+  // Rebuild + repaint the standings ONLY when the model changed (a local rob, a
+  // relayed "money", or a join/leave) and at most ~4x/sec, so the per-frame loop
+  // never sorts/allocates while nothing is changing.
+  _lbThrottle += rawDt;
+  if (_lbDirty && _lbThrottle >= 0.25) {
+    _lbThrottle = 0;
+    _lbDirty = false;
+    pushLeaderboard();
   }
 
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single

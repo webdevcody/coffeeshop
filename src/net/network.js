@@ -89,6 +89,13 @@ export class Network {
     this._send({ type: "chat", text });
   }
 
+  // SHARED MONEY LEADERBOARD: push our running cash total so the server stores it
+  // (and carries it in the roster for newcomers) and relays it to the OTHER clients
+  // for ranking. The amount travels as `money`; `type` stays the discriminator.
+  sendMoney(n) {
+    this._send({ type: "money", money: n });
+  }
+
   // Relay a (purely cosmetic) weapon shot so everyone sees the same tracer /
   // rocket / grenade + explosion. `origin` and `dir` are world-space vectors
   // (anything with x/y/z); the server validates the kind + 6 finite numbers and

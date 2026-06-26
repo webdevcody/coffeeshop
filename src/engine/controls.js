@@ -42,6 +42,7 @@ export function createControls(domElement) {
   let helpPressed = false; // edge-triggered H, drained by consumeHelp() (toggle the controls legend)
   let mixerPressed = false; // edge-triggered J, drained by consumeMixer() (toggle the sound mixer)
   let musicPressed = false; // edge-triggered N, drained by consumeMusic() (toggle the lofi music widget)
+  let leaderboardPressed = false; // edge-triggered L, drained by consumeLeaderboard() (toggle the money leaderboard)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -76,7 +77,12 @@ export function createControls(domElement) {
     // ollie lives on Space (queued in the Space handler above); J is now free for
     // the SOUND MIXER below, so it no longer doubles as an ollie.
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
-    if (e.code === "KeyL" && !keys.has("KeyL")) shuvPressed = true;
+    // L is the pop-shuvit while skating (drained by rides.js in skate mode only) AND
+    // the MONEY LEADERBOARD toggle the rest of the time. Each lives on its own edge
+    // flag, exactly like Space doubling as sit + ollie above, so the two never fight:
+    // consumeShuv() only reads shuvPressed while skating; consumeLeaderboard() reads
+    // leaderboardPressed each frame in main.js.
+    if (e.code === "KeyL" && !keys.has("KeyL")) { shuvPressed = true; leaderboardPressed = true; }
     // Weapon swap (1=gun, 2=rocket, 3=grenade, 0=holster) + B to fire. All FREE
     // keys, edge-triggered so a held key fires once. Drained by main.js.
     if (e.code === "Digit1" && !keys.has("Digit1")) weaponSlot = 1;
@@ -411,6 +417,16 @@ export function createControls(domElement) {
     return pressed;
   }
 
+  // True once per L press (toggle the money leaderboard), then resets. Not gated by
+  // `locked` (the leaderboard is a harmless HUD overlay, like the help legend, mixer
+  // and music widget), but it IS cleared in setLocked so an edge can't carry into a
+  // game overlay.
+  function consumeLeaderboard() {
+    const pressed = leaderboardPressed;
+    leaderboardPressed = false;
+    return pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -489,10 +505,11 @@ export function createControls(domElement) {
       helpPressed = false;
       mixerPressed = false;
       musicPressed = false;
+      leaderboardPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeClickFire, isFireHeld, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, consumeMusic, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeClickFire, isFireHeld, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, consumeMusic, consumeLeaderboard, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {
