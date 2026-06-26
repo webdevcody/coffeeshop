@@ -10,7 +10,7 @@ memory = 64 # MB — Node + ws need more headroom than a static nginx
 # Multiplayer state lives in-process, so keep a single replica (clients on
 # different replicas wouldn't see each other without a shared backplane).
 replicas = 1
-domain = "coffeeshop.games.webdevcody.com"
+domain = "devtown.webdevcody.com"
 port = 80
 
   [service.healthCheck]
