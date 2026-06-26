@@ -93,10 +93,16 @@ export function buildCity(scene) {
 
   // Ambient weather: a slow clear→overcast→rain→clearing cycle with drifting clouds,
   // pooled instanced rain that blankets the map, distant lightning, and a wind value.
+  // getRain()/getTornadoes() surface the live storm so the audio + tornado-fling
+  // layers above can react. Default to inert accessors if weather fails to build.
+  let getRain = () => 0;
+  let getTornadoes = () => [];
   try {
     const weather = buildCityWeather();
     if (weather && weather.group) group.add(weather.group);
     if (weather && typeof weather.update === "function") updates.push(weather.update);
+    if (weather && typeof weather.getRain === "function") getRain = weather.getRain;
+    if (weather && typeof weather.getTornadoes === "function") getTornadoes = weather.getTornadoes;
   } catch (e) {
     console.warn("[city] cityWeather failed", e);
   }
@@ -131,5 +137,5 @@ export function buildCity(scene) {
     }
   };
 
-  return { group, colliders, ground, update, getTraffic, getPedestrians };
+  return { group, colliders, ground, update, getTraffic, getPedestrians, getRain, getTornadoes };
 }

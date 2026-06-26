@@ -47,7 +47,7 @@ const postFX = createPostFX(renderer, scene, camera);
 // its own onResize (camera aspect + renderer/label sizes) to the resize event;
 // we add a second listener that resizes the composer with the same dimensions.
 window.addEventListener("resize", () => postFX.setSize(window.innerWidth, window.innerHeight));
-const { colliders, seats, bar, ground, spawn, tables, getTraffic, getPedestrians, update: updateWorld } = buildCoffeeshop(scene);
+const { colliders, seats, bar, ground, spawn, tables, getTraffic, getPedestrians, getRain, getTornadoes, update: updateWorld } = buildCoffeeshop(scene);
 
 // OCEAN: wraps the whole city in a huge animated sea so the landmass reads as an
 // island — adds a beach apron, a main dock + drivable boat, and four little
@@ -214,6 +214,17 @@ let money = 0;
 // SWIM: tracks last frame's swim state so we can fire the splash one-shot exactly
 // on the walk/fall → swim transition (entering the sea), not every frame afloat.
 let _wasSwimming = false;
+// JUMP whoosh: tracks last frame's airborne state so we play the whoosh one-shot
+// exactly on the ground → air transition under our own power (a Space hop / swim
+// pop), not every airborne frame. Cannon/tornado glides play their own whoosh.
+let _wasAirborne = false;
+// JETPACK liftoff whoosh: tracks last frame's fly state so engaging the pack
+// (F → local.flying flips true) plays a single whoosh, not one per frame aloft.
+let _wasFlying = false;
+// FOOTSTEP cadence: a small accumulator that ticks a soft step one-shot roughly
+// every STEP_INTERVAL seconds while walking on foot.
+let _stepT = 0;
+const STEP_INTERVAL = 0.3;
 let lastStateSent = 0;
 let lastSent = { x: NaN, z: NaN, y: NaN, ry: NaN, moving: false, sitting: false, ride: null, held: null };
 
@@ -624,6 +635,9 @@ hud.onJoin = ({ name, color }) => {
   // instead of pinning y=0 — you walk the station interior after docking.
   local.setStation(space.stationGround, space.stationFloorY);
   _wasSwimming = false;
+  _wasAirborne = false;
+  _wasFlying = false;
+  _stepT = 0;
   // Coffee-bar shop: buying an item puts it in your hand (one at a time).
   hud.setShopItems(ITEMS);
   hud.onBuy = (id) => {
@@ -719,6 +733,10 @@ function frame() {
   space.update(dt); // animate space: station spin, blinking beacons, drifting sats, star twinkle
   airport.update(dt); // animate the airfield: rotating radar dish, blinking strobes, swaying windsock
   cannon.update(dt); // animate the secret cannon: slide the door, flicker torches/fuse, curl muzzle smoke
+  // RAIN audio bed: track the live storm density (0..1) every frame. The rain
+  // gain is smoothed inside audio.setRain, and the call is a guarded no-op before
+  // the context unlocks, so this is cheap + safe to pump unconditionally.
+  audio.setRain(getRain ? getRain() : 0);
 
   if (joined && local) {
     // --- SECRET CANNON (on-foot) ---------------------------------------------
@@ -799,6 +817,51 @@ function frame() {
       // SWIM: splash one-shot on the moment we hit the water (not while afloat).
       if (local.swimming && !_wasSwimming) audio.splash();
       _wasSwimming = local.swimming;
+      // JUMP whoosh: fire the moment we leave the ground under our own power (a
+      // Space hop / swim pop-up rises with vy > 0). Cannon + tornado glides set
+      // `launched`, and the jetpack sets `flying`, so those play their own whoosh
+      // and are excluded here — no double-whoosh.
+      if (local.airborne && !_wasAirborne && local.vy > 0 && !local.launched && !local.flying) {
+        audio.whoosh();
+      }
+      _wasAirborne = local.airborne;
+      // JETPACK liftoff whoosh: one shot the moment the pack engages (F).
+      if (local.flying && !_wasFlying) audio.whoosh();
+      _wasFlying = local.flying;
+      // FOOTSTEPS: while actually walking on the ground (not airborne / swimming),
+      // tick a soft step one-shot on a fixed cadence. Cheap accumulator; the step
+      // sound is a guarded no-op before the audio context unlocks.
+      if (local.moving && !local.airborne && !local.swimming && !local.sitting) {
+        _stepT += dt;
+        if (_stepT >= STEP_INTERVAL) { audio.footstep(); _stepT -= STEP_INTERVAL; }
+      } else {
+        _stepT = STEP_INTERVAL; // primed so the next step fires promptly on resume
+      }
+      // TORNADO FLING: a live, full-strength funnel sweeping over a grounded walker
+      // yanks them off their feet — a big upward pop + an outward tumble (local.fling)
+      // so they sail across the map. Guarded so it only catches us on the ground (not
+      // mid-air / flying / swimming / seated / already parachuting); the storm + the
+      // landing paths re-arm it. Deploy the parachute (P) to float down.
+      if (!local.airborne && !local.flying && !local.swimming && !local.sitting && !local.parachuting) {
+        const funnels = getTornadoes ? getTornadoes() : null;
+        if (funnels) {
+          for (let i = 0; i < funnels.length; i++) {
+            const f = funnels[i];
+            if (!f.active) continue;
+            const dx = f.x - local.pos.x, dz = f.z - local.pos.z;
+            if (dx * dx + dz * dz <= f.radius * f.radius) {
+              local.fling(18);
+              audio.whoosh();
+              hud.toast("🌪️ Caught in a tornado! Press P for a parachute");
+              break;
+            }
+          }
+        }
+      }
+      // PARACHUTE (P): while airborne (from a fling / cannon launch / fall) and not
+      // already under canopy, deploy the chute — clamps the descent to a gentle
+      // float. deployParachute() returns true only if it actually opened.
+      if (controls.consumeParachute() && local.deployParachute()) audio.whoosh();
       // ROB (R): mug the nearest pedestrian within ~2.5 m. rob() pays out a one-off
       // $5..$50 (0 if that ped was robbed too recently — no farming) and triggers the
       // ped's hands-up/flee reaction. Cash lands in `money`, with a blip + toast.
@@ -827,8 +890,12 @@ function frame() {
       // A ride prompt (drive/skate) takes precedence over the sit prompt; the
       // SECRET CANNON hints (door / muzzle) take precedence over both when you're
       // standing in their spots behind/inside the cafe.
+      // While airborne high up (a fling / cannon launch / fall) and not yet under a
+      // canopy, the chute hint takes precedence over everything else.
+      const airHint = (local.airborne && !local.parachuting && local.pos.y > 3) ? "🪂 Press P for a parachute" : null;
       hud.setSitPrompt(
-        nearMuzzle ? "💥 Press E to FIRE the cannon"
+        airHint ? airHint
+        : nearMuzzle ? "💥 Press E to FIRE the cannon"
         : nearDoor ? (cannon.doorOpen ? "🚪 Press E to close the secret door" : "🚪 Press E to open the secret door")
         : (ride.prompt || local.sitPromptText())
       );

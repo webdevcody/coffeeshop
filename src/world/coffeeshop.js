@@ -1209,10 +1209,14 @@ export function buildCoffeeshop(scene) {
 
   // GTA hooks surfaced up to main.js: getTraffic() (roaming cars you can steal) and
   // getPedestrians() (people you can rob). Both come straight from cityLife via city.
+  // Weather hooks ride along the same way: getRain() (0..1 storm density, for the
+  // rain audio bed) and getTornadoes() (live funnels, for the tornado-fling check).
   return {
     group, colliders, lights, seats, bar, ground, spawn, tables, update,
     getTraffic: city.getTraffic,
     getPedestrians: city.getPedestrians,
+    getRain: city.getRain || (() => 0),
+    getTornadoes: city.getTornadoes || (() => []),
   };
 }
 
