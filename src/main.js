@@ -8,6 +8,7 @@ import { createEngine } from "./engine/scene.js";
 import { createPostFX } from "./engine/post.js";
 import { createControls } from "./engine/controls.js";
 import { createAudio } from "./engine/audio.js";
+import { createLofiMusic } from "./engine/music.js";
 import { buildCoffeeshop } from "./world/coffeeshop.js";
 import { buildOcean } from "./world/ocean.js";
 import { buildSpace } from "./world/space.js";
@@ -38,6 +39,17 @@ const { renderer, scene, camera, labelRenderer, updateDayNight, setTimeOfDay, ge
 // gesture) — until then every call is a safe no-op. Drives ambient birds/wind, a
 // vehicle engine hum, and one-shots (splash/whoosh/etc.).
 const audio = createAudio();
+// Procedural LOFI MUSIC manager: builds its own WebAudio graph (warm chords, a
+// laid-back kick/snare/hihat beat, a simple bass, + faint vinyl crackle) scheduled
+// ahead on the AudioContext clock, played into the mixer's "music" bus so the J
+// panel + master volume apply. The ctx + music bus only exist after resume() (the
+// join gesture), so we pass them as getters — every transport call is a guarded
+// no-op until then. Starts PAUSED; autostarted on join (a real user gesture) and
+// controlled by the N music widget below + the J mixer's Music slider.
+const music = createLofiMusic({
+  ctx: () => audio.getContext(),
+  destination: () => audio.getMusicBus(),
+});
 // Post-processing pipeline: a final screen-space pass (subtle bloom + FXAA) that
 // makes the bright bits — neon, lamps, headlights, lit windows, the sun disc —
 // glow. Built on the existing renderer/scene/camera; scene.js still owns tone
@@ -695,6 +707,11 @@ hud.onJoin = ({ name, color }) => {
   // NEVER block joining / building the player (a thrown audio call here once aborted
   // join before the avatar was created — "no character loads").
   try { audio.resume(); audio.setAmbient(true); } catch (e) { console.warn("[audio] init failed", e); }
+  // Kick off the chill LOFI MUSIC bed. The join click is a real user gesture, so
+  // the ctx is now resumed and play() can start; it rides the "music" mixer bus,
+  // so a previously-muted/lowered Music slider is respected. Guarded so audio can
+  // NEVER block joining. Toggle/skip/volume live in the N music widget.
+  try { music.play(); } catch (e) { console.warn("[music] init failed", e); }
   // Restore saved state from a previous visit (null on a first visit or blocked
   // storage — every restore below then falls back to the live defaults). Build the
   // avatar with the SAVED appearance so it comes back identical; on a first visit
@@ -817,6 +834,19 @@ function mixerOnMute(name, m) {
   if (name === "master") audio.setMuted(m);
   else audio.setBusMuted(name, m);
 }
+
+// --- Lofi music player (N) -------------------------------------------------
+// Wire the HUD music widget to the procedural lofi manager: play/pause + skip
+// route to the transport, the slider rides the "music" mixer bus, and after each
+// action we reflect the live state (button + track name) back into the widget.
+function syncMusicWidget() {
+  hud.setMusicPlaying(music.isPlaying());
+  hud.setMusicTrack(music.trackName());
+  hud.setMusicVolume(audio.getBusVolume("music"));
+}
+hud.onMusicToggle = () => { music.toggle(); syncMusicWidget(); };
+hud.onMusicNext = () => { music.next(); syncMusicWidget(); };
+hud.onMusicVolume = (v) => audio.setBusVolume("music", v);
 
 // --- Game loop -------------------------------------------------------------
 const clock = new THREE.Clock();
@@ -1145,6 +1175,16 @@ function frame() {
     hud.toggleMixer();
   }
 
+  // LOFI MUSIC (N): toggle the music player widget on the key edge. Like the help
+  // legend + mixer it's a non-locking HUD overlay. Sync its button/track/volume to
+  // the live music state on every toggle so it always reflects reality (the join
+  // autostart, a J-panel Music slider change, etc.). controls.js ignores keydown
+  // while a slider <input> is focused, so dragging the volume can't leak into the game.
+  if (controls.consumeMusic()) {
+    syncMusicWidget();
+    hud.toggleMusic();
+  }
+
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
   // SpotLight to the camera and aim it along the camera's forward so it lights
   // exactly what you face. Done AFTER all camera moves this frame (walk / drive /
@@ -1354,5 +1394,5 @@ function updateMap() {
 requestAnimationFrame(frame);
 
 // Expose a little surface for smoke tests / debugging.
-window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, gameMap, topCam, setTimeOfDay, getTimeOfDay };
+window.__coffee = { scene, camera, renderer, network, remotes, get local() { return local; }, voice, screenShare, inWorld, ambient, rides, weapons, ocean, space, airport, cannon, audio, music, gameMap, topCam, setTimeOfDay, getTimeOfDay };
 window.__coffeeReady = true;

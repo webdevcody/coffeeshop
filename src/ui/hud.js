@@ -16,6 +16,9 @@ export class HUD {
     this.onToggleShare = null; // toggle screen sharing
     this.onBuy = null; // (itemId) => void — buy an item at the coffee bar
     this.onCustomize = null; // ({ color?, skin?, hair? }) — a swatch was picked
+    this.onMusicToggle = null; // () => void — play/pause the lofi music
+    this.onMusicNext = null; // () => void — skip to a fresh lofi track
+    this.onMusicVolume = null; // (vol 0..1) => void — ride the music bus volume
     this.appearance = { color: null, skin: null, hair: null };
     this.joined = false;
     this._buildJoin();
@@ -126,12 +129,22 @@ export class HUD {
           <div class="help-row"><kbd>R</kbd><span>Rob someone</span></div>
           <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
           <div class="help-row"><kbd>J</kbd><span>Sound mixer</span></div>
+          <div class="help-row"><kbd>N</kbd><span>Lofi music</span></div>
           <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
         </div>
       </div>
       <div class="mixer-panel hidden" id="mixer-panel">
         <div class="mixer-title">🎚️ Sound mixer <span class="mixer-hint">press J to hide</span></div>
         <div class="mixer-list" id="mixer-list"></div>
+      </div>
+      <div class="music-panel hidden" id="music-panel">
+        <div class="music-title">🎵 Lofi music <span class="music-hint">press N to hide</span></div>
+        <div class="music-track" id="music-track">—</div>
+        <div class="music-controls">
+          <button class="music-btn" id="music-play" aria-label="Play or pause music">▶</button>
+          <button class="music-btn" id="music-next" aria-label="Next track">⏭</button>
+          <input type="range" class="music-vol" id="music-vol" min="0" max="100" step="1" value="100" aria-label="Music volume" />
+        </div>
       </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
@@ -169,6 +182,11 @@ export class HUD {
     this.helpPanel = ui.querySelector("#help-panel");
     this.mixerPanel = ui.querySelector("#mixer-panel");
     this.mixerList = ui.querySelector("#mixer-list");
+    this.musicPanel = ui.querySelector("#music-panel");
+    this.musicTrack = ui.querySelector("#music-track");
+    this.musicPlayBtn = ui.querySelector("#music-play");
+    this.musicNextBtn = ui.querySelector("#music-next");
+    this.musicVol = ui.querySelector("#music-vol");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
@@ -218,6 +236,13 @@ export class HUD {
     this.micBtn.addEventListener("click", () => this.onToggleMic?.());
     this.deafenBtn.addEventListener("click", () => this.onToggleDeafen?.());
     this.shareBtn.addEventListener("click", () => this.onToggleShare?.());
+
+    // Lofi music player widget (toggled with N). The buttons + slider just surface
+    // their intent through callbacks; main.js drives the actual music manager and
+    // calls back into setMusicPlaying / setMusicTrack to reflect the live state.
+    this.musicPlayBtn.addEventListener("click", () => this.onMusicToggle?.());
+    this.musicNextBtn.addEventListener("click", () => this.onMusicNext?.());
+    this.musicVol.addEventListener("input", () => this.onMusicVolume?.((+this.musicVol.value) / 100));
 
     // Enter focuses chat when not already typing; Escape blurs.
     window.addEventListener("keydown", (e) => {
@@ -509,6 +534,40 @@ export class HUD {
   toggleMixer() {
     if (!this.mixerPanel) return;
     this.mixerPanel.classList.toggle("hidden");
+  }
+
+  // --- Lofi music player (N) -----------------------------------------------
+  // Show/hide + toggle the music widget (matches the help/mixer overlays).
+  setMusicVisible(on) {
+    if (!this.musicPanel) return;
+    this.musicPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleMusic() {
+    if (!this.musicPanel) return;
+    this.musicPanel.classList.toggle("hidden");
+  }
+
+  // Reflect the play/pause state on the button (▶ when paused, ⏸ when playing).
+  setMusicPlaying(on) {
+    if (!this.musicPlayBtn) return;
+    this.musicPlayBtn.textContent = on ? "⏸" : "▶";
+    this.musicPlayBtn.classList.toggle("active", !!on);
+    this.musicPlayBtn.setAttribute("aria-label", on ? "Pause music" : "Play music");
+  }
+
+  // Show the current track name (procedural progression/key).
+  setMusicTrack(name) {
+    if (!this.musicTrack) return;
+    const txt = name || "—";
+    if (this.musicTrack.textContent !== txt) this.musicTrack.textContent = txt;
+  }
+
+  // Sync the volume slider to the live music-bus level (0..1). Skipped while the
+  // slider is focused so syncing on open can't fight an in-progress drag.
+  setMusicVolume(v) {
+    if (!this.musicVol || document.activeElement === this.musicVol) return;
+    this.musicVol.value = String(Math.round(Math.max(0, Math.min(1, v || 0)) * 100));
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're

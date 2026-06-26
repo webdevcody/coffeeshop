@@ -41,6 +41,7 @@ export function createControls(domElement) {
   let parachutePressed = false; // edge-triggered P, drained by consumeParachute() (deploy the chute mid-air)
   let helpPressed = false; // edge-triggered H, drained by consumeHelp() (toggle the controls legend)
   let mixerPressed = false; // edge-triggered J, drained by consumeMixer() (toggle the sound mixer)
+  let musicPressed = false; // edge-triggered N, drained by consumeMusic() (toggle the lofi music widget)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -98,6 +99,9 @@ export function createControls(domElement) {
     // J toggles the SOUND MIXER panel (a FREE key). Edge-triggered; drained by
     // consumeMixer() in main.js and cleared in setLocked like the other edges.
     if (e.code === "KeyJ" && !keys.has("KeyJ")) mixerPressed = true;
+    // N toggles the LOFI MUSIC player widget (a FREE key). Edge-triggered; drained
+    // by consumeMusic() in main.js and cleared in setLocked like the other edges.
+    if (e.code === "KeyN" && !keys.has("KeyN")) musicPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -398,6 +402,15 @@ export function createControls(domElement) {
     return pressed;
   }
 
+  // True once per N press (toggle the lofi music widget), then resets. Not gated by
+  // `locked` (the music player is a harmless HUD overlay, like the help legend and
+  // mixer), but it IS cleared in setLocked so an edge can't carry into a game overlay.
+  function consumeMusic() {
+    const pressed = musicPressed;
+    musicPressed = false;
+    return pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -475,10 +488,11 @@ export function createControls(domElement) {
       parachutePressed = false;
       helpPressed = false;
       mixerPressed = false;
+      musicPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeClickFire, isFireHeld, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeClickFire, isFireHeld, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, consumeMusic, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

@@ -55,12 +55,13 @@ export function createAudio() {
     { name: "engine", label: "Engine" },    // vehicle hum (car/boat/rocket/…)
     { name: "weather", label: "Rain" },     // rain bed
     { name: "sfx", label: "Effects" },      // one-shots: blip/whoosh/splash/…
+    { name: "music", label: "Music" },      // procedural lofi music bed (engine/music.js)
   ];
-  let buses = null; // { ambient, wind, engine, weather, sfx } GainNodes (post-resume)
+  let buses = null; // { ambient, wind, engine, weather, sfx, music } GainNodes (post-resume)
   // Per-bus level (0..1) + mute, defaulting to unity so default behaviour/levels
   // are byte-identical to before the mixer existed. Overwritten by any saved state.
-  const busVolume = { ambient: 1, wind: 1, engine: 1, weather: 1, sfx: 1 };
-  const busMuted = { ambient: false, wind: false, engine: false, weather: false, sfx: false };
+  const busVolume = { ambient: 1, wind: 1, engine: 1, weather: 1, sfx: 1, music: 1 };
+  const busMuted = { ambient: false, wind: false, engine: false, weather: false, sfx: false, music: false };
   // Persisted mixer state (master + buses) so levels survive reloads.
   const STORE_KEY = "coffee.mixer";
 
@@ -638,6 +639,25 @@ export function createAudio() {
     return name in busMuted ? busMuted[name] : false;
   }
 
+  // ── Music bus plumbing (for engine/music.js) ────────────────────────────────
+  // The lofi music manager builds its own WebAudio graph and feeds it into the
+  // "music" mixer bus, so the J panel + master + persistence all apply. These
+  // expose the live AudioContext (null until the first resume()) and the music bus
+  // node (the bus once resume() built it, else master as a harmless fallback). Both
+  // are getters because the ctx/buses only exist after the first user gesture — the
+  // music manager resolves them lazily on its first play().
+  function getContext() {
+    return ctx;
+  }
+  function getMusicBus() {
+    return ctx ? busNode("music") : null;
+  }
+  // Convenience: connect a source node straight into the music bus.
+  function connectMusic(node) {
+    if (node && typeof node.connect === "function") node.connect(busNode("music"));
+    return node;
+  }
+
   function setAmbient(on) {
     want.ambient = !!on;
     applyAmbient();
@@ -691,6 +711,9 @@ export function createAudio() {
     getBusVolume,
     setBusMuted,
     getBusMuted,
+    getContext,
+    getMusicBus,
+    connectMusic,
     setAmbient,
     setRain,
     setEngine,
