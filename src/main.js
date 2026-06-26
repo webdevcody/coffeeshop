@@ -701,6 +701,26 @@ hud.onToggleVoice = () => {
 hud.onToggleMic = () => hud.setMicMuted(voice.toggleMicMute());
 hud.onToggleDeafen = () => hud.setDeafened(voice.toggleDeafen());
 
+// --- Sound mixer (J) -------------------------------------------------------
+// Map a mixer-panel row name to the audio API: the reserved "master" row drives
+// the master gain, every other name is one of audio.getBuses(). Defined once and
+// handed to hud.buildMixer the first time the panel opens, so the sliders + mute
+// toggles ride the live WebAudio levels (smoothed + persisted inside audio.js).
+function mixerGetVol(name) {
+  return name === "master" ? audio.getMasterVolume() : audio.getBusVolume(name);
+}
+function mixerOnChange(name, v) {
+  if (name === "master") audio.setMasterVolume(v);
+  else audio.setBusVolume(name, v);
+}
+function mixerGetMuted(name) {
+  return name === "master" ? audio.getMuted() : audio.getBusMuted(name);
+}
+function mixerOnMute(name, m) {
+  if (name === "master") audio.setMuted(m);
+  else audio.setBusMuted(name, m);
+}
+
 // --- Game loop -------------------------------------------------------------
 const clock = new THREE.Clock();
 let previewAngle = 0;
@@ -973,6 +993,17 @@ function frame() {
   // CONTROLS LEGEND (H): toggle the on-screen help panel on the key edge. Cheap +
   // safe to pump every frame; the panel lives in the game-ui (hidden before join).
   if (controls.consumeHelp()) hud.toggleHelp();
+
+  // SOUND MIXER (J): toggle the live audio mixer on the key edge. The panel is
+  // built ONCE from audio.getBuses() (buildMixer is idempotent, so calling it on
+  // every open is a no-op after the first) and wired to the live bus/master gains.
+  // Like the help legend it's a non-locking HUD overlay — it stays open while you
+  // move; controls.js already ignores keydown while a slider <input> is focused,
+  // so dragging a slider can't leak WASD into the game.
+  if (controls.consumeMixer()) {
+    hud.buildMixer(audio.getBuses(), mixerGetVol, mixerOnChange, mixerGetMuted, mixerOnMute);
+    hud.toggleMixer();
+  }
 
   // FLASHLIGHT (V): toggle on the key edge, then (while lit) snap the single
   // SpotLight to the camera and aim it along the camera's forward so it lights

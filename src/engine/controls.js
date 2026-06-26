@@ -33,6 +33,7 @@ export function createControls(domElement) {
   let robPressed = false; // edge-triggered R, drained by consumeRob() (rob a nearby pedestrian)
   let parachutePressed = false; // edge-triggered P, drained by consumeParachute() (deploy the chute mid-air)
   let helpPressed = false; // edge-triggered H, drained by consumeHelp() (toggle the controls legend)
+  let mixerPressed = false; // edge-triggered J, drained by consumeMixer() (toggle the sound mixer)
   let locked = false; // suppress movement/sit while a game overlay is open
   // Seated board-view mode: while on, orbit yaw is clamped to a gentle arc
   // around the seat-facing baseline and pitch to a comfy top-down-ish range so
@@ -63,8 +64,9 @@ export function createControls(domElement) {
     if (e.code === "KeyF" && !keys.has("KeyF")) jetpackPressed = true;
     // V toggles the FLASHLIGHT (a FREE key). Edge-triggered like F.
     if (e.code === "KeyV" && !keys.has("KeyV")) flashlightPressed = true;
-    // Skate trick keys (only consumed in skate mode): J ollie, K kickflip, L shuvit.
-    if (e.code === "KeyJ" && !keys.has("KeyJ")) olliePressed = true;
+    // Skate trick keys (only consumed in skate mode): K kickflip, L shuvit. The
+    // ollie lives on Space (queued in the Space handler above); J is now free for
+    // the SOUND MIXER below, so it no longer doubles as an ollie.
     if (e.code === "KeyK" && !keys.has("KeyK")) flipPressed = true;
     if (e.code === "KeyL" && !keys.has("KeyL")) shuvPressed = true;
     // Weapon swap (1=gun, 2=rocket, 3=grenade, 0=holster) + B to fire. All FREE
@@ -86,6 +88,9 @@ export function createControls(domElement) {
     // H toggles the on-screen CONTROLS LEGEND (a FREE key). Edge-triggered; drained
     // by consumeHelp() in main.js and cleared in setLocked like the other edges.
     if (e.code === "KeyH" && !keys.has("KeyH")) helpPressed = true;
+    // J toggles the SOUND MIXER panel (a FREE key). Edge-triggered; drained by
+    // consumeMixer() in main.js and cleared in setLocked like the other edges.
+    if (e.code === "KeyJ" && !keys.has("KeyJ")) mixerPressed = true;
     keys.add(e.code);
   });
   window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -343,6 +348,15 @@ export function createControls(domElement) {
     return pressed;
   }
 
+  // True once per J press (toggle the sound mixer), then resets. Not gated by
+  // `locked` (the mixer is a harmless settings overlay, like the help legend), but
+  // it IS cleared in setLocked so an edge can't carry across into a game overlay.
+  function consumeMixer() {
+    const pressed = mixerPressed;
+    mixerPressed = false;
+    return pressed;
+  }
+
   // Continuous in-air spin steer for skate tricks: A/D (or arrows / joystick) held
   // while airborne rotates the rider for 180/360s. +1 = clockwise, -1 = counter.
   function spinAxis() {
@@ -417,10 +431,11 @@ export function createControls(domElement) {
       robPressed = false;
       parachutePressed = false;
       helpPressed = false;
+      mixerPressed = false;
     }
   }
 
-  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, consumeRob, consumeParachute, consumeHelp, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
+  return { move, orbit, zoom, update, consumeSit, consumeDrop, consumeUse, consumeJetpack, consumeFlashlight, consumeWeaponSlot, consumeFire, consumeMap, consumeRob, consumeParachute, consumeHelp, consumeMixer, sprintLevel, flyThrust, consumeOllie, consumeFlip, consumeShuv, spinAxis, driveAxis, setLocked, setSeated, get seated() { return seated.on; } };
 }
 
 function clamp(v, lo, hi) {

@@ -125,8 +125,13 @@ export class HUD {
           <div class="help-row"><kbd>V</kbd><span>Flashlight</span></div>
           <div class="help-row"><kbd>R</kbd><span>Rob someone</span></div>
           <div class="help-row"><kbd>G</kbd><span>Drop held item</span></div>
+          <div class="help-row"><kbd>J</kbd><span>Sound mixer</span></div>
           <div class="help-row"><kbd>H</kbd><span>Toggle this help</span></div>
         </div>
+      </div>
+      <div class="mixer-panel hidden" id="mixer-panel">
+        <div class="mixer-title">🎚️ Sound mixer <span class="mixer-hint">press J to hide</span></div>
+        <div class="mixer-list" id="mixer-list"></div>
       </div>
       <div class="stamina-bar hidden" id="stamina-bar"><div class="stamina-fill" id="stamina-fill"></div></div>
       <div class="minimap" id="minimap">
@@ -162,6 +167,8 @@ export class HUD {
     this.chatLog = ui.querySelector("#chat-log");
     this.sitPrompt = ui.querySelector("#sit-prompt");
     this.helpPanel = ui.querySelector("#help-panel");
+    this.mixerPanel = ui.querySelector("#mixer-panel");
+    this.mixerList = ui.querySelector("#mixer-list");
     this.staminaBar = ui.querySelector("#stamina-bar");
     this.staminaFill = ui.querySelector("#stamina-fill");
     this.shopPanel = ui.querySelector("#shop-panel");
@@ -433,6 +440,75 @@ export class HUD {
   toggleHelp() {
     if (!this.helpPanel) return;
     this.helpPanel.classList.toggle("hidden");
+  }
+
+  // --- Sound mixer (J) -----------------------------------------------------
+  // Build the mixer panel once: a Master row plus one row per audio bus, each a
+  // labelled 0-100% slider + a mute toggle. `buses` is [{ name, label }] from
+  // audio.getBuses(); `getVol(name)` reads the current 0..1 level; `onChange(name,
+  // vol)` is called live as a slider drags; `getMuted(name)`/`onMute(name, muted)`
+  // drive the per-row mute toggle (both optional). The Master row is injected at
+  // the top under the reserved name "master" so the caller wires it the same way.
+  // Idempotent — a second call is a no-op, so main.js can call it on every open.
+  buildMixer(buses, getVol, onChange, getMuted, onMute) {
+    if (!this.mixerList || this._mixerBuilt) return;
+    this._mixerBuilt = true;
+    const rows = [{ name: "master", label: "Master" }, ...(buses || [])];
+    for (const b of rows) {
+      const row = document.createElement("div");
+      row.className = "mixer-row" + (b.name === "master" ? " master" : "");
+
+      const label = document.createElement("span");
+      label.className = "mixer-label";
+      label.textContent = b.label;
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.className = "mixer-slider";
+      slider.min = "0";
+      slider.max = "100";
+      slider.step = "1";
+      const v0 = getVol ? getVol(b.name) : 1;
+      slider.value = String(Math.round((v0 == null ? 1 : v0) * 100));
+      slider.setAttribute("aria-label", b.label + " volume");
+
+      const pct = document.createElement("span");
+      pct.className = "mixer-pct";
+      pct.textContent = slider.value + "%";
+
+      // Live drag → push the 0..1 level to audio.setBusVolume / setMasterVolume.
+      slider.addEventListener("input", () => {
+        pct.textContent = slider.value + "%";
+        onChange?.(b.name, (+slider.value) / 100);
+      });
+
+      const mute = document.createElement("button");
+      mute.type = "button";
+      mute.className = "mixer-mute";
+      const muted0 = getMuted ? !!getMuted(b.name) : false;
+      mute.classList.toggle("muted", muted0);
+      mute.textContent = muted0 ? "🔇" : "🔊";
+      mute.setAttribute("aria-label", "Mute " + b.label);
+      mute.addEventListener("click", () => {
+        const on = !mute.classList.contains("muted");
+        mute.classList.toggle("muted", on);
+        mute.textContent = on ? "🔇" : "🔊";
+        onMute?.(b.name, on);
+      });
+
+      row.append(label, slider, pct, mute);
+      this.mixerList.appendChild(row);
+    }
+  }
+
+  setMixerVisible(on) {
+    if (!this.mixerPanel) return;
+    this.mixerPanel.classList.toggle("hidden", !on);
+  }
+
+  toggleMixer() {
+    if (!this.mixerPanel) return;
+    this.mixerPanel.classList.toggle("hidden");
   }
 
   // Sprint stamina meter. `pct` is 0..1; `sprinting` tints the bar while you're
