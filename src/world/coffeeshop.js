@@ -420,7 +420,11 @@ export function buildCoffeeshop(scene) {
   }
 
   // --- Pendant lamps over the seating --------------------------------------
-  const lampSpots = [[-4, 4], [3, 4], [7, 4], [0.5, 7]];
+  // NOTE: no pendant over the central rug (~x 0.5, z 7)! The 3rd-person camera
+  // orbits right through that spot when you stand on the rug facing the counter —
+  // the camera ends up INSIDE the shade, point-blank to the lamp's PointLight,
+  // which blooms the whole screen into a white wedge (raycast-verified).
+  const lampSpots = [[-4, 4], [3, 4], [7, 4]];
   for (const [x, z] of lampSpots) {
     const { group: lamp, light } = makePendantLamp();
     lamp.position.set(x, h - 1.4, z);
@@ -680,15 +684,9 @@ export function buildCoffeeshop(scene) {
   fairyLights(-halfW + 1.5, halfD - 1.5, -halfW + 1.5, 2.5, 8); // down the left
   fairyLights(halfW - 1.5, halfD - 1.5, halfW - 1.5, 2.5, 8); // down the right
 
-  // Soft window light shafts: faint glowing slabs angled in from the big front
-  // windows, selling the "afternoon sun" mood. depthWrite is off and opacity is
-  // tiny so they never obscure props; no collider, purely a volumetric hint.
-  for (const x of [-7, 7]) {
-    const shaft = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 5.2), DECOR.shaft);
-    shaft.position.set(x, 2.3, halfD - 2.4);
-    shaft.rotation.x = -Math.PI / 2.6;
-    group.add(shaft);
-  }
+  // (Window light-shaft planes removed: through the ACES + bloom pipeline they read
+  // as a blinding white wedge — verified day AND night — instead of a subtle
+  // volumetric hint. The string lights + pendants carry the cozy mood without them.)
 
   // ========================================================================
   // EXTRA COZY DECOR (pass 2) — a fireplace hearth nook, reading-nook side
@@ -1351,6 +1349,265 @@ export function buildCoffeeshop(scene) {
   // here can't steal a ride's E.
   const armory = { x: -halfW + 1.4, z: -9.5 };
 
+  // ========================================================================
+  // EXTRA COZY DECOR (pass 3) — the finishing layer that makes the room read
+  // as a real, lived-in café: exposed ceiling beams, a lazily-turning ceiling
+  // fan, a suspended mug/jar shelf over the bar, a rotating patisserie cake
+  // stand under a glass cloche, two cushioned window-seat nooks, board-game
+  // clutter, and flickering tea-lights. Everything hugs a wall, hangs from the
+  // ceiling, sits on an existing worktop, or fills a dead corner — the only new
+  // colliders are tight boxes around the two solid window benches, the couch-
+  // side game stack, so the entrance, bar approach, central lounge (spawn) and
+  // every game TABLE + SEAT stay clear. NO new PointLight is added: every glow
+  // below is an emissive material, flickered allocation-free in update().
+  // ========================================================================
+  let fanBlades = null;      // ceiling-fan blade group (spun in update)
+  let cakeTurntable = null;  // patisserie cake + plate (spun in update)
+
+  const EXTRA = {
+    beam: new THREE.MeshStandardMaterial({ color: "#4a3322", roughness: 0.78 }),
+    fanBlade: DECOR.shelfWood,
+    fanMetal: new THREE.MeshStandardMaterial({ color: "#2b2b2f", roughness: 0.4, metalness: 0.7 }),
+    fanGlobe: new THREE.MeshStandardMaterial({ color: "#fff4d8", emissive: "#ffdca0", emissiveIntensity: 1.1, roughness: 0.5, transparent: true, opacity: 0.85 }),
+    cloche: new THREE.MeshStandardMaterial({ color: "#dfeef2", roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.26, side: THREE.DoubleSide, depthWrite: false }),
+    plate: new THREE.MeshStandardMaterial({ color: "#f4efe6", roughness: 0.3 }),
+    sponge: new THREE.MeshStandardMaterial({ color: "#c98a4a", roughness: 0.85 }),
+    frosting: new THREE.MeshStandardMaterial({ color: "#f3dfe6", roughness: 0.6 }),
+    cherry: new THREE.MeshStandardMaterial({ color: "#c02434", roughness: 0.4 }),
+    // Tea-light flame — flickered together with the hearth in update().
+    flame: new THREE.MeshStandardMaterial({ color: "#ffd27a", emissive: "#ffb24a", emissiveIntensity: 1.7 }),
+    tin: new THREE.MeshStandardMaterial({ color: "#8a8f96", roughness: 0.4, metalness: 0.6 }),
+  };
+
+  // --- Exposed ceiling beams (a coffered warm-wood grid) --------------------
+  // Overhead only — no colliders. Long beams span X just under the ceiling; a
+  // couple of perpendicular beams sit a touch lower so the crossings don't
+  // z-fight. The pendant lamps + fairy lights now read as hung from the beams.
+  {
+    const beamGeoX = new THREE.BoxGeometry(WORLD.width, 0.22, 0.2);
+    for (const bz of [-8, -3.5, 1, 5.5, 9]) {
+      const beam = new THREE.Mesh(beamGeoX, EXTRA.beam);
+      beam.position.set(0, h - 0.12, bz);
+      beam.castShadow = true;
+      beam.receiveShadow = true;
+      group.add(beam);
+    }
+    const beamGeoZ = new THREE.BoxGeometry(0.2, 0.22, WORLD.depth);
+    for (const bx of [-6, 6]) {
+      const beam = new THREE.Mesh(beamGeoZ, EXTRA.beam);
+      beam.position.set(bx, h - 0.26, 0);
+      beam.castShadow = true;
+      group.add(beam);
+    }
+  }
+
+  // --- Ceiling fan over the central lounge (lazy spin, emissive globe) ------
+  // Sits above the central rug at (0.5, 4); there's no pendant there, so it
+  // doesn't collide with any hanging light. The globe is an emissive material,
+  // not a PointLight (the fairy lights + pendants already carry the room).
+  {
+    const fan = new THREE.Group();
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.4, 8), EXTRA.fanMetal);
+    rod.position.y = h - 0.2;
+    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.11, 0.14, 16), EXTRA.fanMetal);
+    motor.position.y = h - 0.42;
+    fan.add(rod, motor);
+    fanBlades = new THREE.Group();
+    fanBlades.position.y = h - 0.46;
+    const bladeGeo = new THREE.BoxGeometry(1.05, 0.02, 0.18);
+    for (let i = 0; i < 4; i++) {
+      const arm = new THREE.Group();
+      const blade = new THREE.Mesh(bladeGeo, EXTRA.fanBlade);
+      blade.position.x = 0.62;
+      blade.rotation.z = 0.12; // slight pitch on each paddle
+      blade.castShadow = true;
+      arm.add(blade);
+      arm.rotation.y = (i / 4) * Math.PI * 2;
+      fanBlades.add(arm);
+    }
+    const globe = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 12), EXTRA.fanGlobe);
+    globe.position.y = h - 0.54;
+    fan.add(fanBlades, globe);
+    fan.position.set(0.5, 0, 4);
+    group.add(fan);
+  }
+
+  // --- Suspended mug + jar shelf over the bar -------------------------------
+  // Two ledges hung on cords from the ceiling above the counter, well back
+  // toward the wall (z ≈ -halfD+0.95) and high (y > 2.9), so it clears both the
+  // back-bar shelf below it and the head of anyone standing at the order zone.
+  // No collider — it's entirely overhead.
+  {
+    const sx = -2.5, sz = -halfD + 0.95;
+    const lowerY = 2.9, upperY = 3.34;
+    for (const yy of [lowerY, upperY]) {
+      const ledge = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.06, 0.28), EXTRA.beam);
+      ledge.position.set(sx, yy, sz);
+      ledge.castShadow = true;
+      ledge.receiveShadow = true;
+      group.add(ledge);
+    }
+    for (const ex of [sx - 1.9, sx + 1.9]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, upperY - lowerY + 0.2, 0.24), EXTRA.beam);
+      post.position.set(ex, (lowerY + upperY) / 2, sz);
+      group.add(post);
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, h - (upperY + 0.1), 6), DECOR.string);
+      cord.position.set(ex, (upperY + 0.1 + h) / 2, sz);
+      group.add(cord);
+    }
+    // A row of mugs hanging out on the lower ledge.
+    for (let i = 0; i < 6; i++) {
+      const mug = makeMug(DECOR.mugColors[i % DECOR.mugColors.length]);
+      mug.position.set(sx - 1.55 + i * 0.62, lowerY + 0.03, sz);
+      mug.castShadow = false;
+      group.add(mug);
+    }
+    // Bean jars + a trailing plant on the upper ledge.
+    for (let i = 0; i < 3; i++) {
+      const jx = sx - 1.3 + i * 0.5;
+      const jar = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.26, 12), DECOR.jar);
+      jar.position.set(jx, upperY + 0.16, sz);
+      group.add(jar);
+      const beans = new THREE.Mesh(new THREE.CylinderGeometry(0.088, 0.088, 0.16, 12), DECOR.bean);
+      beans.position.set(jx, upperY + 0.11, sz);
+      group.add(beans);
+    }
+    const shPlant = makePlant(0.42);
+    shPlant.position.set(sx + 1.35, upperY + 0.03, sz);
+    group.add(shPlant);
+  }
+
+  // --- Rotating patisserie cake stand under a glass cloche ------------------
+  // On the clear right end of the counter worktop (counter top spans x[-6.09,
+  // 1.09]; the caddy ends at x≈0.51), so it clears the caddy, the pastry case
+  // and the order-zone walk path. The cake + plate spin under a static cloche.
+  {
+    const cx = 0.85, cz = -halfD + 1.35, cy = 1.10;
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.15, 0.05, 16), EXTRA.plate);
+    foot.position.set(cx, cy + 0.025, cz);
+    foot.castShadow = true;
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.12, 10), EXTRA.plate);
+    stem.position.set(cx, cy + 0.11, cz);
+    group.add(foot, stem);
+    cakeTurntable = new THREE.Group();
+    cakeTurntable.position.set(cx, cy + 0.17, cz);
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.02, 20), EXTRA.plate);
+    const l1 = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.09, 20), EXTRA.sponge);
+    l1.position.y = 0.065;
+    const ice = new THREE.Mesh(new THREE.CylinderGeometry(0.165, 0.165, 0.03, 20), EXTRA.frosting);
+    ice.position.y = 0.12;
+    const l2 = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.06, 20), EXTRA.frosting);
+    l2.position.y = 0.16;
+    cakeTurntable.add(plate, l1, ice, l2);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const ch = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 8), EXTRA.cherry);
+      ch.position.set(Math.cos(a) * 0.08, 0.2, Math.sin(a) * 0.08);
+      cakeTurntable.add(ch);
+    }
+    cakeTurntable.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    group.add(cakeTurntable);
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.24, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), EXTRA.cloche);
+    dome.position.set(cx, cy + 0.17, cz);
+    dome.renderOrder = 2;
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), EXTRA.plate);
+    knob.position.set(cx, cy + 0.42, cz);
+    group.add(dome, knob);
+  }
+
+  // --- Cushioned window-seat nooks under the two side windows ---------------
+  // Padded benches tucked under the left window (z=4) and right window (z=-4),
+  // each backed against its wall and registered as a plain REST seat (no table/
+  // gameTable). A tight collider hugs the bench body nudged toward the wall so
+  // you can always step up to the seat but not walk through it.
+  function makeWindowSeat(width) {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(width, 0.4, 0.62), DECOR.shelfWood);
+    base.position.y = 0.2;
+    base.castShadow = true;
+    base.receiveShadow = true;
+    g.add(base);
+    const cush = new THREE.Mesh(new THREE.BoxGeometry(width - 0.06, 0.12, 0.58), COZY.cushionA);
+    cush.position.y = 0.46;
+    cush.castShadow = true;
+    g.add(cush);
+    // Two back cushions leaning on the wall (-Z local).
+    const backGeo = new THREE.BoxGeometry((width - 0.2) / 2, 0.42, 0.12);
+    for (const bx of [-width / 4, width / 4]) {
+      const b = new THREE.Mesh(backGeo, COZY.cushionB);
+      b.position.set(bx, 0.72, -0.24);
+      b.rotation.x = -0.12;
+      b.castShadow = true;
+      g.add(b);
+    }
+    g.userData.seatY = 0.52;
+    return g;
+  }
+  // [x, z, ry] — ry is the body facing when seated (forward = (sin ry, cos ry)).
+  for (const [bx, bz, bry, mcol] of [
+    [-12.4, 4, Math.PI / 2, 1],   // left window, facing +X into the room
+    [12.4, -4, -Math.PI / 2, 3],  // right window, facing -X into the room
+  ]) {
+    const ws = makeWindowSeat(1.7);
+    ws.position.set(bx, 0, bz);
+    ws.rotation.y = bry;
+    group.add(ws);
+    seats.push({ x: bx, z: bz, ry: bry, seatY: ws.userData.seatY });
+    const fwx = Math.sin(bry), fwz = Math.cos(bry);
+    const sideways = Math.abs(fwx) > 0.5; // facing +/-X → seat length runs along Z
+    addBox(colliders, bx - fwx * 0.18, bz - fwz * 0.18, sideways ? 0.5 : 1.7, sideways ? 1.7 : 0.5);
+    // A little mug + a scatter cushion so the nook reads as used.
+    const mug = makeMug(DECOR.mugColors[mcol]);
+    mug.position.set(bx - fwx * 0.55, 0.55, bz - fwz * 0.55);
+    group.add(mug);
+    const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.42), COZY.cushionB);
+    pillow.position.set(bx - fwx * 0.35, 0.62, bz - fwz * 0.35 + 0.5);
+    pillow.rotation.y = 0.3;
+    pillow.castShadow = true;
+    group.add(pillow);
+  }
+
+  // --- Board-game clutter (a stack on the bookcase + a leaning couch stack) --
+  {
+    let by = 3.24; // bookcase top (caseH ≈ 3.2)
+    [[0.5, 0.09, 0.5], [0.46, 0.08, 0.46], [0.42, 0.1, 0.42]].forEach((d, i) => {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]), DECOR.book[i % DECOR.book.length]);
+      box.position.set(halfW - 0.55, by + d[1] / 2, -5.5);
+      box.rotation.y = 0.12 * (i - 1);
+      box.castShadow = true;
+      group.add(box);
+      by += d[1];
+    });
+    // A leaning stack tucked against the left wall below the couch nook.
+    let sy = 0;
+    [[0.44, 0.09, 0.44], [0.4, 0.08, 0.4], [0.36, 0.1, 0.36]].forEach((d, i) => {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]), DECOR.book[(i + 2) % DECOR.book.length]);
+      box.position.set(-12.35, sy + d[1] / 2, 5.7);
+      box.rotation.y = 0.1 * i;
+      box.castShadow = true;
+      group.add(box);
+      sy += d[1];
+    });
+    addBox(colliders, -12.35, 5.7, 0.5, 0.5);
+  }
+
+  // --- Tea-light votives (flicker together with the hearth in update) -------
+  // Small tinned candles on the reading tables + the bar worktop. All share
+  // EXTRA.flame, whose emissive is pulsed allocation-free alongside the fire.
+  function teaLight(x, y, z) {
+    const tin = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.05, 12), EXTRA.tin);
+    tin.position.set(x, y + 0.025, z);
+    tin.castShadow = true;
+    const wax = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.03, 12), COZY.candle);
+    wax.position.set(x, y + 0.05, z);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.016, 0.05, 7), EXTRA.flame);
+    flame.position.set(x, y + 0.09, z);
+    group.add(tin, wax, flame);
+  }
+  teaLight(-9.85, 0.45, 7.75); // couch coffee table
+  teaLight(11.62, 0.55, 7.18); // armchair side table
+  teaLight(0.45, 1.11, -halfD + 1.72); // bar worktop, near the cake stand
+
   // --- Outside: the street block in front of the entrance ------------------
   const outside = buildOutside(scene);
   for (const c of outside.colliders) colliders.push(c);
@@ -1395,13 +1652,21 @@ export function buildCoffeeshop(scene) {
         m.material.opacity = op;
       }
     }
+    // Ceiling fan turns lazily overhead; the patisserie cake rotates under its
+    // cloche. Both are pure rotation of a cached group — no allocation.
+    if (fanBlades) fanBlades.rotation.y += dt * 0.5;
+    if (cakeTurntable) cakeTurntable.rotation.y += dt * 0.4;
     // Hearth flicker: gently wobble the fire light + ember glow each frame.
-    // Pure number mutation of cached light/material — no allocation.
+    // The mantel candle + all tea-lights flicker in sympathy off the same phase.
+    // Pure number mutation of cached lights/materials — no allocation.
     if (fireLight) {
       fireT += dt;
       const f = 0.8 + Math.sin(fireT * 11.0) * 0.12 + Math.sin(fireT * 6.3) * 0.08;
       fireLight.intensity = 6 * f;
       COZY.ember.emissiveIntensity = 1.4 * f + 0.35;
+      const cf = 1.0 + Math.sin(fireT * 9.0) * 0.22 + Math.sin(fireT * 5.3 + 1.7) * 0.14;
+      COZY.flame.emissiveIntensity = 2.0 * cf;
+      EXTRA.flame.emissiveIntensity = 1.7 * cf;
     }
   };
 

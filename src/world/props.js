@@ -13,6 +13,7 @@ const ceramic = new THREE.MeshStandardMaterial({ color: "#f4efe6", roughness: 0.
 const terracotta = new THREE.MeshStandardMaterial({ color: "#b5613a", roughness: 0.8 });
 const leaf = new THREE.MeshStandardMaterial({ color: "#3f7d4d", roughness: 0.85, flatShading: true });
 const leafDark = new THREE.MeshStandardMaterial({ color: "#356641", roughness: 0.85, flatShading: true });
+const soil = new THREE.MeshStandardMaterial({ color: "#2e1f14", roughness: 1 });
 
 function mesh(geo, mat, cast = true) {
   const m = new THREE.Mesh(geo, mat);
@@ -98,7 +99,12 @@ export function makeStool() {
   post.position.y = 0.4;
   const foot = mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.04, 18), chrome);
   foot.position.y = 0.02;
-  g.add(seat, post, foot);
+  // A chrome footrest ring partway up the post so the stool reads as a real
+  // café stool rather than a disc on a pole.
+  const rest = mesh(new THREE.TorusGeometry(0.2, 0.014, 8, 22), chrome, false);
+  rest.rotation.x = Math.PI / 2;
+  rest.position.y = 0.34;
+  g.add(seat, post, foot, rest);
   g.userData.seatY = STOOL_SEAT_Y;
   return g;
 }
@@ -203,7 +209,13 @@ export function makePlant(scale = 1) {
   const g = new THREE.Group();
   const pot = mesh(new THREE.CylinderGeometry(0.26, 0.2, 0.4, 16), terracotta);
   pot.position.y = 0.2;
-  g.add(pot);
+  // A rolled terracotta lip + a dark soil disc sunk just inside the rim so the
+  // pot reads as planted rather than an open cylinder.
+  const lip = mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.06, 16), terracotta, false);
+  lip.position.y = 0.39;
+  const soilDisc = mesh(new THREE.CylinderGeometry(0.235, 0.235, 0.04, 16), soil, false);
+  soilDisc.position.y = 0.4;
+  g.add(pot, lip, soilDisc);
   const trunk = mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.5, 8), darkWood);
   trunk.position.y = 0.55;
   g.add(trunk);
@@ -212,6 +224,8 @@ export function makePlant(scale = 1) {
     [0.25, 0.85, 0.1, 0.32, leafDark],
     [-0.22, 0.92, -0.08, 0.3, leaf],
     [0.05, 1.3, -0.05, 0.3, leafDark],
+    [0.2, 1.14, -0.14, 0.24, leafDark],
+    [-0.14, 1.2, 0.16, 0.22, leaf],
   ];
   for (const [x, y, z, r, mat] of blobs) {
     const b = mesh(new THREE.IcosahedronGeometry(r, 0), mat);
@@ -227,16 +241,20 @@ export function makePendantLamp() {
   const g = new THREE.Group();
   const cord = mesh(new THREE.CylinderGeometry(0.012, 0.012, 1.2, 6), darkWood, false);
   cord.position.y = 0.6;
+  // Shade + bulb emissives kept LOW: the pendants hang at ~camera height over the
+  // seating, and a hot DoubleSide emissive cone right beside the 3rd-person camera
+  // blooms into a giant white wedge (ACES + bloom). The PointLight below does the
+  // actual room lighting; these just need a warm lit READ, not to be light sources.
   const shadeMat = new THREE.MeshStandardMaterial({
     color: "#1d1d22",
     emissive: "#ffcaa0",
-    emissiveIntensity: 0.9,
+    emissiveIntensity: 0.22,
     side: THREE.DoubleSide,
     roughness: 0.6,
   });
   const shade = mesh(new THREE.ConeGeometry(0.32, 0.34, 20, 1, true), shadeMat, false);
   shade.position.y = -0.15;
-  const bulb = mesh(new THREE.SphereGeometry(0.08, 10, 10), new THREE.MeshStandardMaterial({ color: "#fff2d0", emissive: "#ffdca0", emissiveIntensity: 2 }), false);
+  const bulb = mesh(new THREE.SphereGeometry(0.08, 10, 10), new THREE.MeshStandardMaterial({ color: "#fff2d0", emissive: "#ffdca0", emissiveIntensity: 1.1 }), false);
   bulb.position.y = -0.2;
   g.add(cord, shade, bulb);
 
