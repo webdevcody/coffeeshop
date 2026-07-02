@@ -1,5 +1,5 @@
 # ☕ The Daily Grind — Multiplayer 3D Coffeeshop
-
+ 
 A cozy, goal-free multiplayer café. Walk around a warm little coffeeshop with other
 people, bump into the furniture, chat with speech bubbles floating over your head,
 and talk over proximity voice (WebRTC) — the closer you stand, the louder you are.
@@ -151,8 +151,11 @@ multi-stage — it runs `vite build` to produce `dist/`, then ships a lean runti
 image where the Node server serves `dist/` and the WebSocket relay on port 80.
 
 ```bash
-lpd deploy
+lpd deploy --cluster coffee-shop
 ```
+
+CI uses the same cluster via `.github/workflows/deploy.yml`. Do not deploy to the
+shared `default` cluster — the CI role is scoped to `coffee-shop` only.
 
 > Multiplayer state is kept in process, so keep `replicas = 1` — players on
 > different replicas wouldn't see each other without a shared backplane.
