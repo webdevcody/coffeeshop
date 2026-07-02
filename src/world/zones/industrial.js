@@ -131,6 +131,41 @@ const sparkGeo = new THREE.IcosahedronGeometry(0.05, 0);
 const palletPlankGeo = new THREE.BoxGeometry(1.2, 0.06, 0.16);
 const shrubGeo = new THREE.IcosahedronGeometry(0.42, 0);
 
+// --- Added gritty-detail materials (created ONCE, reused) -------------------
+// Emissive-only glow (NO real lights): floodlight heads, bollard warning caps,
+// coolant-vent glow. Steam is a translucent non-emissive puff.
+const floodHeadMat = new THREE.MeshStandardMaterial({
+  color: "#fff4d6", emissive: "#ffd27a", emissiveIntensity: 1.1, roughness: 0.4,
+});
+const bollardCapMat = new THREE.MeshStandardMaterial({
+  color: "#ffb347", emissive: "#ff5a1f", emissiveIntensity: 0.7, roughness: 0.5,
+});
+const steamMat = new THREE.MeshStandardMaterial({
+  color: "#e2eef2", roughness: 1, transparent: true, opacity: 0.5, flatShading: true,
+});
+const ventGlowMat = new THREE.MeshStandardMaterial({
+  color: "#bfefff", emissive: "#33b8e0", emissiveIntensity: 0.85, roughness: 0.6,
+  side: THREE.DoubleSide,
+});
+
+// --- Added gritty-detail geometries (created ONCE, reused) ------------------
+const floodPoleGeo = new THREE.CylinderGeometry(0.11, 0.15, 7.2, 8);
+const floodHeadGeo = new THREE.BoxGeometry(0.8, 0.55, 0.34);
+const bollardGeo = new THREE.CylinderGeometry(0.13, 0.16, 1.0, 8);
+const bollardStripeGeo = new THREE.CylinderGeometry(0.155, 0.165, 0.18, 8);
+const bollardCapGeo = new THREE.SphereGeometry(0.15, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+const reelDiscGeo = new THREE.CylinderGeometry(0.9, 0.9, 0.12, 18);
+const reelDrumGeo = new THREE.CylinderGeometry(0.42, 0.42, 1.06, 12);
+const cableCoilGeo = new THREE.TorusGeometry(0.52, 0.15, 6, 16);
+const ventGrateGeo = new THREE.BoxGeometry(1.3, 0.16, 1.3);
+const ventGlowGeo = new THREE.CircleGeometry(0.68, 18);
+const fanHubGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.22, 8);
+const fanBladeGeo = new THREE.BoxGeometry(0.07, 0.72, 0.18);
+const valveWheelGeo = new THREE.TorusGeometry(0.24, 0.045, 6, 14);
+const valveSpokeGeo = new THREE.BoxGeometry(0.44, 0.05, 0.05);
+const valveStemGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.35, 8);
+const drumBandGeo = new THREE.CylinderGeometry(0.47, 0.47, 0.16, 12);
+
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.castShadow = cast;
@@ -1130,6 +1165,143 @@ function makeMessHall(W, D, H, wallT, doorGap) {
   return { group: g, colliders };
 }
 
+// A tall FLOODLIGHT MAST: a slim tapered pole on a plinth with a canted head-bar
+// carrying three EMISSIVE lamp heads (glow boxes — NOT real lights). Heads share
+// floodHeadMat so update() can flicker them all at once with zero allocation.
+function makeFloodMast() {
+  const g = new THREE.Group();
+  const H = 7.2;
+  const base = box(0.5, 0.3, 0.5, concreteDark, false);
+  base.position.y = 0.15;
+  g.add(base);
+  const pole = new THREE.Mesh(floodPoleGeo, lampPostMat);
+  pole.position.y = H / 2 + 0.1;
+  pole.castShadow = true;
+  g.add(pole);
+  const bar = box(1.9, 0.14, 0.14, frameMat, false);
+  bar.position.set(0.2, H, 0);
+  g.add(bar);
+  for (let i = 0; i < 3; i++) {
+    const head = new THREE.Mesh(floodHeadGeo, floodHeadMat);
+    head.position.set(-0.6 + i * 0.7, H - 0.18, 0);
+    head.rotation.x = 0.5; // aim the beam box down into the yard
+    head.castShadow = false;
+    g.add(head);
+  }
+  return g;
+}
+
+// A hazard BOLLARD: a stubby safety-yellow post with a black stripe and an
+// emissive amber cap. Caps share bollardCapMat so update() strobes them like
+// warning lamps. Slim + no collider (walk-past marker clutter).
+function makeBollard() {
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(bollardGeo, hazardMat);
+  post.position.y = 0.5;
+  post.castShadow = true;
+  g.add(post);
+  const stripe = new THREE.Mesh(bollardStripeGeo, hazardDark);
+  stripe.position.y = 0.62;
+  g.add(stripe);
+  const cap = new THREE.Mesh(bollardCapGeo, bollardCapMat);
+  cap.position.y = 1.0;
+  g.add(cap);
+  return g;
+}
+
+// A cable REEL / spool: two wooden end-discs on a steel drum, wound with a few
+// dark cable coils. A solid yard mass — the caller adds a tight collider.
+function makeCableReel() {
+  const g = new THREE.Group();
+  const axleY = 0.9;
+  for (const sx of [-0.55, 0.55]) {
+    const disc = new THREE.Mesh(reelDiscGeo, palletMat);
+    disc.rotation.z = Math.PI / 2; // coin faces along X (the axle)
+    disc.position.set(sx, axleY, 0);
+    disc.castShadow = true;
+    g.add(disc);
+  }
+  const drum = new THREE.Mesh(reelDrumGeo, frameMat);
+  drum.rotation.z = Math.PI / 2;
+  drum.position.y = axleY;
+  g.add(drum);
+  for (let i = 0; i < 3; i++) {
+    const coil = new THREE.Mesh(cableCoilGeo, bumperMat);
+    coil.rotation.y = Math.PI / 2; // ring wraps around the X axle
+    coil.position.set(-0.3 + i * 0.3, axleY, 0);
+    g.add(coil);
+  }
+  return g;
+}
+
+// A coolant/STEAM VENT: a floor grate with an emissive glow disc and a rising
+// column of translucent steam puffs (each puff owns a cloned material so it can
+// fade independently). Returns { group, system } — system = { tipY, puffs } the
+// caller's update() advances with no per-frame allocation.
+function makeSteamVent() {
+  const g = new THREE.Group();
+  const grate = new THREE.Mesh(ventGrateGeo, ventMat);
+  grate.position.y = 0.08;
+  grate.receiveShadow = true;
+  g.add(grate);
+  const glow = new THREE.Mesh(ventGlowGeo, ventGlowMat);
+  glow.rotation.x = -Math.PI / 2;
+  glow.position.y = 0.17;
+  g.add(glow);
+  const puffs = [];
+  const tipY = 0.3;
+  for (let i = 0; i < 4; i++) {
+    const puff = new THREE.Mesh(smokeGeo, steamMat.clone());
+    puff.castShadow = false;
+    puff.position.set(0, tipY, 0);
+    puff.scale.setScalar(0.5);
+    g.add(puff);
+    puffs.push({ mesh: puff, life: i / 4, speed: 0.7 + Math.random() * 0.3, sway: Math.random() * Math.PI * 2 });
+  }
+  return { group: g, system: { tipY, puffs } };
+}
+
+// A wall EXHAUST FAN: a square steel housing with a five-blade rotor that the
+// caller spins about its own axis. Blades are grouped so update() rotates the
+// group (no per-frame allocation). Mounted high on a gable — NO collider.
+function makeExhaustFan(fans) {
+  const g = new THREE.Group();
+  const housing = box(0.22, 1.8, 1.8, frameMat);
+  g.add(housing);
+  const hub = new THREE.Mesh(fanHubGeo, catwalkMat);
+  hub.rotation.z = Math.PI / 2; // hub axis along X (the fan faces +X)
+  hub.position.x = 0.16;
+  g.add(hub);
+  const blades = new THREE.Group();
+  for (let i = 0; i < 5; i++) {
+    const holder = new THREE.Group();
+    holder.rotation.x = (i / 5) * Math.PI * 2; // radiate around the X axle
+    const blade = new THREE.Mesh(fanBladeGeo, catwalkMat);
+    blade.position.y = 0.42;
+    blade.rotation.z = 0.35; // slight pitch so the spin reads
+    holder.add(blade);
+    blades.add(holder);
+  }
+  blades.position.x = 0.16;
+  g.add(blades);
+  fans.push(blades);
+  return g;
+}
+
+// A pipe VALVE HAND-WHEEL: a red rim + spokes in the XY plane, spinning about
+// its local Z (faces the viewer). Caller adds a short stem to the pipe.
+function makeValveWheel() {
+  const g = new THREE.Group();
+  const rim = new THREE.Mesh(valveWheelGeo, drumRed);
+  g.add(rim);
+  for (let i = 0; i < 2; i++) {
+    const spoke = new THREE.Mesh(valveSpokeGeo, drumRed);
+    spoke.rotation.z = i * Math.PI / 2;
+    g.add(spoke);
+  }
+  return g;
+}
+
 export function buildIndustrial() {
   const group = new THREE.Group();
   const colliders = [];
@@ -1564,6 +1736,94 @@ export function buildIndustrial() {
     group.add(lp);
   }
 
+  // ═══ ADDED GRITTY RICHNESS ════════════════════════════════════════════════
+  // Floodlight masts, hazard bollards, cable reels, a coolant/steam vent, a wall
+  // exhaust fan, pipe-run valve wheels + an oil-drum staging bay. Every SOLID
+  // mass stays OFF the open cross lanes (|x|,|z| > 3.4) and inside the ±23
+  // seam-road margin; decorative/high items carry no collider.
+
+  // Collectors for the animated additions (advanced allocation-free in update()).
+  const steamSystems = []; // rising steam puff columns
+  const fans = [];         // spinning exhaust-fan rotors
+  const valveWheels = [];  // slowly-turning valve hand-wheels
+
+  // Tall FLOODLIGHT MASTS ringing the open crossroads (slim poles, NO collider;
+  // heads are EMISSIVE boxes, never real lights). Spots verified off both lanes
+  // (|x|,|z| > 3.4) and clear of every footprint; the head-bars aim inward.
+  const mastSpots = [
+    [-6.5, -4.2, 0.7],  // NW of centre (east of WH1)
+    [5.5, -4.2, -0.7],  // NE of centre
+    [-9.5, 4.2, 2.4],   // SW of centre (west of the fab shop)
+    [6.0, 4.2, -2.4],   // SE of centre (west of the tool shop)
+  ];
+  for (const [x, z, ry] of mastSpots) {
+    const mast = makeFloodMast();
+    mast.position.set(x, 0, z);
+    mast.rotation.y = ry;
+    group.add(mast);
+  }
+
+  // Hazard BOLLARDS at the four inner corners of the crossroads (off-lane, no
+  // collider — slim safety posts; amber caps strobe via bollardCapMat).
+  for (const [x, z] of [[-4.2, -4.2], [4.2, -4.2], [-4.2, 4.2], [4.2, 4.2]]) {
+    const b = makeBollard();
+    b.position.set(x, 0, z);
+    group.add(b);
+  }
+
+  // SE STAGING BAY — the open pocket east of the tool shop and south of the
+  // tanks (x∈[15,21.5], z∈[4,8.2]): two solid cable reels, a hazard-banded
+  // oil-drum stack (decorative) and a coolant vent glow. All off-lane, inside
+  // ±23, clear of the shop (x≤14.75) and the tanks (z≥8.5).
+  for (const [x, z] of [[16, 5.0], [16, 7.2]]) {
+    const reel = makeCableReel();
+    reel.position.set(x, 0, z);
+    reel.rotation.y = (x + z) * 0.2; // deterministic varied facing
+    group.add(reel);
+    addCollider(colliders, x, z, 2.0, 2.0);
+  }
+  // Oil-drum stack with hazard bands (only 6 → individual meshes reusing the
+  // shared drum geometry/materials; decorative, no collider).
+  const drumBay = [
+    [19.0, 4.6, drumRed], [20.0, 4.6, drumBlue], [21.0, 4.6, drumRed],
+    [19.5, 5.6, drumBlue], [20.5, 5.6, drumRed], [20.0, 6.6, drumBlue],
+  ];
+  for (const [x, z, mat] of drumBay) {
+    const d = new THREE.Mesh(drumGeo, mat);
+    d.position.set(x, 0.55, z);
+    d.castShadow = true;
+    group.add(d);
+    const band = new THREE.Mesh(drumBandGeo, hazardMat);
+    band.position.set(x, 0.62, z);
+    group.add(band);
+  }
+
+  // Coolant/STEAM VENT in the open pocket west of the fab shop (south of WH2).
+  // Flat grate → walk-over, no collider. (-20,6): WH2 is z≥10, FAB is x≥-18.25.
+  const vent = makeSteamVent();
+  vent.group.position.set(-20, 0, 6);
+  group.add(vent.group);
+  steamSystems.push(vent.system);
+
+  // Wall EXHAUST FAN high on WH1's east gable (spins slowly; NO collider — high
+  // on the wall, faces +X into the open yard).
+  const fan = makeExhaustFan(fans);
+  fan.position.set(WH1.x + WH1.w / 2 + 0.12, WH1.h * 0.62, WH1.z);
+  group.add(fan);
+
+  // Pipe-run VALVE WHEELS + stems on the elevated run (z=23), slowly turning.
+  // Overhead/decorative — no collider (matches the existing pipe run + trestles).
+  for (const [vx, vy] of [[-4, pipeY + 0.55], [4.5, pipeY]]) {
+    const stem = new THREE.Mesh(valveStemGeo, pipeMat2);
+    stem.rotation.x = Math.PI / 2; // stem points -Z, out of the pipe toward the viewer
+    stem.position.set(vx, vy, 23 - 0.28);
+    group.add(stem);
+    const wheel = makeValveWheel();
+    wheel.position.set(vx, vy, 23 - 0.46);
+    group.add(wheel);
+    valveWheels.push(wheel);
+  }
+
   // --- Animation -------------------------------------------------------------
   let beaconT = 0;
   function update(dt) {
@@ -1598,6 +1858,35 @@ export function buildIndustrial() {
     for (let i = 0; i < spinners.length; i++) {
       spinners[i].rotation.y += dt * (1.4 + (i % 3) * 0.5);
     }
+
+    // Coolant/steam vent: translucent puffs rise, expand and fade (reuses the
+    // smoke recipe; each puff owns a cloned material so opacity is independent).
+    for (const sys of steamSystems) {
+      for (const p of sys.puffs) {
+        p.life += dt * p.speed * 0.5;
+        if (p.life >= 1) p.life -= 1;
+        const t = p.life;
+        const m = p.mesh;
+        m.position.y = sys.tipY + t * 2.6;             // rise ~2.6 m (local)
+        m.position.x = Math.sin(p.sway + t * 3) * (0.15 + t * 0.5);
+        m.position.z = Math.cos(p.sway + t * 2) * (0.15 + t * 0.4);
+        m.scale.setScalar(0.4 + t * 1.3);
+        m.material.opacity = (1 - t) * 0.5;
+      }
+    }
+
+    // Wall exhaust-fan rotors spin steadily about their own axle.
+    for (let i = 0; i < fans.length; i++) fans[i].rotation.x += dt * 3.2;
+
+    // Pipe valve hand-wheels turn slowly (staggered speeds).
+    for (let i = 0; i < valveWheels.length; i++) {
+      valveWheels[i].rotation.z += dt * (0.6 + (i % 2) * 0.4);
+    }
+
+    // Floodlight heads: a faint mains flicker (shared emissive material).
+    floodHeadMat.emissiveIntensity = 1.05 + Math.sin(beaconT * 3.1) * 0.12;
+    // Hazard bollard caps strobe like warning lamps (shared emissive material).
+    bollardCapMat.emissiveIntensity = 0.5 + Math.abs(Math.sin(beaconT * 4.5)) * 0.7;
   }
   updaters.length = 0; // (kept for clarity; single inline update used)
 

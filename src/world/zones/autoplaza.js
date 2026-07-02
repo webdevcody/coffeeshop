@@ -101,6 +101,14 @@ const matConeBand = new THREE.MeshStandardMaterial({ color: "#f2f2ee", roughness
 const matWater = new THREE.MeshStandardMaterial({
   color: "#7fc8e8", roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.55,
 });
+// --- Festive "1000×" dealership dressing (created ONCE, reused) --------------
+const balloonGeo = new THREE.SphereGeometry(0.42, 10, 8); // balloon / dancer head
+const _col = new THREE.Color();                            // reused for setColorAt
+const matBalloon = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.3, metalness: 0.05 }); // tinted per-instance
+const matBalloonTie = new THREE.MeshStandardMaterial({ color: "#cfcfcf", roughness: 0.9 });
+const matSaleGlow = new THREE.MeshStandardMaterial({ color: "#2a0f24", emissive: "#ff2d6b", emissiveIntensity: 0.7, roughness: 0.5 }); // pulses in update()
+const matDancerA = new THREE.MeshStandardMaterial({ color: "#ff5a2d", emissive: "#ff3b00", emissiveIntensity: 0.18, roughness: 0.55, flatShading: true });
+const matDancerB = new THREE.MeshStandardMaterial({ color: "#ffd23f", emissive: "#ffb300", emissiveIntensity: 0.18, roughness: 0.55, flatShading: true });
 
 function box(w, h, d, mat, cast = true) {
   const m = new THREE.Mesh(boxGeo, mat);
@@ -1125,16 +1133,224 @@ export function buildAutoPlaza() {
     addCollider(colliders, px, pz, 1.0, 1.0);
   }
 
+  // === "1000×" DEALERSHIP FESTIVITY ========================================
+  // Every new SOLID collider below sits at |x| >= 6 (clear of the centre Z-lane
+  // x∈[-3,3]) and away from the E–W cross-band (z≈-3), so a car still passes
+  // straight through in both axes. Overhead / fabric / floating props (pennants,
+  // balloons, air-dancer, string bulbs) get NO collider.
+
+  // --- Showroom forecourt: a slow-spinning HERO car on an emissive turntable,
+  // flanked by a short row of cars-for-sale wearing windshield price flags. ----
+  {
+    const showcase = new THREE.Group();
+    const ring = cyl(1.85, 0.1, matTrim, false);
+    ring.position.y = 0.05;
+    const dais = cyl(1.7, 0.2, matLight, false); // shares the flickering light mat
+    dais.position.y = 0.1;
+    const spinG = new THREE.Group();
+    const heroCar = makeCar("#2f7fd0");
+    heroCar.position.y = 0.2;
+    heroCar.scale.setScalar(1.06);
+    spinG.add(heroCar);
+    showcase.add(ring, dais, spinG);
+    showcase.position.set(8.5, 0, 10.5);
+    group.add(showcase);
+    movers.push({ kind: "spin", obj: spinG, rate: 0.3 });
+    addCollider(colliders, 8.5, 10.5, 3.8, 3.8);
+
+    // Row of priced display cars to the east of the turntable (noses toward -Z).
+    const saleColors = ["#d94f4f", "#c9ccd2", "#54a86b"];
+    const saleX = [12, 14, 15.8];
+    for (let i = 0; i < saleX.length; i++) {
+      const car = makeCar(saleColors[i]);
+      car.position.set(saleX[i], 0, 10.5);
+      car.rotation.y = Math.PI / 2; // long axis runs along Z, nose out to the lane
+      const flag = makePriceFlag();
+      flag.position.set(1.4, 1.6, 0); // over the windshield (pre-yaw +X = front)
+      car.add(flag);
+      group.add(car);
+      addCollider(colliders, saleX[i], 10.5, 2.0, 3.8);
+    }
+  }
+
+  // --- Fill the remaining parking stalls with two more priced cars -----------
+  {
+    const extra = [[-14.5, "#e7c24a"], [-8.5, "#8a8f98"]];
+    for (const [sx, col] of extra) {
+      const car = makeCar(col);
+      car.position.set(sx, 0, STALL_Z - 0.6);
+      car.rotation.y = Math.PI / 2;
+      const flag = makePriceFlag();
+      flag.position.set(1.4, 1.6, 0);
+      car.add(flag);
+      group.add(car);
+      addCollider(colliders, sx, STALL_Z - 0.6, 2.0, 4.0);
+    }
+  }
+
+  // --- Giant inflatable AIR DANCER by the entrance (nested tube segments that
+  // wobble/flail in update via compounding tilts). Flexible fabric → NO collider.
+  {
+    const dancer = new THREE.Group();
+    const dbase = cyl(0.55, 0.3, matDark);
+    dbase.position.y = 0.15;
+    const fan = cyl(0.42, 0.4, matSteel, false);
+    fan.position.y = 0.5;
+    dancer.add(dbase, fan);
+    const segs = [];
+    const segH = 0.85;
+    let parent = dancer;
+    for (let i = 0; i < 6; i++) {
+      const seg = new THREE.Group();
+      seg.position.y = i === 0 ? 0.7 : segH; // stack; each seg pivots on its base
+      const tube = cyl(0.34 - i * 0.028, segH, i % 2 ? matDancerA : matDancerB, false);
+      tube.position.y = segH / 2;
+      seg.add(tube);
+      parent.add(seg);
+      parent = seg; // nest so per-segment tilts compound into a floppy noodle
+      segs.push(seg);
+    }
+    const top = segs[segs.length - 1];
+    for (const ax of [-1, 1]) {
+      const arm = cyl(0.12, 0.9, matDancerA, false);
+      arm.position.set(ax * 0.35, segH, 0);
+      arm.rotation.z = ax * 0.9;
+      top.add(arm);
+    }
+    const head = new THREE.Mesh(balloonGeo, matDancerB);
+    head.scale.setScalar(0.6);
+    head.position.y = segH + 0.2;
+    top.add(head);
+    dancer.position.set(9, 0, -20);
+    group.add(dancer);
+    movers.push({ kind: "dancer", segs });
+  }
+
+  // --- BALLOON clusters tied at the entrance + pylon (instanced spheres, ------
+  // per-instance colour). Floating decoration → NO collider.
+  {
+    const cols = ["#e23b3b", "#3b6fe2", "#39c15a", "#e2c53b", "#c13b9a"];
+    const anchors = [[-11, -21], [-4, -21], [21, -18.5], [8.5, 7.0]];
+    const pts = [];
+    for (const [ax, az] of anchors) {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const rr = 0.55 + (i % 2) * 0.22;
+        pts.push({ x: ax + Math.cos(a) * rr, y: 3.3 + (i % 3) * 0.34, z: az + Math.sin(a) * rr * 0.7, c: cols[i] });
+      }
+      const tie = box(0.05, 3.2, 0.05, matBalloonTie, false); // string bundle
+      tie.position.set(ax, 1.7, az);
+      group.add(tie);
+    }
+    const bm = new THREE.InstancedMesh(balloonGeo, matBalloon, pts.length);
+    bm.castShadow = false;
+    bm.receiveShadow = false;
+    for (let i = 0; i < pts.length; i++) {
+      const b = pts[i];
+      _p.set(b.x, b.y, b.z);
+      _q.setFromEuler(_e.set(0, 0, 0));
+      _s.set(0.9, 1.12, 0.9); // slightly egg-shaped
+      _m.compose(_p, _q, _s);
+      bm.setMatrixAt(i, _m);
+      bm.setColorAt(i, _col.set(b.c));
+    }
+    bm.instanceMatrix.needsUpdate = true;
+    bm.instanceColor.needsUpdate = true;
+    group.add(bm);
+  }
+
+  // --- Freestanding SALE billboard on posts (pulsing emissive backer) --------
+  {
+    const saleG = new THREE.Group();
+    for (const px of [-1.9, 1.9]) {
+      const post = box(0.18, 5.4, 0.18, matSteel);
+      post.position.set(px, 2.7, 0);
+      saleG.add(post);
+    }
+    const backer = box(4.7, 2.5, 0.2, matSaleGlow);
+    backer.position.set(0, 4.0, 0);
+    saleG.add(backer);
+    const panel = artPanel(4.3, 2.1, "billboard", {
+      title: "MEGA SALE", sub: "0% APR EVENT", accent: "#ffd23f",
+      file: "autoplaza-sale.png",
+    });
+    panel.position.set(0, 4.0, -0.12);
+    panel.rotation.y = Math.PI; // readable face toward -Z (entrance / lane)
+    saleG.add(panel);
+    saleG.position.set(13, 0, -21);
+    group.add(saleG);
+    addCollider(colliders, 13, -21, 4.2, 0.5);
+  }
+
+  // --- Gas branding: canopy fascia sign + a lit fuel-PRICE totem -------------
+  {
+    const brand = artPanel(6, 1.1, "sign", {
+      text: "GO FUEL", bg: "#c8362e", fg: "#ffffff",
+      emissiveIntensity: 0.5, file: "autoplaza-fuel.png",
+    });
+    brand.position.set(0, GAS.h + 0.1, -GAS.d / 2 - 0.05);
+    brand.rotation.y = Math.PI; // faces -Z out over the forecourt
+    gas.add(brand);
+
+    const totem = new THREE.Group();
+    const tpost = box(0.3, 3.2, 0.3, matRed);
+    tpost.position.y = 1.6;
+    const tcab = box(0.35, 1.7, 1.9, matDark); // thin along X, wide along Z
+    tcab.position.y = 3.2;
+    totem.add(tpost, tcab);
+    const price = artPanel(1.7, 1.5, "sign", {
+      text: "FUEL 3.29", bg: "#0b2a1a", fg: "#4dffa0",
+      emissiveIntensity: 0.6, file: "autoplaza-price.png",
+    });
+    price.position.set(0.19, 3.2, 0);
+    price.rotation.y = Math.PI / 2; // readable face toward +X (central lane)
+    totem.add(price);
+    totem.position.set(-8, 0, -12.5);
+    group.add(totem);
+    addCollider(colliders, -8, -12.5, 0.6, 0.6);
+  }
+
+  // --- Waving BANNER flags flanking the entrance drive (sway in update) ------
+  for (let i = 0; i < 4; i++) {
+    const bx = [-8, -6, 6, 8][i];
+    const bg = new THREE.Group();
+    const pole = box(0.16, 6.0, 0.16, matSteel);
+    pole.position.y = 3.0;
+    const finial = cyl(0.12, 0.16, matLight, false);
+    finial.position.y = 6.05;
+    const pivot = new THREE.Group(); // pivots at the pole top so the banner sways
+    pivot.position.set(0.1, 5.6, 0);
+    const banner = box(0.06, 2.4, 0.9, i % 2 ? matAwning : matRed);
+    banner.position.set(0, -1.2, 0);
+    pivot.add(banner);
+    bg.add(pole, finial, pivot);
+    bg.position.set(bx, 0, -22.5);
+    group.add(bg);
+    addCollider(colliders, bx, -22.5, 0.4, 0.4);
+    movers.push({ kind: "wave", obj: pivot, ph: i * 1.3, sp: 2.2, amp: 0.16 });
+  }
+
   // --- Update: rotate the pylon sign + hero turntable; flicker the lights ----
   let t = 0;
   function update(dt) {
     t += dt;
     for (const m of movers) {
-      if (m.kind === "spin") m.obj.rotation.y += dt * m.rate;
+      if (m.kind === "spin") {
+        m.obj.rotation.y += dt * m.rate;
+      } else if (m.kind === "wave") {
+        m.obj.rotation.z = Math.sin(t * m.sp + m.ph) * m.amp;
+      } else if (m.kind === "dancer") {
+        const s = m.segs;
+        for (let i = 1; i < s.length; i++) {
+          s[i].rotation.z = Math.sin(t * 3.2 + i * 0.8) * 0.24;
+          s[i].rotation.x = Math.cos(t * 2.6 + i * 0.6) * 0.12;
+        }
+      }
     }
     // Subtle neon-ish flicker on the shared light material (cheap, no alloc).
     matLight.emissiveIntensity = 0.6 + Math.sin(t * 6) * 0.08;
     matBulb.emissiveIntensity = 0.8 + Math.sin(t * 4 + 1) * 0.12;
+    matSaleGlow.emissiveIntensity = 0.6 + Math.sin(t * 5 + 0.5) * 0.35;
   }
 
   // --- Ground: whole tile is walkable; buildings block via colliders. -------

@@ -1088,6 +1088,119 @@ export function buildOffices() {
     marketStall(6.5, 6.0, "FLOWERS", "sign-stall-flowers.png");
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // RICHNESS PASS — additive polish (does NOT touch working geometry):
+  //   • a tiered stone fountain centerpiece rising from the reflecting pool,
+  //   • glowing path-edge kerbs lining the plaza cross (emissive, flat),
+  //   • green rooftop terraces (instanced planters + clipped hedge caps),
+  //   • multicolour flower beds bedded into the planters + roof terraces.
+  // NO new lights (emissive materials only). NO new colliders on any lane/road/
+  // doorway: the fountain sits inside the pool's existing collider, rooftop items
+  // are overhead, and the kerbs + blooms are flat/low decorative props.
+  // ══════════════════════════════════════════════════════════════════════════
+  let fountainJet = null, glowMat = null, jetMat = null;
+  {
+    // ── CENTERPIECE: a tiered stone fountain rising from the reflecting pool ───
+    // Stacked catch-bowls on a pedestal with a spinning faceted water-jet crown.
+    // Everything stays within the pool footprint (already a collider) → no new one.
+    const stoneMat = new THREE.MeshStandardMaterial({ color: "#d8d4c8", roughness: 0.6, metalness: 0.1 });
+    jetMat = new THREE.MeshStandardMaterial({
+      color: "#bfe9ff", roughness: 0.1, metalness: 0.2,
+      emissive: "#79c4e8", emissiveIntensity: 0.5,
+    });
+    const ped = new THREE.Mesh(cylGeo, stoneMat);
+    ped.scale.set(0.55, 1.1, 0.55); ped.position.set(poolX, 0.72, poolZ); ped.castShadow = true;
+    group.add(ped);
+    const bowl1 = new THREE.Mesh(cylGeo, stoneMat);         // wide lower catch-bowl
+    bowl1.scale.set(2.2, 0.28, 2.2); bowl1.position.set(poolX, 1.18, poolZ); bowl1.castShadow = true;
+    group.add(bowl1);
+    const stem = new THREE.Mesh(cylGeo, stoneMat);          // upper stem
+    stem.scale.set(0.34, 0.9, 0.34); stem.position.set(poolX, 1.62, poolZ); stem.castShadow = true;
+    group.add(stem);
+    const bowl2 = new THREE.Mesh(cylGeo, stoneMat);         // smaller upper catch-bowl
+    bowl2.scale.set(1.2, 0.22, 1.2); bowl2.position.set(poolX, 2.02, poolZ); bowl2.castShadow = true;
+    group.add(bowl2);
+    fountainJet = new THREE.Mesh(coneGeo, jetMat);          // spinning water-jet crown
+    fountainJet.scale.set(0.5, 1.5, 0.5); fountainJet.position.set(poolX, 2.9, poolZ);
+    fountainJet.castShadow = false;
+    group.add(fountainJet);
+
+    // ── PATH-EDGE GLOW KERBS: thin flat emissive strips edging the grass pads at
+    // the plaza-cross seam (|x|=5 / |z|=5), reading as lit kerbing. Flat & low →
+    // NO collider; they never block the drive corridors. Shared material pulses.
+    glowMat = new THREE.MeshStandardMaterial({
+      color: "#9fe8d0", roughness: 0.5, emissive: "#3fae8c", emissiveIntensity: 0.6,
+    });
+    for (const [gx, gz] of grassPads) {
+      const sgx = Math.sign(gx), sgz = Math.sign(gz);
+      box(0.25, 0.06, 15.5, glowMat, sgx * 5, 0.12, sgz * 13.25, false); // kerb along Z (lane edge)
+      box(15.5, 0.06, 0.25, glowMat, sgx * 13.25, 0.12, sgz * 5, false); // kerb along X (lane edge)
+    }
+
+    // ── GREEN ROOFTOP TERRACES: a row of planter troughs + clipped hedge caps along
+    // the plaza-facing roof edge of each block. Overhead → NO collider. Instanced.
+    const roofPlanters = makeBank(unitBox, planterMat);
+    const roofHedge = makeBank(unitBox, hedgeMat);
+    const roofs = [
+      { cx: -15, cz: -15, w: 13, d: 11, deck: 20.55, f: 1 },  // SW tower
+      { cx: 15, cz: -15, w: 12, d: 12, deck: 17.55, f: 1 },   // SE tower
+      { cx: -15, cz: 15, w: 11, d: 13, deck: 19.05, f: -1 },  // NW tower
+      { cx: 15, cz: 15, w: 13, d: 12, deck: 9.35, f: -1 },    // NE pavilion
+    ];
+
+    // ── FLOWER BEDS: ONE multicolour InstancedMesh (per-instance tint via setColorAt)
+    // of low-poly blossoms bedded atop the existing planter hedges and the rooftop
+    // terraces. Decorative dots → NO colliders; never placed on a lane.
+    const bloomGeo = new THREE.IcosahedronGeometry(0.14, 0);
+    const bloomMat = new THREE.MeshStandardMaterial({ roughness: 0.65, flatShading: true });
+    const bloomColors = ["#e4574c", "#f2b33d", "#f4f0e6", "#d95fae", "#7bb0e8", "#e8863d"];
+    const bloomM4 = [], bloomCi = [];
+    let seed = 20260701;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const pushBloom = (x, y, z, s) => {
+      _eul.set(0, rnd() * Math.PI, 0); _q.setFromEuler(_eul);
+      _pos.set(x, y, z); _scl.set(s, s * 1.25, s);
+      _m4.compose(_pos, _q, _scl);
+      bloomM4.push(_m4.clone());
+      bloomCi.push((bloomColors.length * rnd()) | 0);
+    };
+
+    // rooftop terraces + their blooms
+    for (const R of roofs) {
+      const n = 5, zRow = R.cz + R.f * R.d * 0.42;
+      for (let i = 0; i < n; i++) {
+        const x = R.cx - R.w * 0.26 + (R.w * 0.52 * i) / (n - 1);
+        roofPlanters.add(x, R.deck + 0.3, zRow, 1.5, 0.6, 0.9);
+        roofHedge.add(x, R.deck + 0.85, zRow, 1.35, 0.5, 0.75);
+        pushBloom(x - 0.35, R.deck + 1.15, zRow, 0.55);
+        pushBloom(x + 0.35, R.deck + 1.15, zRow, 0.55);
+      }
+    }
+    roofPlanters.commit(true);
+    roofHedge.commit(true);
+
+    // ground blooms bedded into the existing planter hedges (atop the hedge caps)
+    for (const [px, pz] of planterSpots) {
+      for (let i = 0; i < 4; i++) {
+        pushBloom(px - 0.8 + i * 0.55, 1.14, pz + (rnd() * 0.4 - 0.2), 0.6);
+      }
+    }
+
+    if (bloomM4.length) {
+      const _bc = new THREE.Color();
+      const blooms = new THREE.InstancedMesh(bloomGeo, bloomMat, bloomM4.length);
+      for (let i = 0; i < bloomM4.length; i++) {
+        blooms.setMatrixAt(i, bloomM4[i]);
+        _bc.set(bloomColors[bloomCi[i]]);
+        blooms.setColorAt(i, _bc);
+      }
+      blooms.instanceMatrix.needsUpdate = true;
+      if (blooms.instanceColor) blooms.instanceColor.needsUpdate = true;
+      blooms.castShadow = false; blooms.receiveShadow = false;
+      group.add(blooms);
+    }
+  }
+
   // ── Commit all instanced banks (one draw call each) ───────────────────────
   mullions.commit(false); // curtain-wall bars: many hundreds, 1 InstancedMesh
   rails.commit(false);    // parapet rail posts + tubes
@@ -1111,6 +1224,16 @@ export function buildOffices() {
     }
     // billboard breathes a touch so it reads as glowing signage
     billboard.material.emissiveIntensity = 0.5 + 0.08 * Math.sin(t * 1.1);
+    // tiered fountain: crown jet spins + bobs, its water-glow shimmers
+    if (fountainJet) {
+      fountainJet.rotation.y = t * 2.4;
+      fountainJet.position.y = 2.9 + 0.05 * Math.sin(t * 5);
+      jetMat.emissiveIntensity = 0.5 + 0.25 * Math.sin(t * 3);
+    }
+    // path-edge glow kerbs pulse gently
+    if (glowMat) glowMat.emissiveIntensity = 0.55 + 0.2 * Math.sin(t * 1.4);
+    // all lobby/entrance glazing breathes a warm glow (shared material)
+    lobbyGlass.emissiveIntensity = 0.4 + 0.12 * Math.sin(t * 0.9);
   }
 
   return { group, colliders, ground, update };

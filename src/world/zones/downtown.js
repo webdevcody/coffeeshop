@@ -137,6 +137,22 @@ const stallCanvasMatB = new THREE.MeshStandardMaterial({ color: "#2f6f8a", rough
 const pylonMat = new THREE.MeshStandardMaterial({ color: "#1c1e26", roughness: 0.6, metalness: 0.4, flatShading: true });
 const trashMat = new THREE.MeshStandardMaterial({ color: "#3a3d45", roughness: 0.7, metalness: 0.3, flatShading: true });
 
+// --- Enrichment: crown halos/spires, flag colonnade, avenue glow (once) -----
+// Cool teal glow ring wrapping each tower crown (pulsed via litList).
+const crownGlowMat = new THREE.MeshStandardMaterial({ color: "#8fe0ff", emissive: "#4fd2ff", emissiveIntensity: 0.8, roughness: 0.4 });
+// Dark tapered spire stack rising off non-antenna towers.
+const spireMat = new THREE.MeshStandardMaterial({ color: "#20242e", roughness: 0.6, metalness: 0.5, flatShading: true });
+// Brushed-steel flagpoles for the civic colonnade.
+const flagPoleMat = new THREE.MeshStandardMaterial({ color: "#9aa4b2", roughness: 0.4, metalness: 0.7, flatShading: true });
+// Cool-corporate banner cloth (slight emissive so it reads at night; swayed).
+const flagBannerMat = new THREE.MeshStandardMaterial({ color: "#2f7fa8", emissive: "#1c6fb0", emissiveIntensity: 0.45, roughness: 0.8, side: THREE.DoubleSide, flatShading: true });
+// Emissive light-line along the avenue kerbs (flat decorative, pulsed).
+const edgeGlowMat = new THREE.MeshStandardMaterial({ color: "#7fe0ff", emissive: "#2f9fd8", emissiveIntensity: 0.6, roughness: 0.5 });
+// Shared geos reused across all towers/spires (created ONCE).
+const haloGeo = new THREE.TorusGeometry(1, 0.05, 8, 28);
+const beaconGeo = new THREE.SphereGeometry(0.35, 10, 8);
+const _yAxis = new THREE.Vector3(0, 1, 0); // reused axis for allocation-free sway
+
 // Window-grid facade: an emissive CanvasTexture of lit windows, reused for all
 // tower faces (we tile it per-face via texture.repeat clones below).
 function makeWindowTexture() {
@@ -317,6 +333,30 @@ function makeTower(w, h, d, glassMat, flickerList, antenna, litList, opts = {}) 
     tierY += th;
   }
   const topY = tierY; // flat usable rooftop of the stack (above tiers)
+
+  // --- Glowing crown halo ring wrapping the top tier (shared geo + glow mat) -
+  // Overhead only, sits over the footprint centre — no collider impact.
+  const halo = new THREE.Mesh(haloGeo, crownGlowMat);
+  halo.rotation.x = Math.PI / 2;
+  const hr = Math.max(w, d) * 0.42 + 0.5;
+  halo.scale.set(hr, hr, hr);
+  halo.position.y = topY + 0.5;
+  halo.castShadow = false;
+  g.add(halo);
+
+  // --- Tapered emissive-tipped SPIRE on non-antenna towers (varied crowns) ---
+  // Antenna towers already carry a mast+beacon below; giving the rest a spire
+  // makes the skyline read as distinct silhouettes. Beacon tip shares beaconMat
+  // (pulsed once in update). All centred + overhead → no collider.
+  if (!antenna) {
+    const sp1 = cyl(0.55, 3.0, spireMat); sp1.position.y = topY + 1.5; g.add(sp1);
+    const sp2 = cyl(0.34, 3.0, spireMat); sp2.position.y = topY + 4.3; g.add(sp2);
+    const sp3 = cyl(0.16, 2.6, antennaMat); sp3.position.y = topY + 7.0; g.add(sp3);
+    const tip = new THREE.Mesh(beaconGeo, beaconMat);
+    tip.scale.set(0.9, 0.9, 0.9);
+    tip.position.y = topY + 8.4;
+    g.add(tip);
+  }
 
   // --- Ground-floor glass lobby + canopy + revolving-door front -------------
   // The whole entrance assembly is built once along the LOCAL +Z face, then the
@@ -777,7 +817,7 @@ export function buildDowntown() {
     [ 19.2,  19.2, 7, 7, 19, glassB, false, false, -1], // SE outer block
   ];
   const litList = []; // lobby/canopy accent mats animated by update (shared mat)
-  litList.push(accentLitMat, lobbyGlassMat); // pulse the shared lit accents once
+  litList.push(accentLitMat, lobbyGlassMat, crownGlowMat, edgeGlowMat); // pulse shared accents once
   // The lobby/canopy is a thin overhead element ~3.8 m up that projects off the
   // chosen front face toward the tile centre; with the towers set in to ±10.5 it
   // overhangs the outer edge of the wide (11 m) central avenue but leaves the
@@ -1078,6 +1118,77 @@ export function buildDowntown() {
     group.add(dir);
   }
 
+  // --- Emissive avenue-edge light lines (flat, decorative, pulse via litList) -
+  // Thin glowing strips just proud of the plaza along the central cross kerbs.
+  // Flat on the ground (y≈0.16), NO collider — a car drives straight over them.
+  for (const x of [-5.85, 5.85]) {
+    const strip = box(0.14, 0.05, 56, edgeGlowMat, false);
+    strip.position.set(x, 0.16, 0);
+    group.add(strip);
+  }
+  for (const z of [-5.85, 5.85]) {
+    const strip = box(56, 0.05, 0.14, edgeGlowMat, false);
+    strip.position.set(0, 0.161, z);
+    group.add(strip);
+  }
+
+  // --- Extra slow-spinning rooftop LOGO signs on the other flagships ---------
+  // Overhead, high above the roofs — decorative, NO collider. Added to spinners.
+  const logoNW = artPanel(4.0, 4.0, "neon", {
+    lines: ["APEX"], color: "#7fe0ff", color2: "#4fd2ff",
+    emissiveIntensity: 0.9, file: "neon-apex.png",
+  });
+  logoNW.position.set(-10.5, 49.5, -10.5);
+  group.add(logoNW); spinners.push(logoNW);
+  const logoSW = artPanel(3.6, 3.6, "neon", {
+    lines: ["ORBIT"], color: "#ff9fe0", color2: "#ff4fa3",
+    emissiveIntensity: 0.9, file: "neon-orbit.png",
+  });
+  logoSW.position.set(-10.5, 40.0, 10.5);
+  group.add(logoSW); spinners.push(logoSW);
+
+  // --- Civic FLAG COLONNADE lining the central avenue cross ------------------
+  // Thin steel flagpoles (like the existing bollards/lamp posts, so collider-
+  // free) on the avenue-edge sidewalk strip. Every pole sits at |x| or |z| =
+  // 5.85 — always OUTSIDE the 11 m lanes (faces at ±5.5) AND outside every ±6
+  // building face — with cross-coords beyond the ±15 tower footprints, so the
+  // drivable cross and all doorways stay clear. Poles + swaying banners are two
+  // InstancedMeshes (16 copies each). Banners are rewritten allocation-free in
+  // update() using the shared _mtx/_v/_q/_s/_yAxis temporaries.
+  const poleSpots = [];
+  for (const z of [-21, -16, 16, 21]) { poleSpots.push([5.85, z]); poleSpots.push([-5.85, z]); }
+  for (const x of [-21, -16, 16, 21]) { poleSpots.push([x, 5.85]); poleSpots.push([x, -5.85]); }
+  const poleH = 5.4, bannerY = 4.4, bannerW = 1.9, bannerHt = 1.05, bannerHw = bannerW / 2;
+  const flagPoles = new THREE.InstancedMesh(cylGeo, flagPoleMat, poleSpots.length);
+  flagPoles.castShadow = false; flagPoles.receiveShadow = false;
+  const banners = new THREE.InstancedMesh(boxGeo, flagBannerMat, poleSpots.length);
+  banners.castShadow = false; banners.receiveShadow = false;
+  const bannerAnchors = [];
+  for (let i = 0; i < poleSpots.length; i++) {
+    const [px, pz] = poleSpots[i];
+    // Static pole matrix.
+    _q.identity();
+    _v.set(px, poleH / 2, pz);
+    _s.set(0.1, poleH, 0.1);
+    _mtx.compose(_v, _q, _s);
+    flagPoles.setMatrixAt(i, _mtx);
+    // Banner streams OUTWARD from the pole, away from the avenue centre.
+    const base = Math.abs(px) > Math.abs(pz)
+      ? (px > 0 ? Math.PI / 2 : -Math.PI / 2)   // ±X strip → banner flies along ±X
+      : (pz > 0 ? 0 : Math.PI);                 // ±Z strip → banner flies along ±Z
+    bannerAnchors.push({ x: px, y: bannerY, z: pz, base, phase: i * 1.3 });
+    // Initial banner matrix (update() re-writes these each frame to sway them).
+    _v.set(px + bannerHw * Math.sin(base), bannerY, pz + bannerHw * Math.cos(base));
+    _q.setFromAxisAngle(_yAxis, base - Math.PI / 2);
+    _s.set(bannerW, bannerHt, 0.06);
+    _mtx.compose(_v, _q, _s);
+    banners.setMatrixAt(i, _mtx);
+  }
+  flagPoles.instanceMatrix.needsUpdate = true;
+  banners.instanceMatrix.needsUpdate = true;
+  group.add(flagPoles);
+  group.add(banners);
+
   // --- Ambient animation ----------------------------------------------------
   let t = 0;
   function update(dt) {
@@ -1091,8 +1202,21 @@ export function buildDowntown() {
     // litList holds the SHARED accent mats (pushed once) — no per-mesh cost.
     const lit = 0.7 + 0.18 * Math.sin(t * 1.4);
     for (let i = 0; i < litList.length; i++) litList[i].emissiveIntensity = lit;
-    // Slowly rotate the rooftop neon beacon sign.
+    // Slowly rotate the rooftop neon beacon sign + logo signs.
     for (const s of spinners) s.rotation.y += dt * 0.6;
+    // Pulse the shared rooftop/spire beacon tips (module-scope beaconMat).
+    beaconMat.emissiveIntensity = 0.8 + 0.6 * Math.abs(Math.sin(t * 2.0));
+    // Sway the colonnade banners (instanced, allocation-free matrix rewrite).
+    for (let i = 0; i < bannerAnchors.length; i++) {
+      const a = bannerAnchors[i];
+      const th = a.base + 0.3 * Math.sin(t * 1.1 + a.phase);
+      _v.set(a.x + bannerHw * Math.sin(th), a.y, a.z + bannerHw * Math.cos(th));
+      _q.setFromAxisAngle(_yAxis, th - Math.PI / 2);
+      _s.set(bannerW, bannerHt, 0.06);
+      _mtx.compose(_v, _q, _s);
+      banners.setMatrixAt(i, _mtx);
+    }
+    banners.instanceMatrix.needsUpdate = true;
     // Warm flicker on the kiosk's hanging interior bulbs (each on its own phase).
     for (let i = 0; i < shopLights.length; i++) {
       shopLights[i].emissiveIntensity = 0.85 + 0.15 * Math.sin(t * 3.1 + i * 2.4);

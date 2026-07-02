@@ -802,6 +802,150 @@ export function buildHarbor() {
     group.add(stallSign);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // MARITIME RICHNESS PASS (additive) — instanced fleet, nav buoys, pilings,
+  // bunting, seagulls and a rotating channel-marker beacon. Everything here is
+  // either floating on the water, overhead, or thin/decorative → NO colliders
+  // are added (the drivable boardwalk lane + pier deck stay completely clear).
+  // All geometries/materials are created ONCE; animated instances are driven by
+  // per-instance matrices in update() using a single reused scratch Object3D,
+  // so update() stays allocation-free.
+  // ════════════════════════════════════════════════════════════════════════
+  const _d = new THREE.Object3D(); // reused scratch transform (build + update)
+
+  // ── Shared geometries for the pass (created ONCE) ─────────────────────────
+  const pilingGeo = new THREE.CylinderGeometry(0.34, 0.46, 3.4, 8);
+  const pilingCapGeo = new THREE.CylinderGeometry(0.5, 0.42, 0.28, 8);
+  const buoyBodyGeo = new THREE.CylinderGeometry(0.34, 0.62, 1.25, 10);
+  const buoyLampGeo = new THREE.SphereGeometry(0.22, 8, 6);
+  const dinghyHullGeo = new THREE.BoxGeometry(1.7, 0.62, 3.6);
+  const dinghyThwartGeo = new THREE.BoxGeometry(1.7, 0.12, 0.4);
+  const gullGeo = new THREE.BoxGeometry(0.72, 0.05, 0.2);
+  // A single down-pointing triangle for the bunting flags (pivot at the top
+  // edge so update() can swing each flag about its X axis).
+  const buntGeo = new THREE.BufferGeometry();
+  buntGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([
+    -0.28, 0, 0,  0.28, 0, 0,  0, -0.66, 0,
+  ]), 3));
+  buntGeo.setIndex([0, 1, 2]);
+  buntGeo.computeVertexNormals();
+
+  // ── Shared materials for the pass (created ONCE) ──────────────────────────
+  const matBarnaclePile = new THREE.MeshStandardMaterial({ color: "#4a3626", roughness: 1 });
+  const matBuoyRed = new THREE.MeshStandardMaterial({ color: "#d23b32", roughness: 0.55, metalness: 0.1, flatShading: true });
+  const matBuoyGreen = new THREE.MeshStandardMaterial({ color: "#2fa15a", roughness: 0.55, metalness: 0.1, flatShading: true });
+  const matLampRed = new THREE.MeshStandardMaterial({ color: "#ff6a5a", emissive: "#ff2a1a", emissiveIntensity: 1.1, roughness: 0.5 });
+  const matLampGreen = new THREE.MeshStandardMaterial({ color: "#7cffb0", emissive: "#12ff5a", emissiveIntensity: 1.1, roughness: 0.5 });
+  const matDinghy = new THREE.MeshStandardMaterial({ color: "#355a7a", roughness: 0.8, flatShading: true });
+  const matGull = new THREE.MeshStandardMaterial({ color: "#eef2f4", roughness: 0.9 });
+  const matBunting = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.7, side: THREE.DoubleSide });
+  const matBeaconWhite = new THREE.MeshStandardMaterial({ color: "#e9edf0", roughness: 0.8 });
+  const matBeaconRed = new THREE.MeshStandardMaterial({ color: "#c23a30", roughness: 0.8 });
+  const matBeaconLamp = new THREE.MeshStandardMaterial({ color: "#fff0c0", emissive: "#ffcf5a", emissiveIntensity: 1.4, roughness: 0.4 });
+
+  // ── Mooring pilings / dolphins scattered across the water (instanced) ──────
+  // Clustered around the moored boats and along the open water; all Z > -14
+  // (seaward of the quay) and clear of the pier deck (X[-16,-2]).
+  const pilingSpots = [
+    [-20, 10], [-24, 4], [-19, 1], [-26, 18],
+    [12, 20], [10, 12], [14, 16], [16, 8],
+    [2, 27], [-6, 26], [5, 22], [22, 24],
+    [26, 14], [24, 4],
+  ];
+  const pilingsMesh = new THREE.InstancedMesh(pilingGeo, matBarnaclePile, pilingSpots.length);
+  const pilingCapsMesh = new THREE.InstancedMesh(pilingCapGeo, matPile, pilingSpots.length);
+  pilingsMesh.castShadow = true; pilingsMesh.receiveShadow = true;
+  for (let i = 0; i < pilingSpots.length; i++) {
+    const [px, pz] = pilingSpots[i];
+    _d.position.set(px, 0.1, pz);
+    _d.rotation.set(0, (px * 1.7 + pz) % 1, 0);
+    _d.scale.set(1, 1, 1);
+    _d.updateMatrix();
+    pilingsMesh.setMatrixAt(i, _d.matrix);
+    _d.position.set(px, 1.75, pz);
+    _d.rotation.set(0, 0, 0);
+    _d.updateMatrix();
+    pilingCapsMesh.setMatrixAt(i, _d.matrix);
+  }
+  pilingsMesh.instanceMatrix.needsUpdate = true;
+  pilingCapsMesh.instanceMatrix.needsUpdate = true;
+  group.add(pilingsMesh, pilingCapsMesh);
+
+  // ── Navigation buoys (instanced) — colourful floats with emissive lamps ────
+  // Red set + green set, each a body InstancedMesh + a matching emissive-lamp
+  // InstancedMesh. They bob on the swell (matrices rewritten in update()).
+  const buoyRed = [[22, 20], [26, 10], [15, 26], [24, 2]];
+  const buoyGreen = [[-24, 14], [-28, 22], [18, 6], [6, 28]];
+  function makeBuoySet(spots, bodyMat, lampMat) {
+    const bodies = new THREE.InstancedMesh(buoyBodyGeo, bodyMat, spots.length);
+    const lamps = new THREE.InstancedMesh(buoyLampGeo, lampMat, spots.length);
+    bodies.castShadow = true;
+    group.add(bodies, lamps);
+    return { bodies, lamps, spots, phase: spots.map((s) => (s[0] + s[1]) * 0.3) };
+  }
+  const buoySets = [
+    makeBuoySet(buoyRed, matBuoyRed, matLampRed),
+    makeBuoySet(buoyGreen, matBuoyGreen, matLampGreen),
+  ];
+
+  // ── Moored dinghy fleet (instanced hulls + thwarts) — bob gently ───────────
+  // Small tenders tied up in the open water west & south of the pier.
+  const dinghies = [
+    [-28, 5, 0.5], [-27, 11, -0.35], [-28, 17, 0.2], [-25, 23, -0.5],
+    [7, 4, 1.35], [17, 24, -1.0],
+  ];
+  const dinghyHulls = new THREE.InstancedMesh(dinghyHullGeo, matDinghy, dinghies.length);
+  const dinghyThwarts = new THREE.InstancedMesh(dinghyThwartGeo, matHull3, dinghies.length);
+  dinghyHulls.castShadow = true;
+  group.add(dinghyHulls, dinghyThwarts);
+
+  // ── String of triangular BUNTING across the quay edge (instanced, sways) ───
+  // Overhead at ~5m, drooping in a shallow catenary; NO collider.
+  const buntCount = 26;
+  const buntMesh = new THREE.InstancedMesh(buntGeo, matBunting, buntCount);
+  const buntColors = ["#d84a3a", "#f2f2f2", "#2f6fc8", "#e8b23a", "#2fa15a"];
+  const _c = new THREE.Color();
+  const buntBase = []; // {x,y,z} cached top-anchor per flag (no per-frame alloc)
+  const buntX0 = -22, buntX1 = 22, buntZ = -14.4, buntTopY = 5.3;
+  for (let i = 0; i < buntCount; i++) {
+    const f = i / (buntCount - 1);
+    const x = buntX0 + (buntX1 - buntX0) * f;
+    const y = buntTopY - 0.85 * (1 - (2 * f - 1) * (2 * f - 1)); // shallow droop
+    buntBase.push({ x, y, z: buntZ });
+    _c.set(buntColors[i % buntColors.length]);
+    buntMesh.setColorAt(i, _c);
+  }
+  if (buntMesh.instanceColor) buntMesh.instanceColor.needsUpdate = true;
+  group.add(buntMesh);
+
+  // ── Circling SEAGULLS (instanced specks) — orbit overhead in update() ──────
+  const gulls = [
+    // [radius, y, centerX, centerZ, speed, phase]
+    [9, 11, -6, 8, 0.5, 0], [12, 13, -6, 8, -0.38, 1.7],
+    [7, 9, 10, 18, 0.62, 3.0], [14, 15, 4, 12, 0.3, 0.8],
+    [6, 12, -18, 4, -0.55, 2.2], [10, 10, 16, 22, 0.42, 4.1],
+    [8, 14, 0, 0, 0.35, 5.0], [11, 12, -10, 20, -0.47, 1.1],
+  ];
+  const gullMesh = new THREE.InstancedMesh(gullGeo, matGull, gulls.length);
+  group.add(gullMesh);
+
+  // ── Channel-marker BEACON out in the water (rotating emissive lamp) ────────
+  // Sits on its own piling cluster in open water south-east; NO collider.
+  const bcX = 12, bcZ = 30;
+  for (const [dx, dz] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
+    addBox(cylGeo, matBarnaclePile, bcX + dx, 0.2, bcZ + dz, 0.34, 3.6, 0.34, true);
+  }
+  addBox(cylGeo, matPile, bcX, 1.75, bcZ, 2.4, 0.4, 2.4, true);          // platform
+  addBox(cylGeo, matBeaconWhite, bcX, 3.4, bcZ, 1.5, 3.2, 1.5, true);    // white tower
+  addBox(cylGeo, matBeaconRed, bcX, 4.2, bcZ, 1.56, 0.7, 1.56, false);   // red band
+  addBox(cylGeo, matBeaconRed, bcX, 2.6, bcZ, 1.56, 0.7, 1.56, false);   // red band
+  addBox(cylGeo, matBeaconWhite, bcX, 5.1, bcZ, 1.1, 0.5, 1.1, false);   // lamp housing
+  const beaconLamp = new THREE.Mesh(boxGeo, matBeaconLamp);
+  beaconLamp.position.set(bcX, 5.55, bcZ);
+  beaconLamp.scale.set(0.9, 0.7, 0.5); // a directional lens that sweeps as it turns
+  group.add(beaconLamp);
+  addBox(cylGeo, matDarkSteel, bcX, 6.05, bcZ, 1.0, 0.5, 1.0, false);    // cap/roof
+
   // ── ground: whole tile is walkable floor ──────────────────────────────────
   const ground = [{ minX: -30, maxX: 30, minZ: -30, maxZ: 30 }];
 
@@ -858,6 +1002,73 @@ export function buildHarbor() {
     cable.scale.y = (cableTopY - hookY);
     slung.position.set(craneBaseX, hookY - 1.1, hookZ + swing);
     slung.rotation.y = Math.sin(t * 0.5) * 0.2;
+
+    // ── Nav buoys bob + tilt on the swell; lamps flash (emissive pulse) ──────
+    for (let s = 0; s < buoySets.length; s++) {
+      const set = buoySets[s];
+      for (let i = 0; i < set.spots.length; i++) {
+        const [bx, bz] = set.spots[i];
+        const ph = set.phase[i];
+        const bob = Math.sin(t * 1.1 + ph) * 0.14;
+        _d.rotation.set(Math.sin(t * 0.9 + ph) * 0.14, 0, Math.cos(t * 0.8 + ph) * 0.12);
+        _d.scale.set(1, 1, 1);
+        _d.position.set(bx, bob, bz);
+        _d.updateMatrix();
+        set.bodies.setMatrixAt(i, _d.matrix);
+        _d.position.set(bx, 0.92 + bob, bz);
+        _d.rotation.set(0, 0, 0);
+        _d.updateMatrix();
+        set.lamps.setMatrixAt(i, _d.matrix);
+      }
+      set.bodies.instanceMatrix.needsUpdate = true;
+      set.lamps.instanceMatrix.needsUpdate = true;
+    }
+    // Lamps flash on offset cadences (red vs green), never below a dim floor.
+    matLampRed.emissiveIntensity = 0.5 + (Math.sin(t * 2.4) * 0.5 + 0.5) * 1.3;
+    matLampGreen.emissiveIntensity = 0.5 + (Math.sin(t * 2.4 + 2.1) * 0.5 + 0.5) * 1.3;
+
+    // ── Moored dinghy fleet bobs gently ─────────────────────────────────────
+    for (let i = 0; i < dinghies.length; i++) {
+      const [dx, dz, hd] = dinghies[i];
+      const bob = Math.sin(t * 1.25 + i * 1.3) * 0.11;
+      _d.scale.set(1, 1, 1);
+      _d.rotation.set(Math.sin(t * 0.9 + i) * 0.05, hd, Math.sin(t * 0.7 + i * 0.6) * 0.06);
+      _d.position.set(dx, -0.12 + bob, dz);
+      _d.updateMatrix();
+      dinghyHulls.setMatrixAt(i, _d.matrix);
+      _d.position.set(dx, 0.12 + bob, dz);
+      _d.updateMatrix();
+      dinghyThwarts.setMatrixAt(i, _d.matrix);
+    }
+    dinghyHulls.instanceMatrix.needsUpdate = true;
+    dinghyThwarts.instanceMatrix.needsUpdate = true;
+
+    // ── Bunting flags swing in the breeze about their top edge ──────────────
+    for (let i = 0; i < buntBase.length; i++) {
+      const b = buntBase[i];
+      _d.scale.set(1, 1, 1);
+      _d.position.set(b.x, b.y, b.z);
+      _d.rotation.set(Math.sin(t * 2.2 + i * 0.6) * 0.35, 0, Math.sin(t * 1.6 + i * 0.5) * 0.18);
+      _d.updateMatrix();
+      buntMesh.setMatrixAt(i, _d.matrix);
+    }
+    buntMesh.instanceMatrix.needsUpdate = true;
+
+    // ── Seagulls circle overhead, banking into the turn with a wing flap ────
+    for (let i = 0; i < gulls.length; i++) {
+      const [r, gy, cx, cz, spd, gph] = gulls[i];
+      const ang = t * spd + gph;
+      _d.scale.set(1, 1, 1);
+      _d.position.set(cx + Math.cos(ang) * r, gy + Math.sin(t * 1.3 + gph) * 0.4, cz + Math.sin(ang) * r);
+      _d.rotation.set(0, -ang, Math.sin(t * 6 + gph) * 0.5); // heading + wing flap
+      _d.updateMatrix();
+      gullMesh.setMatrixAt(i, _d.matrix);
+    }
+    gullMesh.instanceMatrix.needsUpdate = true;
+
+    // ── Beacon lamp slowly rotates + flashes (rotating channel marker) ──────
+    beaconLamp.rotation.y = t * 1.6;
+    matBeaconLamp.emissiveIntensity = 0.6 + (Math.sin(t * 3.0) * 0.5 + 0.5) * 1.6;
   }
 
   return { group, colliders, ground, update };

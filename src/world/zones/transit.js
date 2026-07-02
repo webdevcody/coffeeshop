@@ -99,6 +99,17 @@ const MAT = {
   bin: new THREE.MeshStandardMaterial({ color: "#2e3a2f", roughness: 0.8, metalness: 0.2 }),
   clockHandMat: new THREE.MeshStandardMaterial({ color: "#1a1d22", roughness: 0.5 }),
   awning: new THREE.MeshStandardMaterial({ color: "#b23a3a", roughness: 0.7, flatShading: true }),
+  // NEW emissive dressing (glow via emissive only — NO new lights)
+  tactile: new THREE.MeshStandardMaterial({
+    color: "#e7c84a", emissive: "#ffcf3a", emissiveIntensity: 0.6, roughness: 0.5,
+  }),                                                     // platform tactile edge studs
+  trainGlow: new THREE.MeshStandardMaterial({
+    color: "#ffe9b8", emissive: "#ffd98a", emissiveIntensity: 0.55, roughness: 0.5,
+  }),                                                     // warm lit coach interior band
+  pendant: new THREE.MeshStandardMaterial({
+    color: "#fff3cf", emissive: "#ffe0a0", emissiveIntensity: 0.85, roughness: 0.4,
+  }),                                                     // canopy pendant lamp heads
+  panto: new THREE.MeshStandardMaterial({ color: "#20242a", roughness: 0.45, metalness: 0.7 }),
   // NEW materials for the enterable newsstand/cafe shop
   shopWall: new THREE.MeshStandardMaterial({ color: "#e7ddc8", roughness: 0.9, flatShading: true }),
   shopWallOut: new THREE.MeshStandardMaterial({ color: "#8a5a3c", roughness: 0.92, flatShading: true }),
@@ -172,6 +183,11 @@ function makeCoach(len) {
     const glass = box(len - 1.8, 0.74, 0.05, MAT.window, false, false);
     glass.position.set(0, 2.1, side);
     g.add(glass);
+    // a warm lit interior band just inside the glass reads as a lit carriage at
+    // dusk; shares MAT.trainGlow so one material pulse animates every coach.
+    const litBand = box(len - 2.2, 0.6, 0.04, MAT.trainGlow, false, false);
+    litBand.position.set(0, 2.1, side * 0.92);
+    g.add(litBand);
   }
   // one wheel pair per bogie (2 wheels per coach) — enough to read at distance
   for (const bx of [-(len / 2 - 1.0), len / 2 - 1.0]) {
@@ -182,6 +198,41 @@ function makeCoach(len) {
     w.castShadow = true;
     g.add(w);
   }
+  return g;
+}
+
+// A roof-mounted PANTOGRAPH: a folded scissor arm reaching up to the contact
+// wire, built entirely from thin boxes (reuses GEO.unit via box()). Visual-only,
+// mounted on a coach roof — moves with the train. No collider (overhead).
+function makePantograph() {
+  const g = new THREE.Group();
+  // insulator feet
+  for (const fx of [-0.5, 0.5]) {
+    const foot = box(0.22, 0.28, 0.5, MAT.panto, false, false);
+    foot.position.set(fx, 0.14, 0);
+    g.add(foot);
+  }
+  // lower scissor arms (angled up-and-in from each foot)
+  for (const fx of [-0.5, 0.5]) {
+    const lower = box(0.08, 1.5, 0.08, MAT.panto, false, false);
+    lower.position.set(fx * 0.5, 0.85, 0);
+    lower.rotation.z = fx > 0 ? 0.5 : -0.5;
+    g.add(lower);
+  }
+  // upper arms meeting under the contact bar
+  for (const fx of [-0.5, 0.5]) {
+    const upper = box(0.07, 1.2, 0.07, MAT.panto, false, false);
+    upper.position.set(fx * 0.16, 1.9, 0);
+    upper.rotation.z = fx > 0 ? -0.6 : 0.6;
+    g.add(upper);
+  }
+  // horizontal contact bar (the collector head that touches the wire)
+  const head = box(0.06, 0.06, 1.6, MAT.rail, false, false);
+  head.position.set(0, 2.42, 0);
+  g.add(head);
+  const headBar = box(1.4, 0.05, 0.06, MAT.rail, false, false);
+  headBar.position.set(0, 2.34, 0);
+  g.add(headBar);
   return g;
 }
 
@@ -684,6 +735,24 @@ export function buildTransit() {
   group.add(stripe);
   // The platform is a SOLID raised block — collide its full footprint.
   addCollider(colliders, 0, PLAT_Z, PLAT_W, PLAT_DEPTH);
+  // TACTILE EDGE STUDS: a row of small emissive amber studs just inside the
+  // safety stripe, reading as a mind-the-gap warning line. One InstancedMesh
+  // (reuses GEO.unit + MAT.tactile); overhead/flat decoration → NO collider.
+  const studCount = 30;
+  const studZ = PLAT_Z - PLAT_DEPTH / 2 + 0.55;
+  const studs = new THREE.InstancedMesh(GEO.unit, MAT.tactile, studCount);
+  studs.castShadow = false;
+  studs.receiveShadow = false;
+  const sTmp = new THREE.Object3D();
+  for (let i = 0; i < studCount; i++) {
+    const sx = -PLAT_W / 2 + 0.8 + (i * (PLAT_W - 1.6)) / (studCount - 1);
+    sTmp.position.set(sx, PLAT_H + 0.05, studZ);
+    sTmp.scale.set(0.5, 0.08, 0.28);
+    sTmp.updateMatrix();
+    studs.setMatrixAt(i, sTmp.matrix);
+  }
+  studs.instanceMatrix.needsUpdate = true;
+  group.add(studs);
 
   // --- PLATFORM KIOSK BUILDINGS: two real little structures standing ON the
   // platform (a newsstand + a coffee bar). Each is a SUBSTANTIAL 3D volume
@@ -977,15 +1046,32 @@ export function buildTransit() {
   const COACH_COUNT = 3;
   const totalLen = COACH_COUNT * COACH_LEN + (COACH_COUNT - 1) * GAP;
   let cx0 = -totalLen / 2 + COACH_LEN / 2;
+  // destination BLINDS (one per coach) face the platform (+Z). artPanel's textured
+  // front faces +Z and reads correctly from +Z, so a plain artPanel is right here.
+  const blindText = ["CITY CENTRE", "EXPRESS", "AIRPORT"];
   for (let i = 0; i < COACH_COUNT; i++) {
     const coach = makeCoach(COACH_LEN);
-    coach.position.set(cx0 + i * (COACH_LEN + GAP), 0.4, 0);
+    const coachX = cx0 + i * (COACH_LEN + GAP);
+    coach.position.set(coachX, 0.4, 0);
+    // a small lit destination blind on the platform-facing (+Z) side of the coach
+    const blind = artPanel(3.0, 0.55, "sign", {
+      text: blindText[i % blindText.length], bg: "#0b1a24", fg: "#ffcf3a",
+      emissiveIntensity: 0.55,
+    });
+    blind.position.set(0, 2.62, 1.29);        // rides the upper window band, faces +Z
+    coach.add(blind);
     train.add(coach);
     // small coupler block between coaches
     if (i < COACH_COUNT - 1) {
       const coupler = box(GAP, 0.5, 0.4, MAT.steel);
-      coupler.position.set(cx0 + i * (COACH_LEN + GAP) + COACH_LEN / 2 + GAP / 2, 0.85, 0);
+      coupler.position.set(coachX + COACH_LEN / 2 + GAP / 2, 0.85, 0);
       train.add(coupler);
+    }
+    // PANTOGRAPH on the middle coach roof, reaching up toward the contact wire.
+    if (i === (COACH_COUNT >> 1)) {
+      const panto = makePantograph();
+      panto.position.set(coachX, 3.7, 0);      // sits on the dark roof cap
+      train.add(panto);
     }
   }
   train.position.set(0, 0, TRACK_Z);
@@ -1043,6 +1129,26 @@ export function buildTransit() {
       group.add(brace);
     }
   }
+  // PENDANT PLATFORM LAMPS: a string of warm emissive heads slung under the
+  // canopy front beam, lighting the platform (glow via emissive only — NO new
+  // lights). One InstancedMesh (reuses GEO.lampHead + MAT.pendant); overhead → no
+  // collider. A thin shared conduit box runs the beam line so they read as hung.
+  const conduit = box(40, 0.06, 0.06, MAT.steel, false, false);
+  conduit.position.set(0, PLAT_H + 3.85, CANOPY_Z - 2.0);
+  group.add(conduit);
+  const pendantCount = 9;
+  const pendants = new THREE.InstancedMesh(GEO.lampHead, MAT.pendant, pendantCount);
+  pendants.castShadow = false;
+  const pTmp = new THREE.Object3D();
+  for (let i = 0; i < pendantCount; i++) {
+    const px = -20 + (i * 40) / (pendantCount - 1);
+    pTmp.position.set(px, PLAT_H + 3.55, CANOPY_Z - 2.0);
+    pTmp.scale.set(0.85, 0.85, 0.85);
+    pTmp.updateMatrix();
+    pendants.setMatrixAt(i, pTmp.matrix);
+  }
+  pendants.instanceMatrix.needsUpdate = true;
+  group.add(pendants);
 
   // --- Departure-board sign: artPanel "sign" "TRANSIT" ----------------------
   // Mounted on a frame hanging under the canopy, facing the platform (+Z look).
@@ -1373,9 +1479,15 @@ export function buildTransit() {
     // gentle ease-in/ease-out slide using a slow sine; the train never fully
     // leaves so the station always reads as occupied.
     train.position.x = TRAIN_BASE_X + Math.sin(t * 0.18) * TRAIN_TRAVEL;
-    // pulse all departure-board glows between ~0.3 and ~0.8.
-    const glow = baseGlow + Math.sin(t * 2.2) * 0.25;
+    // pulse all departure-board glows between ~0.3 and ~0.8, with a subtle
+    // high-frequency flip/flicker so the boards read as live LED matrices.
+    const flick = 0.9 + 0.1 * Math.sin(t * 17.3) * Math.sin(t * 5.1);
+    const glow = (baseGlow + Math.sin(t * 2.2) * 0.25) * flick;
     for (let i = 0; i < depMats.length; i++) depMats[i].emissiveIntensity = glow;
+    // warm carriage-interior band gently breathes (shared coach material).
+    MAT.trainGlow.emissiveIntensity = 0.5 + Math.sin(t * 1.3) * 0.12;
+    // platform tactile edge studs pulse (offset phase from the boards).
+    MAT.tactile.emissiveIntensity = 0.55 + Math.sin(t * 3.1 + 1.0) * 0.2;
     // turnstile barriers creep forward (as if passengers pass through).
     for (let i = 0; i < turnstiles.length; i++) turnstiles[i].rotation.y += dt * 0.35;
     // tower clock: minute hand sweeps, hour hand much slower (sped up for life).
