@@ -92,6 +92,7 @@ const _pos = new THREE.Vector3();
 const _scl = new THREE.Vector3(1, 1, 1);
 const _euler = new THREE.Euler();
 const _white = new THREE.Color("#dfe6f2");  // lightning fog-tint target (const, never mutated)
+const _col = new THREE.Color();             // scratch for one-time instanceColor seeding
 
 // A flat-bottomed low-poly cloud: a clump of squashed icosahedra merged visually
 // by overlapping them in one little group. Cheap, blocky, reads as a cloud.
@@ -136,29 +137,40 @@ export function buildCityWeather(opts = {}) {
     opacity: 0.18,
     depthWrite: false,
     flatShading: true,
+    // Lightning underglow: normally black (inert), ramped up during a flash so the
+    // storm clouds light from within on each strike. Colour set once; only the
+    // intensity scalar is touched per frame.
+    emissive: "#dfe6ff",
+    emissiveIntensity: 0.0,
   });
   const clouds = [];
+  const cloudDrift = new Array(CLOUD_COUNT); // per-clump {mul, bobA, bobP, baseY}
   for (let i = 0; i < CLOUD_COUNT; i++) {
     const clump = new THREE.Group();
     clump.frustumCulled = false;
-    // 3-4 overlapping blobs make one fluffy clump.
-    const blobs = 3 + (i % 2);
+    // 3-5 overlapping blobs make one fluffy clump; flatter/wider than before so the
+    // silhouette reads as a soft cumulus rather than a lumpy ball.
+    const blobs = 3 + (i % 3);
     for (let b = 0; b < blobs; b++) {
       const puff = new THREE.Mesh(cloudGeo, cloudMat);
-      const sx = 6 + ((i * 7 + b * 3) % 6);
-      const sy = 2.4 + ((i + b) % 3);
-      const sz = 5 + ((i * 5 + b * 2) % 5);
+      const sx = 7 + ((i * 7 + b * 3) % 7);
+      const sy = 2.0 + ((i + b) % 3) * 0.8;   // flatter vertically → softer puff
+      const sz = 6 + ((i * 5 + b * 2) % 6);
       puff.scale.set(sx, sy, sz);
-      puff.position.set((b - blobs / 2) * 6 + ((i + b) % 3), ((i + b) % 2) * 1.2, ((i * 3 + b) % 4) - 2);
+      puff.position.set((b - blobs / 2) * 6 + ((i + b) % 3), ((i + b) % 2) * 1.0, ((i * 3 + b) % 4) - 2);
       puff.frustumCulled = false;
       clump.add(puff);
     }
     // Spread clumps across the sky over the whole map.
     const cx = CENTER_X + (((i * 53) % SPAN_X) - SPAN_X / 2);
     const cz = CENTER_Z + (((i * 97) % SPAN_Z) - SPAN_Z / 2);
-    clump.position.set(cx, CLOUD_Y + (i % 4) * 4, cz);
+    const baseY = CLOUD_Y + (i % 4) * 4;
+    clump.position.set(cx, baseY, cz);
     group.add(clump);
     clouds.push(clump);
+    // Each clump drifts at its own fraction of the wind and bobs on its own phase so
+    // the cover shears and breathes instead of sliding as one rigid sheet.
+    cloudDrift[i] = { mul: 0.65 + (i % 5) * 0.16, bobA: 0.6 + (i % 3) * 0.5, bobP: i * 1.3, baseY };
   }
 
   // ----------------------------------------------------------------- RAIN ----
@@ -188,18 +200,27 @@ export function buildCityWeather(opts = {}) {
       z: CENTER_Z + (Math.random() - 0.5) * SPAN_Z,
       y: RAIN_BOTTOM + Math.random() * (RAIN_TOP - RAIN_BOTTOM),
       speed: RAIN_FALL * (0.85 + Math.random() * 0.4),
-      len: STREAK_LEN * (0.8 + Math.random() * 0.5),
+      // Wider length spread than before → nearer/heavier streaks read as long
+      // slashes, distant ones as short ticks, giving the curtain real depth.
+      len: STREAK_LEN * (0.6 + Math.random() * 1.1),
     };
   }
   // Seed the instance matrices once so nothing flickers before the first update.
+  // Also seed a per-streak brightness via instanceColor: some streaks are faint and
+  // hazy, others bright and sharp, so the sheet reads as layered rather than flat.
+  // (Multiplies the base colour; set ONCE — no per-frame colour work.)
   for (let i = 0; i < RAIN_COUNT; i++) {
     const s = streaks[i];
     _pos.set(s.x, s.y, s.z);
     _scl.set(1, s.len, 1);
     _m.compose(_pos, _q, _scl);
     rain.setMatrixAt(i, _m);
+    const b = 0.65 + Math.random() * 0.5;   // 0.65..1.15 brightness
+    _col.setRGB(b, b, b * 1.04);            // a hair cooler on the bright end
+    rain.setColorAt(i, _col);
   }
   rain.instanceMatrix.needsUpdate = true;
+  if (rain.instanceColor) rain.instanceColor.needsUpdate = true;
 
   // ------------------------------------------------------------- LIGHTNING ---
   // A big emissive quad parked high overhead, facing down. During rain its opacity
@@ -239,8 +260,26 @@ export function buildCityWeather(opts = {}) {
     // stacked cone shell its taper. Double-sided material shows the hollow interior.
     ringGeos.push(new THREE.CylinderGeometry(rT, rB, h, 16, 1, true));
   }
+  // Inner CORE shell: a second, narrower stack that counter-rotates inside the outer
+  // shell so the funnel reads as layered, twisting sheets of dust rather than one
+  // hollow cone. Fewer segments (they're small and mostly occluded) to stay cheap.
+  const INNER_RINGS = 6;
+  const innerRingGeos = [];
+  for (let i = 0; i < INNER_RINGS; i++) {
+    const fracB = i / INNER_RINGS;
+    const fracT = (i + 1) / INNER_RINGS;
+    const rB = funnelRingRadius(fracB) * 0.55;
+    const rT = funnelRingRadius(fracT) * 0.55;
+    const h = (fracT - fracB) * FUNNEL_HEIGHT * 1.3;
+    innerRingGeos.push(new THREE.CylinderGeometry(rT, rB, h, 12, 1, true));
+  }
   const debrisGeo = new THREE.PlaneGeometry(2.2, 1.3);
   const smudgeGeo = new THREE.CircleGeometry(FUNNEL_BASE_R * 3.4, 20);
+  // Debris RING: many small torn chunks orbiting the base, drawn as ONE InstancedMesh
+  // per funnel (one draw call). Static per-instance matrices → the whole ring is
+  // animated for free by spinning its parent group (no per-frame matrix writes).
+  const DEBRIS_INSTANCES = 22;
+  const debrisChunkGeo = new THREE.PlaneGeometry(1.5, 0.85);
 
   function buildFunnel(seed) {
     const root = new THREE.Group();      // roam position (x,z); visibility toggled
@@ -252,7 +291,7 @@ export function buildCityWeather(opts = {}) {
     root.add(bodyGroup);
 
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: "#7c6b58",                  // dusty grey-brown
+      color: "#4f463b",                  // dark, dirty storm-brown (more menacing)
       roughness: 1.0, metalness: 0.0,
       transparent: true, opacity: 0.0,   // faded in by the forming phase
       depthWrite: false, side: THREE.DoubleSide, flatShading: true,
@@ -272,23 +311,46 @@ export function buildCityWeather(opts = {}) {
       rings.push(m);
     }
 
-    // Faster debris swirl orbiting the base.
+    // Inner counter-swirl core (shares bodyMat so it fades with the lifecycle). Its
+    // helix winds the OTHER way; update() spins this group against the outer shell.
+    const innerGroup = new THREE.Group();
+    innerGroup.frustumCulled = false;
+    for (let i = 0; i < INNER_RINGS; i++) {
+      const frac = (i + 0.5) / INNER_RINGS;
+      const m = new THREE.Mesh(innerRingGeos[i], bodyMat);
+      m.frustumCulled = false;
+      const off = 0.15 + frac * 1.2;
+      const hAng = -frac * 3.6 + seed * 1.3;   // opposite-handed helix
+      m.position.set(Math.cos(hAng) * off, frac * FUNNEL_HEIGHT, Math.sin(hAng) * off);
+      innerGroup.add(m);
+    }
+    bodyGroup.add(innerGroup);
+
+    // Faster debris swirl orbiting the base — one InstancedMesh of many torn chunks.
     const debrisGroup = new THREE.Group();
     debrisGroup.frustumCulled = false;
     const debrisMat = new THREE.MeshBasicMaterial({
-      color: "#5b4d3d",
+      color: "#4a3e30",
       transparent: true, opacity: 0.0,
       depthWrite: false, side: THREE.DoubleSide, fog: false,
     });
-    for (let i = 0; i < FUNNEL_DEBRIS; i++) {
-      const q = new THREE.Mesh(debrisGeo, debrisMat);
-      q.frustumCulled = false;
-      const a = (i / FUNNEL_DEBRIS) * TWO_PI + seed;
-      const r = FUNNEL_BASE_R + 1.2 + (i % 3) * 0.9;
-      q.position.set(Math.cos(a) * r, 0.6 + (i % 4) * 1.1, Math.sin(a) * r);
-      q.rotation.y = a;                  // roughly tangential
-      debrisGroup.add(q);
+    const debrisIM = new THREE.InstancedMesh(debrisChunkGeo, debrisMat, DEBRIS_INSTANCES);
+    debrisIM.frustumCulled = false;
+    for (let i = 0; i < DEBRIS_INSTANCES; i++) {
+      const a = (i / DEBRIS_INSTANCES) * TWO_PI + seed;
+      const r = FUNNEL_BASE_R + 0.8 + (i % 4) * 1.0;
+      const y = 0.4 + (i % 6) * 1.25;         // stacked up the lower funnel
+      _pos.set(Math.cos(a) * r, y, Math.sin(a) * r);
+      _euler.set((i % 3) * 0.4, a, (i % 2) ? 0.35 : -0.35);
+      _q.setFromEuler(_euler);
+      const sc = 0.6 + (i % 3) * 0.45;
+      _scl.set(sc, sc, sc);
+      _m.compose(_pos, _q, _scl);
+      debrisIM.setMatrixAt(i, _m);
     }
+    debrisIM.instanceMatrix.needsUpdate = true;
+    _scl.set(1, 1, 1);                          // restore shared scratch
+    debrisGroup.add(debrisIM);
     bodyGroup.add(debrisGroup);
 
     // Dark ground smudge — sits flat under the funnel and does NOT tilt with the
@@ -309,7 +371,7 @@ export function buildCityWeather(opts = {}) {
     // Plain reused state record (no per-frame allocation). `report` is the reused
     // object handed out by getTornadoes() so that call never allocates either.
     return {
-      root, bodyGroup, debrisGroup, rings,
+      root, bodyGroup, innerGroup, debrisGroup, rings,
       bodyMat, debrisMat, smudgeMat,
       phase: "idle",                     // idle | forming | active | dissipating
       life: 0,
@@ -357,6 +419,7 @@ export function buildCityWeather(opts = {}) {
   // Lightning timing (only fires while it's actually raining).
   let flashTimer = 4 + Math.random() * 8;   // seconds until next strike
   let flashLevel = 0;                       // current flash brightness 0..1
+  let flashRestrike = 0;                    // >0 = a quick second stroke is pending
   let fogDirty = false;                     // true while the fog is tinted by a flash
 
   let t = 0;
@@ -400,14 +463,15 @@ export function buildCityWeather(opts = {}) {
 
     // ----- clouds: opacity = cover; drift with the wind, wrap at the edges -----
     cloudMat.opacity = 0.12 + liveCover * 0.72;
-    const cdx = wind.dirX * wind.speed * 0.6 * dt;
-    const cdz = wind.dirZ * wind.speed * 0.6 * dt;
+    const cbx = wind.dirX * wind.speed * 0.6 * dt;
+    const cbz = wind.dirZ * wind.speed * 0.6 * dt;
     const halfX = SPAN_X / 2 + 30;
     const halfZ = SPAN_Z / 2 + 30;
     for (let i = 0; i < clouds.length; i++) {
       const c = clouds[i];
-      let px = c.position.x + cdx;
-      let pz = c.position.z + cdz;
+      const d = cloudDrift[i];
+      let px = c.position.x + cbx * d.mul;
+      let pz = c.position.z + cbz * d.mul;
       // wrap so the cover is endless
       if (px > CENTER_X + halfX) px -= 2 * halfX;
       else if (px < CENTER_X - halfX) px += 2 * halfX;
@@ -415,6 +479,8 @@ export function buildCityWeather(opts = {}) {
       else if (pz < CENTER_Z - halfZ) pz += 2 * halfZ;
       c.position.x = px;
       c.position.z = pz;
+      // gentle independent vertical breathing
+      c.position.y = d.baseY + Math.sin(t * 0.12 + d.bobP) * d.bobA;
     }
 
     // ----- rain: fade material with density, fall + recycle the pool ----------
@@ -463,19 +529,33 @@ export function buildCityWeather(opts = {}) {
     // ----- lightning: only while it's raining; ramp + decay the flash quad -----
     if (liveRain > 0.45) {
       flashTimer -= dt;
-      if (flashTimer <= 0 && flashLevel <= 0) {
+      if (flashTimer <= 0 && flashLevel <= 0 && flashRestrike <= 0) {
         flashTimer = 6 + Math.random() * 14;   // next strike a while off
         flashLevel = 0.8 + Math.random() * 0.2; // pop the flash on
+        // ~45% of strikes are multi-stroke: queue a quick second pop just after the
+        // first begins to fade, so the bolt flickers like a real lightning stroke.
+        flashRestrike = (Math.random() < 0.45) ? 0.09 + Math.random() * 0.07 : 0;
+      }
+    }
+    // Fire the pending restrike once its short delay elapses.
+    if (flashRestrike > 0) {
+      flashRestrike -= dt;
+      if (flashRestrike <= 0 && liveRain > 0.4) {
+        flashLevel = Math.max(flashLevel, 0.55 + Math.random() * 0.3);
       }
     }
     if (flashLevel > 0) {
       // Fast decay so it reads as a sharp flash, not a glow.
       flashLevel -= dt * 3.2;
       if (flashLevel < 0) flashLevel = 0;
-      // Flicker a touch on the way down so it looks like a real strike.
-      const flicker = 0.7 + 0.3 * Math.abs(Math.sin(t * 40));
+      // An erratic flicker (two detuned oscillators) reads as a jagged strike rather
+      // than a smooth pulse.
+      const flicker = 0.5 + 0.5 * Math.abs(Math.sin(t * 47) * Math.cos(t * 13));
       const fa = flashLevel * flicker * 0.5 * Math.min(1, liveRain * 1.5);
       flashMat.opacity = fa;
+      // Underlight the storm clouds from within on each stroke (emissive only — no
+      // light object). The clouds glow, then fall dark as the flash decays.
+      cloudMat.emissiveIntensity = fa * 1.7;
       // Polish: briefly tint the fog toward the flash colour (in-place lerp — no
       // allocation). Only runs if a fog was wired in via opts; otherwise inert.
       if (fog) {
@@ -484,6 +564,7 @@ export function buildCityWeather(opts = {}) {
       }
     } else {
       if (flashMat.opacity !== 0) flashMat.opacity = 0;
+      if (cloudMat.emissiveIntensity !== 0) cloudMat.emissiveIntensity = 0;
       if (fog && fogDirty) { fog.color.copy(_fogBase); fogDirty = false; }
     }
 
@@ -552,6 +633,8 @@ export function buildCityWeather(opts = {}) {
       // Spin the funnel, swirl the debris faster, and wobble the body a little.
       f.spin += dt * 1.7;
       f.bodyGroup.rotation.y = f.spin;
+      // Inner core winds against the shell for a layered, twisting-sheets look.
+      f.innerGroup.rotation.y = -f.spin * 1.9;
       f.debrisSpin += dt * 4.2;
       f.debrisGroup.rotation.y = f.debrisSpin;
       f.swayPhase += dt;
@@ -560,9 +643,9 @@ export function buildCityWeather(opts = {}) {
 
       // Apply lifecycle scale + alpha and update the exposed influence radius.
       f.bodyGroup.scale.setScalar(scl);
-      f.bodyMat.opacity = 0.42 * alpha;
-      f.debrisMat.opacity = 0.55 * alpha;
-      f.smudgeMat.opacity = 0.5 * alpha;
+      f.bodyMat.opacity = 0.55 * alpha;   // denser, darker column
+      f.debrisMat.opacity = 0.6 * alpha;
+      f.smudgeMat.opacity = 0.55 * alpha;
       f.radius = TORNADO_INFLUENCE * scl;
     }
 

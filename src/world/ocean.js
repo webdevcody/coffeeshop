@@ -40,13 +40,14 @@ const seaMat = new THREE.MeshStandardMaterial({
   emissive: "#0a3650", emissiveIntensity: 0.28,
   transparent: true, opacity: 0.9, side: THREE.DoubleSide,
   flatShading: true, // crisp little facets catch the light → a glittery swell
+  vertexColors: true, // baked depth gradient: bright turquoise shallows → deep navy
 });
 // Sand beach apron + island discs (opaque, matte).
 const sandMat = new THREE.MeshStandardMaterial({ color: "#d9c79a", roughness: 1, side: THREE.DoubleSide });
 const sandSideMat = new THREE.MeshStandardMaterial({ color: "#b89f6e", roughness: 1 });
 // Foam trim riding the waterline (visual only).
 const foamMat = new THREE.MeshStandardMaterial({
-  color: "#eaf6fb", roughness: 0.7, emissive: "#cfeaf4", emissiveIntensity: 0.35,
+  color: "#eaf6fb", roughness: 0.7, emissive: "#cfeaf4", emissiveIntensity: 0.4,
   transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
 });
 // Dock woodwork.
@@ -71,7 +72,65 @@ const G = {
   trunkGeo: new THREE.CylinderGeometry(0.18, 0.28, 4.2, 8),
   frondGeo: new THREE.PlaneGeometry(2.6, 0.8),
   coconutGeo: new THREE.SphereGeometry(0.16, 8, 6),
+  // Beach + shoreline dressing (all shared, created once).
+  rockGeo: new THREE.DodecahedronGeometry(1, 0),          // scaled per-instance
+  lanternGeo: new THREE.BoxGeometry(0.34, 0.5, 0.34),
+  ropeGeo: new THREE.CylinderGeometry(0.05, 0.05, 1, 6),  // scaled along its run
+  chairLegGeo: new THREE.BoxGeometry(0.08, 0.5, 0.08),
+  hullGeo: new THREE.BoxGeometry(3.4, 0.7, 1.5),
+  debrisFlagGeo: new THREE.PlaneGeometry(1.2, 0.7),
 };
+
+// ── Extra shared materials for shoreline/dock dressing (created ONCE) ──────────
+const rockMat = new THREE.MeshStandardMaterial({ color: "#8a8f96", roughness: 1, flatShading: true });
+const rockDarkMat = new THREE.MeshStandardMaterial({ color: "#5f676e", roughness: 1, flatShading: true });
+// Warm emissive lantern glass (no light object — emissive only, pulsed in update()).
+const lanternMat = new THREE.MeshStandardMaterial({
+  color: "#ffd489", emissive: "#ffb64a", emissiveIntensity: 1.1, roughness: 0.5,
+});
+const ropeMat = new THREE.MeshStandardMaterial({ color: "#caa46b", roughness: 1 });
+const dinghyHullMat = new THREE.MeshStandardMaterial({ color: "#b8492f", roughness: 0.8 });
+const dinghyTrimMat = new THREE.MeshStandardMaterial({ color: "#e9dcc0", roughness: 0.8 });
+const chairFrameMat = new THREE.MeshStandardMaterial({ color: "#c9b98f", roughness: 0.9 });
+const clothMats = [
+  new THREE.MeshStandardMaterial({ color: "#e46a6a", roughness: 0.85, side: THREE.DoubleSide }),
+  new THREE.MeshStandardMaterial({ color: "#e8b04b", roughness: 0.85, side: THREE.DoubleSide }),
+  new THREE.MeshStandardMaterial({ color: "#5fa9d6", roughness: 0.85, side: THREE.DoubleSide }),
+];
+const hammockMat = new THREE.MeshStandardMaterial({ color: "#d8d2c2", roughness: 1, side: THREE.DoubleSide });
+const gullMat = new THREE.MeshStandardMaterial({ color: "#f2f5f8", roughness: 0.9, side: THREE.DoubleSide });
+
+// ── Per-frame scratch (created ONCE; update() only mutates these) ─────────────
+const _m4 = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _eul = new THREE.Euler();
+const _scl = new THREE.Vector3(1, 1, 1);
+
+// A soft, seamless foam-bubble texture built ONCE on a small canvas. Scrolled by
+// update() (offset mutation only — no allocation) so shoreline foam looks alive.
+function makeFoamTexture() {
+  const c = document.createElement("canvas");
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, 128, 128);
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * 128, y = Math.random() * 128, r = 2 + Math.random() * 8;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, "rgba(255,255,255,0.95)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 1);
+  return tex;
+}
+const foamTex = makeFoamTexture();
+// The foam trim now reads as scattered bubbles (texture alpha) rather than a flat
+// strip; update() scrolls it so the surf appears to wash along the shoreline.
+foamMat.map = foamTex;
 
 function mesh(geo, mat, cast = true, receive = true) {
   const m = new THREE.Mesh(geo, mat);
@@ -156,6 +215,72 @@ function makeShopHut(accent) {
   return { group: g, w, d };
 }
 
+// A striped beach lounger: two low legs + a reclined seat/back plane in a bright
+// cloth colour. Purely decorative (no collider — it sits on the walkable island).
+function makeBeachChair(cloth) {
+  const g = new THREE.Group();
+  for (const sx of [-0.35, 0.35]) {
+    const leg = mesh(G.chairLegGeo, chairFrameMat, false);
+    leg.position.set(sx, 0.18, 0.1);
+    g.add(leg);
+  }
+  const seat = mesh(new THREE.PlaneGeometry(0.9, 0.9), cloth, false, false);
+  seat.rotation.x = -Math.PI / 2;
+  seat.position.set(0, 0.36, 0.1);
+  g.add(seat);
+  const back = mesh(new THREE.PlaneGeometry(0.9, 0.8), cloth, false, false);
+  back.rotation.x = -0.9;      // reclined
+  back.position.set(0, 0.66, -0.32);
+  g.add(back);
+  return g;
+}
+
+// A hammock slung between two short posts: two posts + a sagging cloth sling
+// (approximated by a gently tilted, double-sided plane).
+function makeHammock() {
+  const g = new THREE.Group();
+  for (const sx of [-1.1, 1.1]) {
+    const post = mesh(new THREE.CylinderGeometry(0.08, 0.1, 1.3, 6), chairFrameMat, false);
+    post.position.set(sx, 0.65, 0);
+    post.rotation.z = sx > 0 ? -0.12 : 0.12;
+    g.add(post);
+  }
+  const sling = mesh(new THREE.PlaneGeometry(2.0, 0.6), hammockMat, false, false);
+  sling.rotation.x = -Math.PI / 2.2;
+  sling.position.set(0, 0.85, 0);
+  g.add(sling);
+  return g;
+}
+
+// A little moored dinghy: a shallow hull with a pale gunwale trim and a thwart
+// seat. Returned so the caller can bob it in update() (position/roll mutation).
+function makeDinghy() {
+  const g = new THREE.Group();
+  const hull = mesh(G.hullGeo, dinghyHullMat);
+  hull.position.y = 0.35;
+  g.add(hull);
+  const trim = box(3.4, 0.14, 1.5, dinghyTrimMat, false);
+  trim.position.y = 0.7;
+  g.add(trim);
+  const seat = box(0.8, 0.1, 1.3, dinghyTrimMat, false);
+  seat.position.set(0, 0.55, 0);
+  g.add(seat);
+  return g;
+}
+
+// A minimal "M"-shaped gull: two swept wing quads sharing a body vertex. Built
+// once; instanced into a small drifting flock.
+function makeGullGeo() {
+  const geo = new THREE.BufferGeometry();
+  const verts = new Float32Array([
+    0, 0, 0,   -1.1, 0.35, -0.15,   -0.5, 0.05, 0.0,   // left wing
+    0, 0, 0,    1.1, 0.35, -0.15,    0.5, 0.05, 0.0,   // right wing
+  ]);
+  geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export function buildOcean(opts = {}) {
   const lb = opts.landBounds || { minX: -125, maxX: 125, minZ: -15, maxZ: 285 };
   const group = new THREE.Group();
@@ -166,6 +291,8 @@ export function buildOcean(opts = {}) {
   const colliders = [];  // SOLID island/dock props
   const docks = [];      // {x,z} boarding points
   const islandDiscs = [];// {x, z, r} for isWater + ground (cached plain numbers)
+  const lanterns = [];   // lantern meshes pulsed by update() (emissive only — no lights)
+  let dinghy = null;     // moored dinghy group, bobbed by update()
 
   // Y-stack constants (see header).
   const waterY = -0.8;
@@ -199,6 +326,26 @@ export function buildOcean(opts = {}) {
     seaLX[i] = seaPos.getX(i);
     seaLY[i] = seaPos.getY(i);
     seaBaseZ[i] = seaPos.getZ(i);
+  }
+  // Baked DEPTH GRADIENT via vertex colours. The plane is centred on the city, so
+  // a vertex's distance from the plane centre ≈ its distance from the island: near
+  // vertices get a bright turquoise "shallows" tint (values >1 lift the greens for
+  // a lagoon glow under tone-mapping), far vertices get a darker, bluer "deep sea"
+  // tint. These MULTIPLY the animated material colour, so the swell shimmer still
+  // plays on top. Computed ONCE — no per-frame cost.
+  {
+    const seaCol = new Float32Array(seaPos.count * 3);
+    for (let i = 0; i < seaPos.count; i++) {
+      const d = Math.sqrt(seaLX[i] * seaLX[i] + seaLY[i] * seaLY[i]);
+      // 0 at the island, 1 out in open water (~340 m fade to deep).
+      const t01 = Math.min(1, d / 340);
+      const e = t01 * t01 * (3 - 2 * t01); // smoothstep
+      // shallow (1.15, 1.32, 1.18) → deep (0.34, 0.52, 0.82)
+      seaCol[i * 3]     = 1.15 + (0.34 - 1.15) * e;
+      seaCol[i * 3 + 1] = 1.32 + (0.52 - 1.32) * e;
+      seaCol[i * 3 + 2] = 1.18 + (0.82 - 1.18) * e;
+    }
+    seaGeo.setAttribute("color", new THREE.BufferAttribute(seaCol, 3));
   }
 
   // ── 2) SHORELINE BEACH apron ring (just outside landBounds) ─────────────────
@@ -268,6 +415,41 @@ export function buildOcean(opts = {}) {
       addAABB(colliders, px, pz, 0.3, 0.3); // slim rail-post collider
     }
   }
+  // Guide ROPES strung between consecutive rail posts (both sides) + warm LANTERNS
+  // on every other post. Ropes are thin cylinders laid along the dock run; lanterns
+  // are emissive boxes (no light objects) whose glow is gently pulsed in update().
+  const postTopY = dockY + 0.85;
+  const nPosts = Math.floor(dockLen / 5);
+  for (const side of [-1, 1]) {
+    const pz = dockZ + side * (DOCK_W / 2 - 0.3);
+    for (let i = 0; i < nPosts; i++) {
+      const rope = mesh(G.ropeGeo, ropeMat, false, false);
+      rope.scale.y = 5;                 // span one 5 m post gap
+      rope.rotation.z = Math.PI / 2;    // lay along +X
+      rope.position.set(dockX1 + i * 5 + 2.5, postTopY - 0.12, pz);
+      group.add(rope);
+    }
+    for (let i = 0; i <= nPosts; i += 2) {
+      const lantern = mesh(G.lanternGeo, lanternMat.clone(), false, false);
+      lantern.position.set(dockX1 + i * 5, postTopY + 0.1, pz);
+      group.add(lantern);
+      lanterns.push(lantern);
+    }
+  }
+  // A moored DINGHY floating just off the north side of the dock (over water, clear
+  // of the boat spawn/board reach). Bobbed + gently rolled by update().
+  dinghy = makeDinghy();
+  dinghy.position.set(dockMx, waterY + 0.15, dockZ + DOCK_W / 2 + 2.6);
+  dinghy.rotation.y = 0.35;
+  group.add(dinghy);
+  // A short tie-rope from a dock post down to the dinghy.
+  {
+    const tie = mesh(G.ropeGeo, ropeMat, false, false);
+    tie.scale.y = 3.0;
+    tie.rotation.x = -0.9;
+    tie.position.set(dockMx - 0.6, postTopY - 0.6, dockZ + DOCK_W / 2 + 0.6);
+    group.add(tie);
+  }
   // Register the dock platform as walkable ground.
   ground.push({ minX: dockX1, maxX: dockX0, minZ: dockZ - DOCK_W / 2, maxZ: dockZ + DOCK_W / 2 });
   const dockRect = { minX: dockX1, maxX: dockX0, minZ: dockZ - DOCK_W / 2, maxZ: dockZ + DOCK_W / 2 };
@@ -295,7 +477,10 @@ export function buildOcean(opts = {}) {
     { name: "Ice Cream",     accent: "#e85d8a", ang: -Math.PI * 0.75, dist: 250, r: 13, dockDir: -Math.PI * 0.75 }, // SW
   ];
   const islandCoords = []; // for the summary text
+  const rockXforms = [];   // {x,y,z,s,ry,dark} collected across all islands → one InstancedMesh
+  let islIdx = -1;
   for (const isl of ISLANDS) {
+    islIdx++;
     const ix = cx + Math.cos(isl.ang) * isl.dist;
     const iz = cz + Math.sin(isl.ang) * isl.dist;
     islandCoords.push({ name: isl.name, x: Math.round(ix), z: Math.round(iz) });
@@ -336,15 +521,51 @@ export function buildOcean(opts = {}) {
     const hutR = Math.max(hut.w, hut.d) / 2 + 0.3;
     addAABB(colliders, ix + hutBackX, iz + hutBackZ, hutR * 2, hutR * 2);
 
-    // A couple of palms for flavour (trunk colliders).
-    for (let p = 0; p < 2; p++) {
-      const pa = isl.dockDir + Math.PI + (p === 0 ? 0.9 : -0.9);
-      const prad = isl.r * 0.55;
+    // A little palm CLUSTER for flavour (trunk colliders). Two full palms flanking
+    // the shop plus a shorter third leaning the other way so the grove reads fuller.
+    const palmDefs = [
+      { off: 0.9, rad: 0.55, scale: 1.0, lean: 0.12 },
+      { off: -0.9, rad: 0.55, scale: 0.92, lean: -0.1 },
+      { off: 0.2, rad: 0.72, scale: 0.72, lean: 0.18 },
+    ];
+    for (const pd of palmDefs) {
+      const pa = isl.dockDir + Math.PI + pd.off;
+      const prad = isl.r * pd.rad;
       const lx = Math.cos(pa) * prad, lz = Math.sin(pa) * prad;
       const palm = makePalm();
       palm.position.set(lx, 0, lz);
+      palm.scale.setScalar(pd.scale);
+      palm.rotation.y = pa;
       ig.add(palm);
       addAABB(colliders, ix + lx, iz + lz, 0.6, 0.6); // palm trunk collider
+    }
+
+    // A striped beach lounger + a slung hammock near the shop front for holiday
+    // vibe (decorative — they sit on the walkable island top, no colliders).
+    const chair = makeBeachChair(clothMats[islIdx % clothMats.length]);
+    const chairA = isl.dockDir + 0.6;
+    chair.position.set(Math.cos(chairA) * isl.r * 0.45, 0.08, Math.sin(chairA) * isl.r * 0.45);
+    chair.rotation.y = -isl.dockDir + 0.4;
+    ig.add(chair);
+    const ham = makeHammock();
+    const hamA = isl.dockDir + Math.PI - 0.4;
+    ham.position.set(Math.cos(hamA) * isl.r * 0.5, 0.08, Math.sin(hamA) * isl.r * 0.5);
+    ham.rotation.y = hamA;
+    ig.add(ham);
+
+    // A ring of shoreline BOULDERS scattered just inside the rim (collected into a
+    // single InstancedMesh after the loop — one draw call for all islands' rocks).
+    const rockN = 5;
+    for (let k = 0; k < rockN; k++) {
+      const ra = (k / rockN) * Math.PI * 2 + islIdx * 0.7;
+      // Keep rocks off the dock approach so they never block boarding.
+      if (Math.abs(((ra - isl.dockDir + Math.PI) % (Math.PI * 2))) < 0.5) continue;
+      const rr = isl.r - 0.6;
+      const s = 0.6 + ((k * 7 + islIdx) % 5) * 0.18;
+      rockXforms.push({
+        x: ix + Math.cos(ra) * rr, y: -0.15, z: iz + Math.sin(ra) * rr,
+        s, ry: ra * 1.7, dark: (k % 2) === 0,
+      });
     }
 
     // SHORT DOCK jutting from the island toward open water (in the dockDir).
@@ -382,6 +603,50 @@ export function buildOcean(opts = {}) {
     addAABB(ground, ix, iz, isl.r * 1.6, isl.r * 1.6);
     islandDiscs.push({ x: ix, z: iz, r: isl.r + 1.2 });
   }
+
+  // ── 4b) SHORELINE BOULDERS — one InstancedMesh for every island's rocks ──────
+  // Colour variation comes from per-instance instanceColor (light vs. weathered
+  // dark) so a single mesh/draw-call covers them all. Set ONCE.
+  if (rockXforms.length) {
+    const rocks = new THREE.InstancedMesh(G.rockGeo, rockMat, rockXforms.length);
+    rocks.castShadow = false;
+    rocks.receiveShadow = true;
+    for (let i = 0; i < rockXforms.length; i++) {
+      const r = rockXforms[i];
+      _pos.set(r.x, r.y, r.z);
+      _eul.set(r.ry * 0.3, r.ry, r.ry * 0.2);
+      _quat.setFromEuler(_eul);
+      _scl.set(r.s * 1.3, r.s, r.s * 1.15);
+      _m4.compose(_pos, _quat, _scl);
+      rocks.setMatrixAt(i, _m4);
+      rocks.setColorAt(i, r.dark ? rockDarkMat.color : rockMat.color);
+    }
+    rocks.instanceMatrix.needsUpdate = true;
+    if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
+    group.add(rocks);
+  }
+  // reset the shared scratch scale so later composes start from a clean (1,1,1)
+  _scl.set(1, 1, 1);
+
+  // ── 4c) SEAGULLS — a small drifting flock circling high over the lagoon ──────
+  // One InstancedMesh (one draw call); update() re-composes the handful of matrices
+  // each frame from cached per-gull orbit params using the shared scratch — no alloc.
+  const GULL_COUNT = 7;
+  const gulls = new THREE.InstancedMesh(makeGullGeo(), gullMat, GULL_COUNT);
+  gulls.frustumCulled = false;
+  const gullState = new Array(GULL_COUNT);
+  for (let i = 0; i < GULL_COUNT; i++) {
+    gullState[i] = {
+      cx: cx + (Math.random() - 0.5) * 220,
+      cz: cz + (Math.random() - 0.5) * 220,
+      rad: 14 + Math.random() * 26,
+      y: 26 + Math.random() * 22,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.15 + Math.random() * 0.2,
+      flap: 2 + Math.random() * 2,
+    };
+  }
+  group.add(gulls);
 
   // ── 5) isWater(x,z) ─────────────────────────────────────────────────────────
   // TRUE iff inside the sea plane AND outside the landmass, every beach apron,
@@ -438,6 +703,36 @@ export function buildOcean(opts = {}) {
     seaMat.emissiveIntensity = 0.22 + s * 0.16;
     seaMat.color.setRGB(0.10 + s * 0.05, 0.42 + s * 0.07, 0.60 + s * 0.06);
     foamMat.opacity = 0.4 + (Math.sin(t * 1.4) + 1) * 0.5 * 0.25;
+    // Scroll the shared foam texture so surf appears to wash along every shoreline
+    // (offset mutation only — the texture/material are shared, so this is one write).
+    foamTex.offset.x = (t * 0.05) % 1;
+    foamTex.offset.y = Math.sin(t * 0.6) * 0.03;
+
+    // Lantern glow: a slow warm breathe with a faint per-lantern flicker offset.
+    for (let i = 0; i < lanterns.length; i++) {
+      lanterns[i].material.emissiveIntensity =
+        0.9 + Math.sin(t * 1.3 + i * 1.7) * 0.35;
+    }
+    // Moored dinghy bobs on the swell + rolls gently.
+    if (dinghy) {
+      dinghy.position.y = waterY + 0.18 + Math.sin(t * 0.9) * 0.07;
+      dinghy.rotation.z = Math.sin(t * 0.7) * 0.05;
+      dinghy.rotation.x = Math.cos(t * 0.55) * 0.03;
+    }
+    // Seagulls drift in slow circles with a small wing "flap" (scale.y wobble).
+    for (let i = 0; i < gullState.length; i++) {
+      const g = gullState[i];
+      const a = g.phase + t * g.speed;
+      _pos.set(g.cx + Math.cos(a) * g.rad, g.y + Math.sin(t * 0.4 + i) * 1.2, g.cz + Math.sin(a) * g.rad);
+      _eul.set(0, -a + Math.PI / 2, 0);
+      _quat.setFromEuler(_eul);
+      const flap = 0.7 + 0.3 * Math.abs(Math.sin(t * g.flap + i));
+      _scl.set(1, flap, 1);
+      _m4.compose(_pos, _quat, _scl);
+      gulls.setMatrixAt(i, _m4);
+    }
+    gulls.instanceMatrix.needsUpdate = true;
+    _scl.set(1, 1, 1);
   }
 
   return {
