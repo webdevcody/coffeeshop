@@ -82,11 +82,11 @@ function mat(color, opts = {}) {
 function buildHeliGroup(bodyColor) {
   const g = new THREE.Group();
 
-  const body = mat(bodyColor, { rough: 0.4, metal: 0.35 });        // painted shell
-  const accent = mat("#eef2f6", { rough: 0.5, metal: 0.2 });       // white trim stripe
-  const darkMetal = mat("#2a2e36", { rough: 0.5, metal: 0.7 });    // rotors / fittings
-  const skidMetal = mat("#3a3e46", { rough: 0.45, metal: 0.65 });  // landing skids
-  const glass = new THREE.MeshStandardMaterial({ color: "#163b52", roughness: 0.08, metalness: 0.85, emissive: "#0a1f30", emissiveIntensity: 0.3 });
+  const body = mat(bodyColor, { rough: 0.3, metal: 0.42 });        // glossy painted shell
+  const accent = mat("#eef2f6", { rough: 0.4, metal: 0.25 });      // white trim stripe
+  const darkMetal = mat("#262a32", { rough: 0.45, metal: 0.75 });  // rotors / fittings
+  const skidMetal = mat("#3a3e46", { rough: 0.4, metal: 0.7 });    // landing skids
+  const glass = new THREE.MeshStandardMaterial({ color: "#12324a", roughness: 0.05, metalness: 0.9, emissive: "#0a1f30", emissiveIntensity: 0.35 });
   const EP = 0.012;
 
   // --- Cabin: a rounded box body with a bubble canopy at the nose (+Z) ---
@@ -158,11 +158,10 @@ function buildHeliGroup(bodyColor) {
     arm.add(blade);
     mainRotor.add(arm);
   }
-  // Spinning-blur disc (static, faint) sitting just under the blades.
-  const disc = new THREE.Mesh(
-    new THREE.CircleGeometry(1.7, 28),
-    new THREE.MeshBasicMaterial({ color: "#cdd3da", transparent: true, opacity: 0.06, depthWrite: false, side: THREE.DoubleSide })
-  );
+  // Spinning-blur disc (faint) sitting just under the blades. Its opacity ramps a
+  // touch with collective in drive() so a spun-up rotor reads as a stronger blur.
+  const mainDiscMat = new THREE.MeshBasicMaterial({ color: "#cdd3da", transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide });
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(1.72, 32), mainDiscMat);
   disc.rotation.x = -Math.PI / 2;
   disc.position.set(0, 2.18, -0.1);
   g.add(disc);
@@ -180,6 +179,13 @@ function buildHeliGroup(bodyColor) {
   const tbB = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.07, 0.62), darkMetal); // along Z
   tailRotor.add(tbB);
   g.add(tailRotor);
+  // Tail rotor-blur disc (faint), in the rotor's vertical plane (faces ±X). Static;
+  // opacity ramps with collective in drive() alongside the main disc.
+  const tailDiscMat = new THREE.MeshBasicMaterial({ color: "#cdd3da", transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide });
+  const tailDisc = new THREE.Mesh(new THREE.CircleGeometry(0.34, 20), tailDiscMat);
+  tailDisc.rotation.y = Math.PI / 2; // spin plane about the lateral (X) axis
+  tailDisc.position.set(0.2, 1.46, -3.18);
+  g.add(tailDisc);
 
   // --- Landing skids: two longitudinal tubes + four splayed legs + cross struts ---
   for (const sx of [-1, 1]) {
@@ -198,7 +204,25 @@ function buildHeliGroup(bodyColor) {
     }
   }
 
-  g.userData.dyn = { mainRotor, tailRotor };
+  // --- Emissive nav/beacon lights (no scene lights added): a red anti-collision
+  // beacon on the belly + tail fin, and green/red side lights on the nose. ---
+  const navGeo = new THREE.SphereGeometry(0.06, 8, 6);
+  const navRed = new THREE.MeshStandardMaterial({ color: "#ff5a4a", emissive: "#ff2410", emissiveIntensity: 1.7, roughness: 0.4 });
+  const navGreen = new THREE.MeshStandardMaterial({ color: "#5aff8a", emissive: "#12d64a", emissiveIntensity: 1.6, roughness: 0.4 });
+  const beaconBelly = new THREE.Mesh(navGeo, navRed);
+  beaconBelly.position.set(0, 0.48, 0.1);
+  g.add(beaconBelly);
+  const beaconTail = new THREE.Mesh(navGeo, navRed);
+  beaconTail.position.set(0, 1.78, -3.05);
+  g.add(beaconTail);
+  const noseR = new THREE.Mesh(navGeo, navRed);
+  noseR.position.set(0.42, 0.82, 1.02);
+  g.add(noseR);
+  const noseG = new THREE.Mesh(navGeo, navGreen);
+  noseG.position.set(-0.42, 0.82, 1.02);
+  g.add(noseG);
+
+  g.userData.dyn = { mainRotor, tailRotor, mainDiscMat, tailDiscMat };
   return g;
 }
 
@@ -343,6 +367,9 @@ export function makeHelicopter(opts = {}) {
     const lift = Math.max(0, throttle);
     dyn.mainRotor.rotation.y += (HELI.mainSpinBase + lift * HELI.mainSpinBoost) * dt;
     dyn.tailRotor.rotation.x += (HELI.tailSpinBase + lift * HELI.tailSpinBoost) * dt;
+    // Rotor-blur discs strengthen a touch under positive collective (scalar only).
+    if (dyn.mainDiscMat) dyn.mainDiscMat.opacity = 0.08 + 0.07 * lift;
+    if (dyn.tailDiscMat) dyn.tailDiscMat.opacity = 0.08 + 0.07 * lift;
   }
 
   // Chase camera: trails behind the heading, hoisted a touch higher with altitude,

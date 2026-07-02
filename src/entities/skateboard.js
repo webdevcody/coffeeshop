@@ -17,13 +17,17 @@ export function makeSkateboard(opts = {}) {
   const deckPivot = new THREE.Group();
   g.add(deckPivot);
 
-  const deckTex = artTexture("deck", { glyph: opts.glyph || "☠", accent: opts.accent || "#ff6a2b" });
-  const deckMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.6, metalness: 0.05 });
-  const gripMat = new THREE.MeshStandardMaterial({ color: "#16171a", roughness: 0.95, metalness: 0.0 });
-  const sideMat = new THREE.MeshStandardMaterial({ color: "#3a2a1c", roughness: 0.7 });
-  const wheelMat = new THREE.MeshStandardMaterial({ color: "#e8e4d8", roughness: 0.5 });
-  const truckMat = new THREE.MeshStandardMaterial({ color: "#b9bcc4", roughness: 0.4, metalness: 0.7 });
-  const boltMat = new THREE.MeshStandardMaterial({ color: "#6b6f78", roughness: 0.35, metalness: 0.85 });
+  const accent = opts.accent || "#ff6a2b";
+  const deckTex = artTexture("deck", { glyph: opts.glyph || "☠", accent });
+  const deckMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.55, metalness: 0.05 });
+  const gripMat = new THREE.MeshStandardMaterial({ color: "#131417", roughness: 0.98, metalness: 0.0 });
+  const sideMat = new THREE.MeshStandardMaterial({ color: "#c9a06a", roughness: 0.5, metalness: 0.05 }); // maple ply edge
+  const wheelMat = new THREE.MeshStandardMaterial({ color: "#f5f2ea", roughness: 0.35, metalness: 0.0 }); // urethane
+  const bearingMat = new THREE.MeshStandardMaterial({ color: "#1a1b1f", roughness: 0.4, metalness: 0.6 });
+  const shieldMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.35, metalness: 0.4, emissive: accent, emissiveIntensity: 0.15 }); // colored bearing shield
+  const truckMat = new THREE.MeshStandardMaterial({ color: "#c3c7cf", roughness: 0.3, metalness: 0.85 }); // polished alloy
+  const boltMat = new THREE.MeshStandardMaterial({ color: "#7a7e87", roughness: 0.3, metalness: 0.9 });
+  const bushingMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.6, metalness: 0.1 });
 
   // ---- Deck ----------------------------------------------------------------
   // A 7-ply maple deck: a flat central section with two upturned ends (nose +Z,
@@ -101,9 +105,12 @@ export function makeSkateboard(opts = {}) {
     axle.position.set(0, WHEEL_Y, tz);
     deckPivot.add(axle);
 
-    // Kingpin nut on top of the hanger (small detail bolt).
+    // Coloured urethane bushing + kingpin nut on top of the hanger.
+    const bushing = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.03, 10), bushingMat);
+    bushing.position.set(0, WHEEL_Y + 0.022, tz);
+    deckPivot.add(bushing);
     const kingpin = new THREE.Mesh(boltGeo, boltMat);
-    kingpin.position.set(0, WHEEL_Y + 0.04, tz);
+    kingpin.position.set(0, WHEEL_Y + 0.045, tz);
     deckPivot.add(kingpin);
 
     for (const tx of [-WHEEL_X, WHEEL_X]) {
@@ -112,10 +119,21 @@ export function makeSkateboard(opts = {}) {
       w.position.set(tx, WHEEL_Y, tz);
       deckPivot.add(w);
 
-      // Hub bolt cap on the outer wheel face.
+      // Bearing (dark) + coloured bearing shield recessed into the outer wheel face.
+      const outX = tx > 0 ? 1 : -1;
+      const bearing = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.012, 12), bearingMat);
+      bearing.rotation.z = Math.PI / 2;
+      bearing.position.set(tx + outX * 0.02, WHEEL_Y, tz);
+      deckPivot.add(bearing);
+      const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.014, 10), shieldMat);
+      shield.rotation.z = Math.PI / 2;
+      shield.position.set(tx + outX * 0.024, WHEEL_Y, tz);
+      deckPivot.add(shield);
+
+      // Axle nut cap just proud of the bearing.
       const cap = new THREE.Mesh(boltGeo, boltMat);
       cap.rotation.z = Math.PI / 2;
-      cap.position.set(tx + (tx > 0 ? 0.026 : -0.026), WHEEL_Y, tz);
+      cap.position.set(tx + outX * 0.03, WHEEL_Y, tz);
       deckPivot.add(cap);
     }
   }

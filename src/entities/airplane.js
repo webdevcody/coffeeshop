@@ -78,13 +78,13 @@ function mat(color, opts = {}) {
 function buildAirplaneGroup() {
   const g = new THREE.Group();
 
-  const skin = mat("#e9eef3", { rough: 0.4, metal: 0.35 });   // bright fuselage/wings
-  const accent = mat("#d23b34", { rough: 0.45, metal: 0.3 }); // red cheat-line / tail
-  const accentB = mat("#1d6fb8", { rough: 0.45, metal: 0.3 });// blue trim
-  const darkMetal = mat("#2a2e36", { rough: 0.55, metal: 0.6 });
-  const chrome = mat("#cfd4da", { rough: 0.22, metal: 0.9 });
-  const rubber = mat("#0c0c10", { rough: 0.92, metal: 0.05 });
-  const glass = new THREE.MeshStandardMaterial({ color: "#163b52", roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.72, emissive: "#0a1f30", emissiveIntensity: 0.3 });
+  const skin = mat("#eef2f6", { rough: 0.3, metal: 0.45 });   // bright glossy fuselage/wings
+  const accent = mat("#d23b34", { rough: 0.4, metal: 0.35 }); // red cheat-line / tail
+  const accentB = mat("#1d6fb8", { rough: 0.4, metal: 0.35 });// blue trim
+  const darkMetal = mat("#282c34", { rough: 0.5, metal: 0.65 });
+  const chrome = mat("#d5dae0", { rough: 0.18, metal: 0.95 });
+  const rubber = mat("#0b0b0f", { rough: 0.9, metal: 0.05 });
+  const glass = new THREE.MeshStandardMaterial({ color: "#12324a", roughness: 0.05, metalness: 0.9, transparent: true, opacity: 0.66, emissive: "#0a1f30", emissiveIntensity: 0.35 });
   const EP = 0.012;
 
   // --- Fuselage: a tube along Z (axis rotated onto +Z), spanning z -3.0..3.0 ---
@@ -161,21 +161,51 @@ function buildAirplaneGroup() {
     g.add(stab);
   }
 
+  // --- Emissive nav lights: red to port (+X wingtip), green to starboard (-X),
+  // white on the tail. Glow via emissive materials only (no scene lights added). ---
+  const navGeo = new THREE.SphereGeometry(0.07, 8, 6);
+  const navRed = new THREE.MeshStandardMaterial({ color: "#ff5a4a", emissive: "#ff2a18", emissiveIntensity: 1.6, roughness: 0.4 });
+  const navGreen = new THREE.MeshStandardMaterial({ color: "#5aff8a", emissive: "#12d64a", emissiveIntensity: 1.6, roughness: 0.4 });
+  const navWhite = new THREE.MeshStandardMaterial({ color: "#ffffff", emissive: "#ffffff", emissiveIntensity: 1.3, roughness: 0.4 });
+  const portNav = new THREE.Mesh(navGeo, navRed);
+  portNav.position.set(4.05, -0.02, -0.4);
+  g.add(portNav);
+  const stbdNav = new THREE.Mesh(navGeo, navGreen);
+  stbdNav.position.set(-4.05, -0.02, -0.4);
+  g.add(stbdNav);
+  const tailNav = new THREE.Mesh(navGeo, navWhite);
+  tailNav.position.set(0, 1.3, -3.7);
+  g.add(tailNav);
+
   // --- Nose spinner PROP: a hub cone + 3 blades, wrapped in a group that spins
   // about the forward (Z) axis. The disc lies in the XY plane at the nose tip;
   // drive() advances propGroup.rotation.z so the prop blurs with throttle. ---
   const propGroup = new THREE.Group();
   propGroup.position.set(0, 0, 4.05);
-  const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.5, 12), chrome);
+  const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.5, 14), chrome);
   spinner.rotation.x = Math.PI / 2; // point the spinner +Z
   spinner.position.z = 0.18;
   propGroup.add(spinner);
+  const tipMat = mat("#f2c530", { rough: 0.5, metal: 0.2 }); // hi-vis yellow blade tips
   for (let i = 0; i < 3; i++) {
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.7, 0.05), darkMetal);
-    blade.rotation.z = (i / 3) * Math.PI * 2; // fan the 3 blades around the hub
-    propGroup.add(blade);
+    // Wrap each blade + its yellow tip in a per-blade arm so both fan out together.
+    const arm = new THREE.Group();
+    arm.rotation.z = (i / 3) * Math.PI * 2;
+    const bl = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.9, 0.045), darkMetal);
+    bl.position.y = 0.55;
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.22, 0.045), tipMat);
+    tip.position.y = 1.05;
+    arm.add(bl); arm.add(tip);
+    propGroup.add(arm);
   }
   g.add(propGroup);
+
+  // Prop-blur disc: a faint translucent disc in the prop plane that fades IN with
+  // prop RPM so a spun-up engine reads as a shimmering blur (drive() ramps opacity).
+  const propDiscMat = new THREE.MeshBasicMaterial({ color: "#cdd3da", transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  const propDisc = new THREE.Mesh(new THREE.CircleGeometry(1.15, 24), propDiscMat);
+  propDisc.position.set(0, 0, 4.16); // just ahead of the blades, facing +Z
+  g.add(propDisc);
 
   // --- Landing gear: two main wheels under the wings + a nose wheel. Grouped so
   // drive() can retract (hide) the whole set once airborne. Wheel centres at
@@ -201,7 +231,7 @@ function buildAirplaneGroup() {
   makeGear(0, 2.4, 0.4);      // nose wheel
   g.add(gearGroup);
 
-  g.userData.dyn = { prop: propGroup, gear: gearGroup };
+  g.userData.dyn = { prop: propGroup, gear: gearGroup, propDisc, propDiscMat };
   return g;
 }
 
@@ -361,6 +391,8 @@ export function makeAirplane(opts = {}) {
     _propSpin += (AIRPLANE.propIdle + AIRPLANE.propGain * Math.max(0, throttle)) * dt;
     if (dyn.prop) dyn.prop.rotation.z = _propSpin;
     if (dyn.gear) dyn.gear.visible = state.altitude < AIRPLANE.gearUpAlt;
+    // Prop-blur disc: fades in with throttle so a spun-up prop shimmers (scalar only).
+    if (dyn.propDiscMat) dyn.propDiscMat.opacity = 0.05 + 0.28 * Math.max(0, throttle);
   }
 
   // Cinematic chase camera: trails behind the heading and cranes further back and

@@ -67,13 +67,16 @@ function mat(color, opts = {}) {
 function buildBoatGroup() {
   const g = new THREE.Group();
 
-  const hullPaint = mat("#e9eef2", { rough: 0.45, metal: 0.18 }); // bright topsides
-  const bootStripe = mat("#1d6fb8", { rough: 0.4, metal: 0.2 });  // boot-line accent
-  const belowWater = mat("#9aa6ad", { rough: 0.7, metal: 0.05 }); // dull anti-foul keel
-  const deckMat = mat("#caa472", { rough: 0.75, metal: 0.05 });   // teak-ish deck
-  const cabinMat = mat("#f4f6f8", { rough: 0.4, metal: 0.2 });    // light console/cabin
-  const glassMat = new THREE.MeshStandardMaterial({ color: "#16242e", roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.7 });
-  const trim = mat("#202830", { rough: 0.6, metal: 0.3 });
+  const hullPaint = mat("#f2f6f9", { rough: 0.28, metal: 0.24 }); // glossy topsides gelcoat
+  const bootStripe = mat("#1d6fb8", { rough: 0.32, metal: 0.3 }); // boot-line accent
+  const sweep = mat("#123a63", { rough: 0.3, metal: 0.35 });      // hull-side sport sweep
+  const belowWater = mat("#8f9ba3", { rough: 0.72, metal: 0.05 });// dull anti-foul keel
+  const deckMat = mat("#c39a63", { rough: 0.72, metal: 0.05 });   // teak-ish deck
+  const cabinMat = mat("#fbfcfd", { rough: 0.3, metal: 0.28 });   // bright console/cabin
+  const glassMat = new THREE.MeshStandardMaterial({ color: "#12202a", roughness: 0.06, metalness: 0.9, transparent: true, opacity: 0.62 });
+  const chrome = mat("#dfe3e8", { rough: 0.16, metal: 0.95 });    // rails / cleats / frame
+  const trim = mat("#1b232b", { rough: 0.55, metal: 0.35 });
+  const cushion = mat("#2a3138", { rough: 0.85, metal: 0.02 });   // upholstered bolsters
   const EP = 0.012; // proud epsilon to keep appliqué detail off the panels
 
   // --- Hull: a stretched, slightly pointed body. Built from a box midsection with
@@ -94,6 +97,18 @@ function buildBoatGroup() {
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.14, 3.9), bootStripe);
     stripe.position.set(sx * (1.0 + EP), 0.02, -0.2);
     g.add(stripe);
+  }
+  // Dark sport sweep along the topsides, rising toward the bow, with a thin chrome
+  // pinstripe under it — the racy two-tone flash on the hull side.
+  for (const sx of [-1, 1]) {
+    const flash = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 3.6), sweep);
+    flash.position.set(sx * (1.0 + EP), 0.3, -0.1);
+    flash.rotation.x = -0.04; // gentle rise toward the prow
+    g.add(flash);
+    const pin = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.03, 3.6), chrome);
+    pin.position.set(sx * (1.0 + EP + 0.004), 0.19, -0.1);
+    pin.rotation.x = -0.04;
+    g.add(pin);
   }
 
   // Pointed bow wedge — narrows to a prow at +Z, tucked into the midhull front.
@@ -149,6 +164,37 @@ function buildBoatGroup() {
     side.position.set(sx * 0.71, 0.98, 0.55);
     g.add(side);
   }
+  // Chrome windshield frame hugging the raked screen (top rail + two A-posts).
+  const wsTop = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.05, 0.06), chrome);
+  wsTop.position.set(0, 1.24, 1.14);
+  wsTop.rotation.x = -0.32;
+  g.add(wsTop);
+  for (const sx of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.54, 0.05), chrome);
+    post.position.set(sx * 0.65, 1.0, 1.22);
+    post.rotation.x = -0.32;
+    g.add(post);
+  }
+  // Sporty chrome grab-rail arch behind the console (wake-tower vibe).
+  const archGeo = new THREE.TorusGeometry(0.52, 0.035, 8, 16, Math.PI);
+  const arch = new THREE.Mesh(archGeo, chrome);
+  arch.position.set(0, 1.3, -0.1); // default ring in X-Y spans the beam, crowning up
+  g.add(arch);
+  for (const sx of [-1, 1]) {
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.5, 8), chrome);
+    foot.position.set(sx * 0.52, 1.05, -0.1);
+    g.add(foot);
+  }
+  // Emissive nav lights: red to port (-X) and green to starboard (+X) up at the bow.
+  const navRed = new THREE.MeshStandardMaterial({ color: "#ff5a4a", emissive: "#ff2a18", emissiveIntensity: 1.4, roughness: 0.4 });
+  const navGreen = new THREE.MeshStandardMaterial({ color: "#5aff8a", emissive: "#12d64a", emissiveIntensity: 1.4, roughness: 0.4 });
+  const navGeo = new THREE.SphereGeometry(0.05, 8, 6);
+  const portLight = new THREE.Mesh(navGeo, navRed);
+  portLight.position.set(-0.42, 0.62, 2.25);
+  g.add(portLight);
+  const stbdLight = new THREE.Mesh(navGeo, navGreen);
+  stbdLight.position.set(0.42, 0.62, 2.25);
+  g.add(stbdLight);
 
   // Small wheel/helm hint inside the console.
   const helm = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.04, 16), trim);
@@ -176,11 +222,34 @@ function buildBoatGroup() {
   prop.position.set(0, -0.35, -2.5);
   g.add(prop);
 
-  // A couple of bench seats in the cockpit.
-  for (const dz of [-0.7, -1.4]) {
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.12, 0.45), deckMat);
-    seat.position.set(0, 0.66, dz);
-    g.add(seat);
+  // Upholstered bolster seats in the cockpit: a cushioned base + a raked backrest.
+  for (const dz of [-0.7, -1.45]) {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.44, 0.16, 0.5), cushion);
+    base.position.set(0, 0.68, dz);
+    g.add(base);
+    const backrest = new THREE.Mesh(new THREE.BoxGeometry(1.44, 0.4, 0.12), cushion);
+    backrest.position.set(0, 0.9, dz - 0.24);
+    backrest.rotation.x = 0.18;
+    g.add(backrest);
+  }
+
+  // Swim platform off the transom + a boarding rail (chrome).
+  const platform = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.08, 0.55), deckMat);
+  platform.position.set(0, 0.34, -2.45);
+  g.add(platform);
+  for (const sx of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8), chrome);
+    post.position.set(sx * 0.7, 0.54, -2.4);
+    g.add(post);
+  }
+
+  // Chrome mooring cleats along the gunwales.
+  for (const sx of [-1, 1]) {
+    for (const cz of [1.4, -1.5]) {
+      const cleat = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.06), chrome);
+      cleat.position.set(sx * 0.9, 0.66, cz);
+      g.add(cleat);
+    }
   }
 
   // --- WAKE hint: two thin foam quads trailing aft, opacity/scale tweened in

@@ -72,11 +72,15 @@ function shade(hex, amt) {
 function buildCarGroup(color) {
   const g = new THREE.Group();
 
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.28, metalness: 0.6 });
-  const accentColor = shade(color, -0.24); // darker two-tone (lower body + bumpers)
-  const accent = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.34, metalness: 0.5 });
-  const trim = new THREE.MeshStandardMaterial({ color: "#101014", roughness: 0.55, metalness: 0.35 });
-  const chrome = new THREE.MeshStandardMaterial({ color: "#d7dadf", roughness: 0.2, metalness: 0.9 });
+  // Deeper, glossier automotive paint (clear-coat feel = low roughness + high
+  // metalness) with a darker two-tone for the lower body/bumpers, a matte carbon
+  // for aero pieces (splitter/diffuser/skirts), near-black trim, and bright chrome.
+  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.18, metalness: 0.72 });
+  const accentColor = shade(color, -0.26); // darker two-tone (lower body + bumpers)
+  const accent = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.3, metalness: 0.6 });
+  const carbon = new THREE.MeshStandardMaterial({ color: "#131419", roughness: 0.42, metalness: 0.55 });
+  const trim = new THREE.MeshStandardMaterial({ color: "#0d0d11", roughness: 0.5, metalness: 0.4 });
+  const chrome = new THREE.MeshStandardMaterial({ color: "#e2e6ec", roughness: 0.14, metalness: 0.96 });
   const EP = 0.012; // proud-of-surface epsilon to kill z-fighting on appliqué detail
 
   // --- Body: three stacked slabs, each tucked inside the one below ---
@@ -121,6 +125,53 @@ function buildCarGroup(color) {
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 3.5), accent);
     stripe.position.set(sx * (0.87 + EP), 0.84, 0);
     g.add(stripe);
+  }
+
+  // --- Aero kit (matte carbon): front splitter, side skirts, rear diffuser ---
+  // A low lip that wraps the nose, sills that fill the gap between the wheels, and
+  // a finned diffuser under the tail — the details that read instantly as "fast".
+  const splitter = new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.06, 0.5), carbon);
+  splitter.position.set(0, 0.27, 1.86);
+  g.add(splitter);
+  for (const sx of [-1, 1]) {
+    const skirt = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 2.3), carbon);
+    skirt.position.set(sx * 0.9, 0.33, 0);
+    g.add(skirt);
+  }
+  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.22, 0.42), carbon);
+  diffuser.position.set(0, 0.31, -1.86);
+  diffuser.rotation.x = 0.22; // rake the underbody up toward the rear
+  g.add(diffuser);
+  for (let i = -2; i <= 2; i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.4), chrome);
+    fin.position.set(i * 0.32, 0.31, -1.86);
+    fin.rotation.x = 0.22;
+    g.add(fin);
+  }
+
+  // --- Muscular fender arches over each wheel (painted, matching the body) ---
+  // Half-torus arches sit at the fender line, giving the flat flanks a flared,
+  // wide-body haunch. Ring plane rotated into Y-Z so the arch spans the wheel
+  // fore/aft and crowns above the tyre.
+  const archGeo = new THREE.TorusGeometry(0.54, 0.11, 8, 14, Math.PI);
+  for (const [ax, az] of [[-0.9, 1.25], [0.9, 1.25], [-0.9, -1.25], [0.9, -1.25]]) {
+    const arch = new THREE.Mesh(archGeo, paint);
+    arch.position.set(ax, 0.42, az);
+    arch.rotation.y = Math.PI / 2; // sweep the half-ring over the tyre fore-to-aft
+    arch.castShadow = true;
+    g.add(arch);
+  }
+
+  // --- Hood vents: twin dark louvred slots proud of the hood for a mean nose ---
+  for (const sx of [-1, 1]) {
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.03, 0.5), trim);
+    vent.position.set(sx * 0.42, 0.9, 1.35);
+    g.add(vent);
+    for (let i = 0; i < 3; i++) {
+      const slat = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.02, 0.04), carbon);
+      slat.position.set(sx * 0.42, 0.915, 1.2 + i * 0.14);
+      g.add(slat);
+    }
   }
 
   // --- Cabin: tapered greenhouse, set into the shoulder so its base is hidden ---
@@ -203,37 +254,60 @@ function buildCarGroup(color) {
   wing.rotation.x = -0.14;
   g.add(wing);
 
-  // --- Wheels with alloy rim + spoke detail (cylinders rotated around Z) ---
-  // Tyre OD 0.84 sits in arches; rim disc proud of the tyre's outer face so the
-  // alloy face shows; hub + spokes parented so they spin with the wheel.
-  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 20);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: "#0c0c10", roughness: 0.92, metalness: 0.05 });
-  const rimMat = new THREE.MeshStandardMaterial({ color: "#cdd2d8", roughness: 0.3, metalness: 0.85 });
-  const rimGeo = new THREE.CylinderGeometry(0.27, 0.27, 0.06, 16);
-  const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.07, 10);
-  const spokeGeo = new THREE.BoxGeometry(0.5, 0.05, 0.05);
+  // --- Wheels: fat tyre + deep-dish alloy, drilled brake disc + red caliper ---
+  // Each wheel hangs under a STEER pivot (so the fronts can be turned by drive()).
+  // The tyre + rim + spokes live on the spinning mesh `w` (axle along X); the disc
+  // spins with them, but the caliper is fixed to the pivot so it stays put as the
+  // wheel rolls. Tyre OD 0.88 tucks up into the fender arches.
+  const wheelGeo = new THREE.CylinderGeometry(0.44, 0.44, 0.34, 24);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: "#0b0b0f", roughness: 0.88, metalness: 0.08 });
+  const rimMat = new THREE.MeshStandardMaterial({ color: "#c9ced6", roughness: 0.26, metalness: 0.9 });
+  const dishGeo = new THREE.CylinderGeometry(0.3, 0.24, 0.14, 20);   // dished alloy face
+  const rimLipGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.08, 20); // polished outer lip
+  const hubGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.09, 12);
+  const spokeGeo = new THREE.BoxGeometry(0.56, 0.06, 0.055);
+  const discGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.05, 24);   // brake rotor
+  const discMat = new THREE.MeshStandardMaterial({ color: "#5a5e66", roughness: 0.35, metalness: 0.85 });
+  const caliperMat = new THREE.MeshStandardMaterial({ color: "#d1352b", roughness: 0.4, metalness: 0.3, emissive: "#7a140d", emissiveIntensity: 0.25 });
+  const caliperGeo = new THREE.BoxGeometry(0.09, 0.2, 0.18);
   const wheels = [];
-  for (const [wx, wz] of [[-0.92, 1.25], [0.92, 1.25], [-0.92, -1.25], [0.92, -1.25]]) {
+  const steerPivots = [];
+  for (const [wx, wz] of [[-0.9, 1.25], [0.9, 1.25], [-0.9, -1.25], [0.9, -1.25]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(wx, 0.42, wz);
+    g.add(pivot);
+
     const w = new THREE.Mesh(wheelGeo, wheelMat);
     w.rotation.z = Math.PI / 2; // lay the cylinder on its side (axle along X)
-    w.position.set(wx, 0.42, wz);
     w.castShadow = true;
+    pivot.add(w);
     // Outboard side of the wheel (local +Y after the Z rotation faces away from car).
-    const outY = Math.sign(wx) * 0.13; // just proud of the 0.30-wide tyre face
-    const rim = new THREE.Mesh(rimGeo, rimMat);
-    rim.position.y = outY;
-    w.add(rim);
+    const outY = Math.sign(wx) * 0.15; // just proud of the tyre face
+    const disc = new THREE.Mesh(discGeo, discMat);
+    disc.position.y = outY - 0.06;
+    w.add(disc);
+    const lip = new THREE.Mesh(rimLipGeo, rimMat);
+    lip.position.y = outY - 0.02;
+    w.add(lip);
+    const dish = new THREE.Mesh(dishGeo, rimMat);
+    dish.position.y = outY;
+    w.add(dish);
     const hub = new THREE.Mesh(hubGeo, chrome);
-    hub.position.y = outY + 0.02;
+    hub.position.y = outY + 0.05;
     w.add(hub);
-    for (let s = 0; s < 5; s++) {
+    for (let s = 0; s < 6; s++) {
       const spoke = new THREE.Mesh(spokeGeo, rimMat);
-      spoke.position.y = outY - 0.005;
-      spoke.rotation.y = (s / 5) * Math.PI; // fan the spokes across the rim face
+      spoke.position.y = outY;
+      spoke.rotation.y = (s / 6) * Math.PI; // fan the spokes across the rim face
       w.add(spoke);
     }
-    g.add(w);
+    // Fixed red caliper clamped over the disc (does not spin with the wheel).
+    const caliper = new THREE.Mesh(caliperGeo, caliperMat);
+    caliper.position.set(0, 0.3, 0);
+    pivot.add(caliper);
+
     wheels.push(w);
+    if (wz > 0) steerPivots.push(pivot); // fronts steer
   }
 
   // --- Headlights (front, +Z): soft always-on glow + forward spotlight ---
@@ -311,6 +385,7 @@ function buildCarGroup(color) {
   // Stash material/mesh refs + idle baselines so drive() can mutate emissive
   // intensity in place each frame with zero per-frame allocation.
   g.userData.wheels = wheels;
+  g.userData.steer = steerPivots; // front wheels, turned by drive() for a steer visual
   g.userData.lights = {
     head,
     headBase: head.emissiveIntensity, // soft idle glow
@@ -351,11 +426,22 @@ export function makeCar(opts = {}) {
   const HONK_TIME = 0.45;
   let _honk = 0;
   const _lights = group.userData.lights;
+  const _wheels = group.userData.wheels;
+  const _steer = group.userData.steer;
+
+  // Smoothed chassis attitude (visual only): body roll leaning out of turns and
+  // pitch that squats under power / dives under braking, plus an eased front-wheel
+  // steer angle. All are closure scalars — the hot path never allocates.
+  let _roll = 0, _pitch = 0, _steerAng = 0;
 
   function syncGroup() {
     group.position.x = state.x;
     group.position.z = state.z;
     group.rotation.y = state.heading;
+    // Keep a parked / network-mirrored car dead level — drive() re-applies the
+    // roll/pitch it wants every frame right after calling this.
+    group.rotation.x = 0;
+    group.rotation.z = 0;
   }
 
   // Advance one physics step. input = { throttle:-1..1, steer:-1..1 }.
@@ -430,9 +516,28 @@ export function makeCar(opts = {}) {
     state.z = nz;
     syncGroup();
 
-    // spin wheels for feel
-    const ws = group.userData.wheels;
-    if (ws) for (const w of ws) w.rotation.x += state.speed * dt * 2.2;
+    // spin wheels for feel (tyre roll along the axle)
+    if (_wheels) for (const w of _wheels) w.rotation.x += state.speed * dt * 2.4;
+
+    // --- Chassis attitude + steering (visual only; eased, allocation-free) ---
+    // Front wheels turn toward the steer input; the body leans OUT of the corner
+    // (roll) proportional to lateral load (steer * speed) and PITCHES with the
+    // longitudinal g — squatting nose-up on throttle, diving nose-down on the brakes.
+    const k = Math.min(1, dt * 8);
+    const speedFrac = Math.min(1, Math.abs(state.speed) / CAR.maxSpeed);
+    const targetSteer = -steer * 0.5;
+    _steerAng += (targetSteer - _steerAng) * k;
+    if (_steer) for (const p of _steer) p.rotation.y = _steerAng;
+    // Roll: lean away from the turn, scaled by how hard/fast we're cornering.
+    const targetRoll = steer * 0.11 * speedFrac * Math.sign(state.speed || 1);
+    _roll += (targetRoll - _roll) * Math.min(1, dt * 6);
+    // Pitch: (speed - prevSpeed)/dt is the longitudinal accel; nose lifts under
+    // power, dips under braking. Clamped so hard stops don't over-rotate.
+    const accelG = dt > 0 ? (state.speed - prevSpeed) / dt : 0;
+    const targetPitch = -Math.max(-0.09, Math.min(0.09, accelG * 0.006));
+    _pitch += (targetPitch - _pitch) * Math.min(1, dt * 6);
+    group.rotation.z = _roll;
+    group.rotation.x = _pitch;
 
     // --- Lights (mutate shared material refs in place; no per-frame alloc) ---
     if (_lights) {
